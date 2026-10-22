@@ -1,0 +1,33 @@
+# Repair criteria rule set. Spec sections 6.8 and 7.2.
+# M1 ships the format example only; the remaining section 6.8 rules are added in M7.
+# Conditions are evaluated by a safe expression evaluator (never Python eval).
+# Where the operator's IMP is more conservative than these rules, the IMP governs.
+
+version: "49 CFR 195.452(h)(4), reviewed Oct 2026 - VERIFY against current eCFR and IMP"
+rules:
+  - id: IMM-1
+    category: immediate
+    applies_to: hca
+    feature_types: [metal_loss]
+    condition: "depth_pct_assessed > 80"
+    description: "Metal loss greater than 80% of nominal wall regardless of dimensions"
+    citation: "195.452(h)(4)(i)(A)"
+    requires_review: false
+
+  - id: IMM-2
+    category: immediate
+    applies_to: hca
+    feature_types: [metal_loss]
+    condition: "p_fail < mop_local"
+    description: "Predicted burst pressure less than MOP at the anomaly"
+    citation: "195.452(h)(4)(i)(B)"
+    requires_review: false
+
+  - id: D180-4
+    category: 180_day
+    applies_to: hca
+    feature_types: [metal_loss]
+    condition: "p_safe < mop_local"
+    description: "Remaining strength calculation shows operating pressure less than MOP"
+    citation: "195.452(h)(4)(iii)(D)"
+    requires_review: false
