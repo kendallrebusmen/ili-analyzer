@@ -75,3 +75,26 @@ Interpretations of `docs/SPEC.md` and choices the spec leaves open. Newest at th
 | Feature ids | `A-000001…` in log order | `B-000001…` in log order |
 | Flags | `Y` / `N` / blank | `1` / `0` / blank |
 | Run date | Not in file (from the manifest / vendor map) | Title row 2 |
+
+## M2: ingestion and vendor maps (2026-10-22)
+
+- **Vendor map format** (`config/vendor_maps/*.yaml`, validated by `ingest.VendorMap`; unknown keys are rejected):
+  - `vendor`, `run_label`
+  - `file` (`format` csv|excel, `sheet`, 1-based `header_row`)
+  - optional `run_date` (`cell` plus a regex with one group holding an ISO date)
+  - `columns` (standard field → vendor header; `run_id`/`run_date` are not mappable)
+  - `units` (distance ft|m, wall in|mm, size in|mm, dent_depth in|mm, elevation ft|m)
+  - `clock_format`, `feature_types`, `surfaces`, `true_values`, `false_values`
+  - Vocabulary is matched after `strip()` + `casefold()`. Two keys that collide after normalization are a load error.
+- **Raw files are read entirely as text** (CSV with `utf-8-sig` to absorb an Excel BOM), so Excel integer ids stay `1`, not `1.0`, and blanks stay blank. A mapped column missing from the file is a structural `ValueError`, not a row issue.
+- **Run date and run id.** The run date comes from `--run ... RUN_DATE`, else from the file. If both exist and disagree, ingestion fails. `run_id = <run year>_<run_label>`, which matches the spec's `2021_vendorA` example. Two runs with the same run id in one invocation are an error.
+- **Clock parsing.** hh:mm uses the 12-hour face; degrees ×2 and decimal hours ×60 give minutes. Exactly 360° / 12.0 h is 0. Any other out-of-range value (e.g. 400°) is kept and reported as `clock_out_of_range`, never wrapped silently.
+- **Exclusion policy.** A row with any issue is left out of `standardized/<run_id>.csv` and listed in `validation_issues.csv` (`run_id, source_row, feature_id, field, value, reason`), one line per problem. `source_row` is the 1-based row in the original file. Reasons:
+  - `missing_required`, `depth_out_of_range`, `clock_out_of_range`, `duplicate_feature_id` (later occurrences)
+  - `girth_weld_not_monotonic`, `unparseable_number`, `unparseable_clock`, `unparseable_flag`
+  - `unknown_feature_type`, `unknown_surface`
+  - A field that failed to parse is not also reported as `missing_required`.
+- **Non-monotonic welds.** When two adjacent girth welds (in file order) do not increase in log distance, *both* are excluded, because the tool cannot tell which is wrong. Alignment (M3) then treats them as missed welds.
+- **Depth range** is inclusive: 0 and 100 are valid.
+- **`ingest_manifest.json`** records the DRAFT label, the UTC creation time, and per-run tally and vendor-map sha256, rows read/clean, and issue counts.
+- **Outputs default to `<project>/outputs`** whatever the working directory.

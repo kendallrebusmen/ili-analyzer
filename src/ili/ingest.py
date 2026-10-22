@@ -11,9 +11,14 @@ DRAFT – for review by qualified personnel.
 
 from __future__ import annotations
 
+import argparse
 import csv
+import hashlib
+import json
 import re
-from datetime import date
+import sys
+from dataclasses import dataclass
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Literal
 
@@ -23,6 +28,8 @@ import pandas as pd
 import yaml
 from pydantic import BaseModel, ConfigDict, field_validator
 
+import ili
+from ili.config import PROJECT_ROOT
 from ili.schema import STANDARD_COLUMNS, FeatureType, Surface
 from ili.units import CLOCK_MINUTES, FT_PER_M, IN_PER_MM, hhmm_to_clock_min
 
@@ -318,3 +325,111 @@ def validate(std: pd.DataFrame, run_id: str, parse_issues: pd.DataFrame | None =
     all_issues = all_issues.sort_values("source_row", kind="stable").reset_index(drop=True)
     clean = std[~std.source_row.isin(set(all_issues.source_row))].reset_index(drop=True)
     return clean, all_issues
+
+
+# ---------------------------------------------------------------------------
+# Orchestration, output, CLI
+# ---------------------------------------------------------------------------
+
+DRAFT_LABEL = "DRAFT – for review by qualified personnel."
+
+
+@dataclass
+class IngestResult:
+    run_id: str
+    run_date: date
+    standard: pd.DataFrame  # clean rows: STANDARD_COLUMNS + source_row
+    issues: pd.DataFrame  # ISSUE_COLUMNS
+    tally_path: Path
+    vendor_map_path: Path
+    rows_read: int
+
+
+def ingest_tally(path: Path, vendor_map_path: Path, run_date: date | None = None) -> IngestResult:
+    """Read, standardize, and validate one tally. The run date comes from ``run_date``,
+    else from the file (if the vendor map locates it); if both exist they must agree."""
+    vmap = load_vendor_map(vendor_map_path)
+    raw, file_date = read_tally(path, vmap)
+    if run_date and file_date and run_date != file_date:
+        raise ValueError(f"{Path(path).name}: run_date {run_date} conflicts with {file_date} in the file")
+    run_date = run_date or file_date
+    if run_date is None:
+        raise ValueError(f"{Path(path).name}: run_date is not in the file; supply it")
+    run_id = f"{run_date.year}_{vmap.run_label}"
+    std, parse_issues = standardize(raw, vmap, run_id, run_date)
+    clean, issues = validate(std, run_id, parse_issues)
+    return IngestResult(run_id, run_date, clean, issues, Path(path), Path(vendor_map_path), len(raw))
+
+
+def _sha256(path: Path) -> str:
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+def write_ingest(results: list[IngestResult], out_dir: Path = PROJECT_ROOT / "outputs") -> dict[str, Path]:
+    ids = [r.run_id for r in results]
+    dupes = sorted({i for i in ids if ids.count(i) > 1})
+    if dupes:
+        raise ValueError(f"duplicate run_id: {', '.join(dupes)}")
+    out_dir = Path(out_dir)
+    (out_dir / "standardized").mkdir(parents=True, exist_ok=True)
+    paths: dict[str, Path] = {}
+    for r in results:
+        rel = f"standardized/{r.run_id}.csv"
+        r.standard.to_csv(out_dir / rel, index=False, lineterminator="\n")
+        paths[rel] = out_dir / rel
+    issues = [r.issues for r in results if len(r.issues)]
+    combined = pd.concat(issues, ignore_index=True) if issues else pd.DataFrame(columns=ISSUE_COLUMNS)
+    combined.to_csv(out_dir / "validation_issues.csv", index=False, lineterminator="\n")
+    paths["validation_issues.csv"] = out_dir / "validation_issues.csv"
+    manifest = {
+        "label": DRAFT_LABEL,
+        "generator": f"ili.ingest {ili.__version__}",
+        "created_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "runs": [{
+            "run_id": r.run_id,
+            "run_date": r.run_date.isoformat(),
+            "tally": str(r.tally_path),
+            "tally_sha256": _sha256(r.tally_path),
+            "vendor_map": str(r.vendor_map_path),
+            "vendor_map_sha256": _sha256(r.vendor_map_path),
+            "rows_read": r.rows_read,
+            "rows_clean": len(r.standard),
+            "issues": len(r.issues),
+        } for r in results],
+    }
+    (out_dir / "ingest_manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    paths["ingest_manifest.json"] = out_dir / "ingest_manifest.json"
+    return paths
+
+
+def _parser() -> argparse.ArgumentParser:
+    ap = argparse.ArgumentParser(prog="python -m ili.ingest",
+                                 description="Load ILI tallies into the standard schema. " + DRAFT_LABEL)
+    ap.add_argument("--run", action="append", nargs="+", required=True, metavar="ARG",
+                    help="TALLY VENDOR_MAP [RUN_DATE as YYYY-MM-DD]; repeat for each run")
+    ap.add_argument("--out", type=Path, default=PROJECT_ROOT / "outputs", help="output directory")
+    return ap
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = _parser().parse_args(argv)
+    try:
+        results = []
+        for spec in args.run:
+            if len(spec) not in (2, 3):
+                raise ValueError(f"--run takes TALLY VENDOR_MAP [RUN_DATE], got {len(spec)} values")
+            run_date = date.fromisoformat(spec[2]) if len(spec) == 3 else None
+            results.append(ingest_tally(Path(spec[0]), Path(spec[1]), run_date))
+        write_ingest(results, args.out)
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    print(DRAFT_LABEL)
+    for r in results:
+        print(f"{r.run_id}: {r.rows_read} rows read, {len(r.standard)} clean, {len(r.issues)} issues")
+    print(f"wrote {args.out}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
