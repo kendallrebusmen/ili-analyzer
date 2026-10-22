@@ -86,15 +86,40 @@ Interpretations of `docs/SPEC.md` and choices the spec leaves open. Newest at th
   - `units` (distance ft|m, wall in|mm, size in|mm, dent_depth in|mm, elevation ft|m)
   - `clock_format`, `feature_types`, `surfaces`, `true_values`, `false_values`
   - Vocabulary is matched after `strip()` + `casefold()`. Two keys that collide after normalization are a load error.
-- **Raw files are read entirely as text** (CSV with `utf-8-sig` to absorb an Excel BOM), so Excel integer ids stay `1`, not `1.0`, and blanks stay blank. A mapped column missing from the file is a structural `ValueError`, not a row issue.
+- **Every cell becomes the text a person sees in the file.**
+  - CSV is read with `csv.reader` (`utf-8-sig` absorbs an Excel BOM).
+  - Excel is read cell by cell with openpyxl (cached formula values):
+    - integer cells stay `1`, not `1.0`
+    - **percent-formatted cells are multiplied by 100**, so a depth typed as `23%` (stored 0.23) reads as 23
+    - **time-formatted cells become `h:mm`**, so an Excel clock column parses
+    - date cells become ISO dates
+- **`source_row` is the physical row the record starts on**: the Excel row number, or the CSV line counting blank lines and multi-line quoted cells.
+- **Structural problems are a `ValueError`, not a row issue:**
+  - a mapped column missing from the file, or appearing more than once
+  - a sheet that does not exist
+  - a row with more non-blank values than the header has columns
+- **Rows with no content at all are skipped**; there is nothing in them to lose.
 - **Run date and run id.** The run date comes from `--run ... RUN_DATE`, else from the file. If both exist and disagree, ingestion fails. `run_id = <run year>_<run_label>`, which matches the spec's `2021_vendorA` example. Two runs with the same run id in one invocation are an error.
-- **Clock parsing.** hh:mm uses the 12-hour face; degrees ×2 and decimal hours ×60 give minutes. Exactly 360° / 12.0 h is 0. Any other out-of-range value (e.g. 400°) is kept and reported as `clock_out_of_range`, never wrapped silently.
+- **Clock parsing.**
+  - hh:mm uses the 12-hour face (`12:30` and `0:30` are both 30 min).
+  - Degrees ×2 and decimal hours ×60 give minutes.
+  - The valid ranges are 0–360° and 0–<13 h. Within them a full turn wraps, so 360° is 0 and 12.5 h is 30 min, consistent with hh:mm's `12:xx`.
+  - Anything outside (e.g. 400°, 360.2°, 13.0 h) is kept unwrapped and reported as `clock_out_of_range`, never wrapped silently.
 - **Exclusion policy.** A row with any issue is left out of `standardized/<run_id>.csv` and listed in `validation_issues.csv` (`run_id, source_row, feature_id, field, value, reason`), one line per problem. `source_row` is the 1-based row in the original file. Reasons:
   - `missing_required`, `depth_out_of_range`, `clock_out_of_range`, `duplicate_feature_id` (later occurrences)
   - `girth_weld_not_monotonic`, `unparseable_number`, `unparseable_clock`, `unparseable_flag`
   - `unknown_feature_type`, `unknown_surface`
   - A field that failed to parse is not also reported as `missing_required`.
-- **Non-monotonic welds.** When two adjacent girth welds (in file order) do not increase in log distance, *both* are excluded, because the tool cannot tell which is wrong. Alignment (M3) then treats them as missed welds.
+- **Non-monotonic welds.** The girth welds, in file order, keep the longest strictly increasing sequence of log distances; every other weld is `girth_weld_not_monotonic` and excluded. The clean set is therefore always monotonic: a swap loses one weld, a displaced block loses the block, and an odometer reset loses the shorter part. Alignment (M3) treats excluded welds as missed welds.
+  - This replaces the earlier "exclude both welds of a bad pair" rule, which left displaced blocks and resets non-monotonic.
+  - Features whose `us_gw_id` names an excluded weld keep that id; M3 re-derives joints from log distance.
+- **Value bounds** (`value_out_of_range`), matching the schema plus physical limits:
+  - wall and joint length > 0
+  - length, width, dent depth, and distance from weld ≥ 0
+  - latitude ±90, longitude ±180
+  - any non-finite number (`inf`) fails
+  - Log distance and elevation may be negative.
 - **Depth range** is inclusive: 0 and 100 are valid.
 - **`ingest_manifest.json`** records the DRAFT label, the UTC creation time, and per-run tally and vendor-map sha256, rows read/clean, and issue counts.
 - **Outputs default to `<project>/outputs`** whatever the working directory.
+- **Separate invocations accumulate.** `validation_issues.csv` and the manifest keep the entries of runs ingested earlier into the same `--out`; re-ingesting a run replaces only that run's entries. So ingesting runs one at a time never loses an earlier run's issue record.

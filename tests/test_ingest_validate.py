@@ -87,10 +87,63 @@ def test_weld_out_of_order(synth, tmp_path):
 
     df, clean, issues = _run_corrupted(synth, tmp_path, corrupt)
     hit = issues[issues.reason == "girth_weld_not_monotonic"]
-    assert sorted(hit.source_row) == [r + 2 for r in holder["rows"]]
-    assert len(clean) == len(df) - 2
-    gw = clean[clean.feature_type == "girth_weld"].log_dist_ft.to_numpy()
+    assert len(hit) == 1 and hit.source_row.iloc[0] in [r + 2 for r in holder["rows"]]
+    assert len(clean) == len(df) - 1
+    _assert_clean_welds_monotonic(clean)
+
+
+def _assert_clean_welds_monotonic(clean):
+    gw = clean[clean.feature_type == "girth_weld"].sort_values("source_row").log_dist_ft.to_numpy()
     assert (np.diff(gw) > 0).all()
+
+
+def test_weld_block_displaced(synth, tmp_path):
+    holder = {}
+
+    def corrupt(d):
+        welds = d.index[d.Event == "Girth Weld"]
+        holder["rows"] = (welds[11], welds[12])
+        d.loc[welds[11], "Abs Dist (ft)"] = "5.0"
+        d.loc[welds[12], "Abs Dist (ft)"] = "6.0"
+
+    df, clean, issues = _run_corrupted(synth, tmp_path, corrupt)
+    hit = issues[issues.reason == "girth_weld_not_monotonic"]
+    assert sorted(hit.source_row) == [r + 2 for r in holder["rows"]]
+    _assert_clean_welds_monotonic(clean)
+
+
+def test_odometer_reset_keeps_clean_monotonic(synth, tmp_path):
+    def corrupt(d):
+        welds = d.index[d.Event == "Girth Weld"]
+        tail = welds[len(welds) * 2 // 3:]
+        d.loc[tail, "Abs Dist (ft)"] = (d.loc[tail, "Abs Dist (ft)"].astype(float) - 20000).round(3).astype(str)
+
+    df, clean, issues = _run_corrupted(synth, tmp_path, corrupt)
+    n_welds = (df.Event == "Girth Weld").sum()
+    hit = issues[issues.reason == "girth_weld_not_monotonic"]
+    assert 0 < len(hit) < n_welds / 2  # the shorter, inconsistent part is excluded
+    _assert_clean_welds_monotonic(clean)
+
+
+def test_schema_bounds_enforced(synth, tmp_path):
+    def corrupt(d):
+        ml = d.index[d.Event == "Metal Loss"]
+        dents = d.index[d.Event == "Dent"]
+        d.loc[ml[0], "Length (in)"] = "-2.5"
+        d.loc[ml[1], "WT (in)"] = "0"
+        d.loc[ml[2], "Width (in)"] = "inf"
+        d.loc[ml[3], "Latitude"] = "932"
+        d.loc[ml[4], "Jt Len (ft)"] = "-40"
+        d.loc[dents[0], "Dent Depth (in)"] = "-0.3"
+
+    df, clean, issues = _run_corrupted(synth, tmp_path, corrupt)
+    assert sorted(issues.field) == sorted(["length_in", "wt_nom_in", "width_in", "lat", "joint_length_ft",
+                                           "dent_depth_in"])
+    assert set(issues.reason) == {"value_out_of_range"}
+    assert len(clean) == len(df) - 6
+    records = clean.drop(columns="source_row").astype(object).where(clean.notna(), None).to_dict("records")
+    for rec in records:
+        StandardFeature.model_validate(rec)
 
 
 def test_degrees_out_of_range():

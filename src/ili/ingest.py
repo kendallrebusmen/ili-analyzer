@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import datetime as dt
 import hashlib
 import json
 import re
@@ -150,23 +151,83 @@ def _cell(path: Path, vmap: VendorMap, ref: str) -> str | None:
     return None
 
 
+def _excel_text(cell) -> str:
+    """A cell as the text a person sees in Excel: percent cells as percent, times as h:mm."""
+    v = cell.value
+    if v is None:
+        return ""
+    if isinstance(v, dt.datetime):
+        return v.date().isoformat() if v.time() == dt.time(0) else v.isoformat(sep=" ")
+    if isinstance(v, dt.time):
+        minutes = v.hour * 60 + v.minute + round(v.second / 60)
+        return f"{minutes // 60}:{minutes % 60:02d}"
+    if isinstance(v, dt.date):
+        return v.isoformat()
+    if isinstance(v, bool):
+        return str(v)
+    if isinstance(v, (int, float)):
+        if "%" in (cell.number_format or ""):
+            return f"{v * 100:.12g}"
+        return str(v)
+    return str(v)
+
+
+def _excel_records(path: Path, vmap: VendorMap) -> list[tuple[int, list[str]]]:
+    wb = openpyxl.load_workbook(path, data_only=True)
+    try:
+        if vmap.file.sheet and vmap.file.sheet not in wb.sheetnames:
+            raise ValueError(f"{path.name}: sheet {vmap.file.sheet!r} not found (has {wb.sheetnames})")
+        ws = wb[vmap.file.sheet] if vmap.file.sheet else wb.worksheets[0]
+        return [(row[0].row, [_excel_text(c) for c in row]) for row in ws.iter_rows(min_row=vmap.file.header_row)]
+    finally:
+        wb.close()
+
+
+def _csv_records(path: Path, vmap: VendorMap) -> list[tuple[int, list[str]]]:
+    """Records with the physical line each starts on (blank lines and multi-line cells counted)."""
+    records = []
+    with open(path, encoding="utf-8-sig", newline="") as fh:
+        reader = csv.reader(fh)
+        last_line = 0
+        for fields in reader:
+            start, last_line = last_line + 1, reader.line_num
+            if start >= vmap.file.header_row:
+                records.append((start, fields))
+    if not records or records[0][0] != vmap.file.header_row:
+        raise ValueError(f"{path.name}: no header record starts on line {vmap.file.header_row}")
+    return records
+
+
 def read_tally(path: Path, vmap: VendorMap) -> tuple[pd.DataFrame, date | None]:
-    """Raw tally as strings (blank = ""), with ``source_row`` = 1-based file row, and the run
-    date if the vendor map says where to find it."""
+    """Raw tally as strings (blank = ""), with ``source_row`` = the 1-based physical row the
+    record starts on, and the run date if the vendor map says where to find it.
+
+    Rows with no content at all are skipped (there is nothing in them to lose).
+    """
     path = Path(path)
-    skip = vmap.file.header_row - 1
-    if vmap.file.format == "csv":
-        raw = pd.read_csv(path, dtype=str, keep_default_na=False, encoding="utf-8-sig", skiprows=skip)
-    else:
-        raw = pd.read_excel(path, sheet_name=vmap.file.sheet or 0, header=skip, dtype=str,
-                            keep_default_na=False, engine="openpyxl")
-    raw = raw.fillna("").astype(object).apply(lambda s: s.str.strip())
-    raw.columns = [str(c).strip() for c in raw.columns]
-    missing = [v for v in vmap.columns.values() if v not in raw.columns]
+    records = _csv_records(path, vmap) if vmap.file.format == "csv" else _excel_records(path, vmap)
+    header = [h.strip() for h in records[0][1]]
+    rows, source_rows = [], []
+    for line, fields in records[1:]:
+        fields = [f.strip() for f in fields]
+        if not any(fields):
+            continue
+        if len(fields) > len(header):
+            if any(fields[len(header):]):
+                raise ValueError(f"{path.name}: row {line} has more values than the header has columns")
+            fields = fields[: len(header)]
+        rows.append(fields + [""] * (len(header) - len(fields)))
+        source_rows.append(line)
+    missing = [v for v in vmap.columns.values() if v not in header]
     if missing:
         raise ValueError(f"{path.name}: columns required by vendor map {vmap.vendor!r} are missing: "
                          + ", ".join(repr(m) for m in missing))
-    raw["source_row"] = np.arange(len(raw)) + vmap.file.header_row + 1
+    repeated = sorted({v for v in vmap.columns.values() if header.count(v) > 1})
+    if repeated:
+        raise ValueError(f"{path.name}: mapped column(s) appear more than once: " + ", ".join(map(repr, repeated)))
+    raw = pd.DataFrame(rows, columns=header, dtype=object)
+    raw = raw.loc[:, ~raw.columns.duplicated()]
+    raw["source_row"] = np.array(source_rows, dtype=int)
 
     run_date = None
     if vmap.run_date is not None:
@@ -186,8 +247,9 @@ def read_tally(path: Path, vmap: VendorMap) -> tuple[pd.DataFrame, date | None]:
 def parse_clock(values: pd.Series, fmt: str) -> tuple[pd.Series, pd.Series]:
     """Clock positions to minutes from 12:00. Returns (Int64 minutes, unparseable mask).
 
-    Exactly one full turn (360 deg, 12.0 h) maps to 0. Other out-of-range numbers are
-    kept as-is so validation can report them rather than wrapping them silently.
+    Valid numeric ranges are 0-360 degrees and 0-<13 decimal hours. A full turn (360 deg,
+    12.x h on a 12-hour face, like hh:mm's 12:xx) wraps into 0-719. Out-of-range numbers
+    are kept unwrapped so validation reports them rather than wrapping them silently.
     """
     values = values.astype(object).fillna("").astype(str).str.strip()
     blank = values == ""
@@ -203,8 +265,9 @@ def parse_clock(values: pd.Series, fmt: str) -> tuple[pd.Series, pd.Series]:
     per_unit = {"degrees": 2.0, "decimal_hours": 60.0}[fmt]
     num = pd.to_numeric(values.where(~blank), errors="coerce")
     bad = ~blank & num.isna()
+    in_range = (num >= 0) & ((num <= 360) if fmt == "degrees" else (num < 13))
     m = np.rint(num * per_unit)
-    m = m.where(m != CLOCK_MINUTES, 0)
+    m = m.where(~in_range, m % CLOCK_MINUTES)
     ok = m.notna()
     minutes[ok] = m[ok].astype(int)
     return minutes, bad
@@ -283,6 +346,48 @@ def standardize(raw: pd.DataFrame, vmap: VendorMap, run_id: str, run_date: date)
 
 REQUIRED_FIELDS = ["feature_id", "feature_type", "log_dist_ft"]
 
+# field -> (lower bound, upper bound, lower bound exclusive). Non-finite values always fail.
+# Matches the StandardFeature constraints plus physical limits; log distance and elevation
+# may be negative (positions upstream of the odometer zero, below datum).
+VALUE_BOUNDS = {
+    "log_dist_ft": (None, None, False),
+    "dist_from_us_gw_ft": (0.0, None, False),
+    "joint_length_ft": (0.0, None, True),
+    "wt_nom_in": (0.0, None, True),
+    "dent_depth_in": (0.0, None, False),
+    "length_in": (0.0, None, False),
+    "width_in": (0.0, None, False),
+    "lat": (-90.0, 90.0, False),
+    "lon": (-180.0, 180.0, False),
+    "elev_ft": (None, None, False),
+}
+
+
+def _longest_increasing(values: np.ndarray) -> np.ndarray:
+    """Mask of one longest strictly increasing subsequence (O(n log n) patience sort)."""
+    n = len(values)
+    tails: list[int] = []  # index of the smallest tail of each length
+    prev = np.full(n, -1)
+    for i, v in enumerate(values):
+        lo, hi = 0, len(tails)
+        while lo < hi:
+            mid = (lo + hi) // 2
+            if values[tails[mid]] < v:
+                lo = mid + 1
+            else:
+                hi = mid
+        prev[i] = tails[lo - 1] if lo > 0 else -1
+        if lo == len(tails):
+            tails.append(i)
+        else:
+            tails[lo] = i
+    keep = np.zeros(n, dtype=bool)
+    i = tails[-1] if tails else -1
+    while i >= 0:
+        keep[i] = True
+        i = prev[i]
+    return keep
+
 
 def validate(std: pd.DataFrame, run_id: str, parse_issues: pd.DataFrame | None = None
              ) -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -309,14 +414,22 @@ def validate(std: pd.DataFrame, run_id: str, parse_issues: pd.DataFrame | None =
     dup = std.feature_id.notna() & std.feature_id.duplicated(keep="first")
     issues.append(_issues(run_id, std, dup, "feature_id", std.feature_id, "duplicate_feature_id"))
 
-    # Adjacent welds (file order) whose log distance does not increase: flag both, since
-    # either could be the wrong one. Alignment then treats them as missed welds.
+    for f, (lo, hi, lo_open) in VALUE_BOUNDS.items():
+        v = std[f]
+        out = v.notna() & ~np.isfinite(v.fillna(0))
+        if lo is not None:
+            out |= (v <= lo) if lo_open else (v < lo)
+        if hi is not None:
+            out |= v > hi
+        issues.append(_issues(run_id, std, out.fillna(False), f, v, "value_out_of_range"))
+
+    # Girth welds (file order) must increase in log distance. Keep the longest strictly
+    # increasing sequence and exclude every other weld, so the clean set is always monotonic
+    # whatever went wrong (swap, displaced block, odometer reset). Alignment treats the
+    # excluded welds as missed welds.
     welds = std[(std.feature_type == "girth_weld") & std.log_dist_ft.notna()].sort_values("source_row")
-    step_bad = np.diff(welds.log_dist_ft.to_numpy()) <= 0
-    flagged = np.zeros(len(welds), dtype=bool)
-    flagged[:-1] |= step_bad
-    flagged[1:] |= step_bad
-    bad_rows = set(welds.source_row[flagged])
+    keep = _longest_increasing(welds.log_dist_ft.to_numpy())
+    bad_rows = set(welds.source_row[~keep])
     not_mono = std.source_row.isin(bad_rows).to_numpy()
     issues.append(_issues(run_id, std, not_mono, "log_dist_ft", std.log_dist_ft, "girth_weld_not_monotonic"))
 
@@ -377,15 +490,27 @@ def write_ingest(results: list[IngestResult], out_dir: Path = PROJECT_ROOT / "ou
         rel = f"standardized/{r.run_id}.csv"
         r.standard.to_csv(out_dir / rel, index=False, lineterminator="\n")
         paths[rel] = out_dir / rel
-    issues = [r.issues for r in results if len(r.issues)]
-    combined = pd.concat(issues, ignore_index=True) if issues else pd.DataFrame(columns=ISSUE_COLUMNS)
-    combined.to_csv(out_dir / "validation_issues.csv", index=False, lineterminator="\n")
-    paths["validation_issues.csv"] = out_dir / "validation_issues.csv"
+    # Issues and manifest entries of runs ingested by earlier invocations are kept; this
+    # invocation's runs replace their own earlier entries.
+    issues_path = out_dir / "validation_issues.csv"
+    manifest_path = out_dir / "ingest_manifest.json"
+    earlier = [pd.DataFrame(columns=ISSUE_COLUMNS)]
+    if issues_path.exists():
+        old = pd.read_csv(issues_path, dtype=str, keep_default_na=False)
+        earlier.append(old[~old.run_id.isin(ids)].astype({"source_row": int}))
+    issues = [*earlier, *(r.issues for r in results)]
+    combined = pd.concat([i for i in issues if len(i)] or [issues[0]], ignore_index=True)
+    combined.to_csv(issues_path, index=False, lineterminator="\n")
+    paths["validation_issues.csv"] = issues_path
+    earlier_runs = []
+    if manifest_path.exists():
+        earlier_runs = [r for r in json.loads(manifest_path.read_text(encoding="utf-8")).get("runs", [])
+                        if r.get("run_id") not in ids]
     manifest = {
         "label": DRAFT_LABEL,
         "generator": f"ili.ingest {ili.__version__}",
         "created_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-        "runs": [{
+        "runs": earlier_runs + [{
             "run_id": r.run_id,
             "run_date": r.run_date.isoformat(),
             "tally": str(r.tally_path),

@@ -81,6 +81,26 @@ def test_issues_written_with_reasons(synth, tmp_path):
     assert len(pd.read_csv(out / "standardized" / "2021_vendorA.csv")) == len(df) - 1
 
 
+def test_separate_invocations_keep_each_runs_issues(synth, tmp_path):
+    a, b = _paths(synth)
+    df = pd.read_csv(a, dtype=str, keep_default_na=False)
+    df.loc[df.index[df.Event == "Metal Loss"][0], "Depth (%)"] = "130"
+    bad = tmp_path / "bad.csv"
+    df.to_csv(bad, index=False)
+    out = tmp_path / "out"
+    assert main(["--run", str(bad), str(MAP_A), "2021-06-15", "--out", str(out)]) == 0
+    assert main(["--run", str(b), str(MAP_B), "--out", str(out)]) == 0
+    issues = pd.read_csv(out / "validation_issues.csv")
+    assert issues.run_id.tolist() == ["2021_vendorA"]
+    m = json.loads((out / "ingest_manifest.json").read_text(encoding="utf-8"))
+    assert sorted(r["run_id"] for r in m["runs"]) == ["2021_vendorA", "2026_vendorB"]
+    # Re-ingesting A cleanly replaces A's issues, not B's entry.
+    assert main(["--run", str(a), str(MAP_A), "2021-06-15", "--out", str(out)]) == 0
+    assert pd.read_csv(out / "validation_issues.csv").empty
+    m = json.loads((out / "ingest_manifest.json").read_text(encoding="utf-8"))
+    assert {r["run_id"]: r["issues"] for r in m["runs"]} == {"2021_vendorA": 0, "2026_vendorB": 0}
+
+
 def test_default_out_is_project_root():
     assert _parser().parse_args(["--run", "x", "y"]).out == PROJECT_ROOT / "outputs"
 

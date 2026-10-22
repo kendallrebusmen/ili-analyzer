@@ -63,8 +63,85 @@ def test_parse_clock_formats():
 
 
 def test_parse_clock_keeps_out_of_range_for_validation():
-    clock, bad = parse_clock(pd.Series(["400", "-10"]), "degrees")
-    assert clock.tolist() == [800, -20] and not bad.any()
+    clock, bad = parse_clock(pd.Series(["400", "-10", "360.2", "-0.2"]), "degrees")
+    assert clock.tolist() == [800, -20, 720, 0] and not bad.any()  # -0.2 deg rounds to 0 min
+    clock, _ = parse_clock(pd.Series(["13.0", "-1"]), "decimal_hours")
+    assert clock.tolist() == [780, -60]
+
+
+def test_decimal_hours_twelve_oclock_face():
+    clock, bad = parse_clock(pd.Series(["12.5", "12.99", "0.5"]), "decimal_hours")
+    assert clock.tolist() == [30, 59, 30] and not bad.any()
+
+
+def _vendor_a_as_excel(synth, tmp_path, *, percent_depth=False, time_clock=True):
+    """Vendor A's tally rewritten as an .xlsx the way a person would build it in Excel."""
+    import datetime as dt
+
+    import openpyxl
+    import yaml
+
+    _, out = synth
+    df = pd.read_csv(out / "tally_prev_vendor_a.csv", dtype=str, keep_default_na=False)
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Tally"
+    ws.append(list(df.columns))
+    for r, row in enumerate(df.itertuples(index=False), start=2):
+        for c, (col, val) in enumerate(zip(df.columns, row), start=1):
+            cell = ws.cell(row=r, column=c)
+            if val == "":
+                continue
+            if col == "O'clock" and time_clock:
+                h, m = map(int, val.split(":"))
+                cell.value = dt.time(h % 12 if h == 12 else h, m)  # Excel stores 12:30 as 00:30 or 12:30
+                cell.number_format = "h:mm"
+            elif col == "Depth (%)" and percent_depth:
+                cell.value = float(val) / 100
+                cell.number_format = "0.0%"
+            else:
+                try:
+                    cell.value = float(val)
+                except ValueError:
+                    cell.value = val
+    path = tmp_path / "vendor_a.xlsx"
+    wb.save(path)
+    raw_map = yaml.safe_load(MAP_A.read_text(encoding="utf-8"))
+    raw_map["file"] = {"format": "excel", "sheet": "Tally", "header_row": 1}
+    map_path = tmp_path / "vendor_a_excel.yaml"
+    map_path.write_text(yaml.safe_dump(raw_map), encoding="utf-8")
+    return path, map_path
+
+
+def test_excel_percent_formatted_depth(synth, tmp_path):
+    path, map_path = _vendor_a_as_excel(synth, tmp_path, percent_depth=True, time_clock=False)
+    std, issues = _ingest(path, map_path, "2021_vendorA", date(2021, 6, 15))
+    assert issues.empty
+    assert_matches_oracle(std, synth[0].prev_std)
+
+
+def test_excel_time_formatted_clock(synth, tmp_path):
+    path, map_path = _vendor_a_as_excel(synth, tmp_path, time_clock=True)
+    std, issues = _ingest(path, map_path, "2021_vendorA", date(2021, 6, 15))
+    assert issues.empty
+    assert_matches_oracle(std, synth[0].prev_std)
+
+
+def test_csv_source_row_is_physical_line(synth, tmp_path):
+    """Blank lines and quoted multi-line cells must not shift source_row."""
+    _, out = synth
+    df = pd.read_csv(out / "tally_prev_vendor_a.csv", dtype=str, keep_default_na=False)
+    df.loc[2, "Comments"] = "first line\nsecond line"
+    ml = df.index[df.Event == "Metal Loss"][0]
+    target = df.loc[ml, "Feature No"]
+    text = df.to_csv(index=False, lineterminator="\n").split("\n")
+    text.insert(6, "")  # blank line after physical line 6
+    path = tmp_path / "quirky.csv"
+    path.write_text("\n".join(text), encoding="utf-8", newline="")
+    expected_line = next(i for i, line in enumerate(text, start=1) if line.startswith(target + ","))
+    raw, _ = read_tally(path, load_vendor_map(MAP_A))
+    assert raw.loc[raw["Feature No"] == target, "source_row"].iloc[0] == expected_line
+    assert raw.loc[raw["Feature No"] == df.loc[2, "Feature No"], "Comments"].iloc[0] == "first line\nsecond line"
 
 
 def _raw_b(**overrides):

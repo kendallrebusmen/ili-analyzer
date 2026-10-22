@@ -9,7 +9,7 @@ file:
   format: csv
   header_row: 1             # 1-based row holding the column headers
 
-run_date: null              # not in the file; pass --run-date at ingestion
+run_date: null              # not in the file; give it as the third --run value at ingestion
 
 columns:
   feature_id: "Feature No"
