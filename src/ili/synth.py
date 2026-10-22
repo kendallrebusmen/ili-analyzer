@@ -21,7 +21,8 @@ from datetime import date, timedelta
 import numpy as np
 import pandas as pd
 
-from ili.units import CLOCK_MINUTES, sigma_from_tolerance
+from ili.schema import STANDARD_COLUMNS
+from ili.units import CLOCK_MINUTES, sigma_from_tolerance, wrap_clock_min
 
 FT_PER_MILE = 5280.0
 DAYS_PER_YEAR = 365.25
@@ -433,3 +434,250 @@ def _anchors(line: LineTruth) -> pd.DataFrame:
         "cluster_site": pd.NA,
         "population": "anchor",
     })
+
+
+# ---------------------------------------------------------------------------
+# Observing a run
+# ---------------------------------------------------------------------------
+
+VENDOR = {"prev": "A", "curr": "B"}
+DENT_DEPTH_SIGMA_IN = 0.02
+MIN_REPORTED_SIZE_IN = 0.1
+SLIP_CLIP_SIGMAS = 3.0
+LINE_ORIGIN = (32.0, -84.0)  # lat, lon of chainage 0
+LINE_BEARING_DEG = 40.0
+FT_PER_DEG_LAT = 364_000.0
+
+
+@dataclass
+class ObservedRun:
+    std: pd.DataFrame  # standard schema, girth welds included
+    feat_link: pd.DataFrame  # true_id, feature_id, status
+    weld_link: pd.DataFrame  # true_weld_idx, gw_id, weld_status
+    drift: float  # odometer scale error of this run
+
+
+def _gps(chain: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Smooth synthetic route: a meandering line on a fixed bearing, rolling terrain."""
+    th = np.radians(LINE_BEARING_DEG)
+    meander = 300.0 * np.sin(2 * np.pi * chain / 40_000)
+    north = chain * np.cos(th) - meander * np.sin(th)
+    east = chain * np.sin(th) + meander * np.cos(th)
+    lat = LINE_ORIGIN[0] + north / FT_PER_DEG_LAT
+    lon = LINE_ORIGIN[1] + east / (FT_PER_DEG_LAT * np.cos(np.radians(LINE_ORIGIN[0])))
+    elev = 400.0 + 60.0 * np.sin(2 * np.pi * chain / 30_000)
+    return lat, lon, elev
+
+
+def _pick_missed_welds(which, p, line, features, rng, exclude) -> set[int]:
+    """Welds this run fails to report. Each sits upstream of a joint holding metal loss,
+    away from fittings, the replaced span, the line ends, and each other."""
+    w = line.welds
+    present = w[w[f"in_{which}"]]
+    lo, hi = line.replacement
+    fit = line.joints[line.joints.fitting.notna()]
+    banned = set(fit.us_weld_idx) | set(fit.us_weld_idx + 1) | set(exclude)
+    banned |= {int(w.true_weld_idx.iloc[0]), int(w.true_weld_idx.iloc[-1])}
+    banned |= set(w.loc[w.chainage_ft.between(lo, hi), "true_weld_idx"])
+    joints = line.joints[line.joints[f"in_{which}"]]
+    ml_joints = features.loc[features.population == "ext_ml", "joint_key"]
+    useful = set(joints.loc[joints.joint_key.isin(ml_joints), "us_weld_idx"])
+    candidates = [int(i) for i in present.true_weld_idx if i in useful and i not in banned]
+    chosen: list[int] = []
+    for idx in rng.permutation(candidates):
+        if all(abs(int(idx) - c) > 1 for c in chosen):
+            chosen.append(int(idx))
+        if len(chosen) == p.n_missed_welds:
+            return set(chosen)
+    raise ValueError(f"n_missed_welds={p.n_missed_welds} cannot be placed on this line; reduce it")
+
+
+def _cluster_envelope(rows: pd.DataFrame, od_in: float) -> dict:
+    """One vendor 'cluster' report: axial/circumferential bounding box, max depth."""
+    half = rows.length_in.to_numpy() / 24  # ft
+    start = (rows.log_dist_ft - half).min()
+    end = (rows.log_dist_ft + half).max()
+    c0 = int(rows.clock_min.iloc[0])
+    rel_min = (rows.clock_min.to_numpy().astype(int) - c0 + 360) % CLOCK_MINUTES - 360
+    circ_in = rel_min / CLOCK_MINUTES * np.pi * od_in
+    half_w = rows.width_in.to_numpy() / 2
+    c_lo, c_hi = (circ_in - half_w).min(), (circ_in + half_w).max()
+    mid_min = (c_lo + c_hi) / 2 / (np.pi * od_in) * CLOCK_MINUTES
+    return {
+        "log_center": (start + end) / 2,
+        "length_in": (end - start) * 12,
+        "width_in": c_hi - c_lo,
+        "clock_min": wrap_clock_min(c0 + mid_min),
+        "depth_pct": rows.depth_pct.max(),
+        "seam_interaction": bool(rows.seam_interaction.any()),
+    }
+
+
+def observe_run(
+    which: str,
+    p: SynthParams,
+    line: LineTruth,
+    features: pd.DataFrame,
+    rng: np.random.Generator,
+    exclude_welds: set[int] | frozenset = frozenset(),
+) -> ObservedRun:
+    vendor = VENDOR[which]
+    run_date = dict(zip(("prev", "curr"), run_dates(p)))[which]
+    run_id = f"{run_date.year}_vendor{vendor}"
+    thr = p.reporting_threshold_pct
+
+    # Odometer: scale drift plus cumulative local slip at each weld.
+    w = line.welds[line.welds[f"in_{which}"]]
+    chain_w = w.chainage_ft.to_numpy()
+    drift = 0.0 if which == "prev" else float(rng.uniform(-p.odo_drift_max, p.odo_drift_max))
+    clip = SLIP_CLIP_SIGMAS * p.slip_sigma_ft
+    steps = np.clip(rng.normal(0, p.slip_sigma_ft, len(w)), -clip, clip)
+    steps[0] = 0.0
+    log_w = chain_w * (1 + drift) + np.cumsum(steps)
+    if not (np.diff(log_w) > 0).all():
+        raise ValueError("slip_sigma_ft too large: odometer distance would run backwards")
+
+    missed = _pick_missed_welds(which, p, line, features, rng, exclude_welds)
+    keep = ~w.true_weld_idx.isin(missed).to_numpy()
+    rep_idx = w.true_weld_idx.to_numpy()[keep]
+    rep_chain, rep_log = chain_w[keep], log_w[keep]
+    gw_ids = [f"GW{(i + 1) * 10:05d}" if vendor == "A" else str(i + 1) for i in range(len(rep_idx))]
+    jlen = np.append(np.diff(rep_log), np.nan)
+    run_joints = line.joints[line.joints[f"in_{which}"]]
+    wt = run_joints.set_index("us_weld_idx").wt_nom_in.reindex(rep_idx).to_numpy()
+
+    # Per-feature observation noise (drawn for every true feature, in a fixed order).
+    f = features
+    n = len(f)
+    sig_len = sigma_from_tolerance(p.length_tol_in, p.tol_certainty)
+    sig_clk = sigma_from_tolerance(p.clock_tol_min, p.tol_certainty)
+    axial_noise_ft = rng.normal(0, p.axial_sigma_in / 12, n)
+    length_obs = np.maximum(f.length_in.to_numpy() + rng.normal(0, sig_len, n), MIN_REPORTED_SIZE_IN)
+    width_obs = np.maximum(f.width_in.to_numpy() + rng.normal(0, sig_len, n), MIN_REPORTED_SIZE_IN)
+    clock_noise = rng.normal(0, sig_clk, n)
+    dent_obs = np.maximum(f.dent_depth_in.to_numpy() + rng.normal(0, DENT_DEPTH_SIGMA_IN, n), 0)
+    gps_noise = rng.normal(0, 1e-5, (n, 2))
+
+    k = np.searchsorted(rep_chain, f.chainage_ft.to_numpy(), side="right") - 1
+    log_true = np.interp(f.chainage_ft.to_numpy(), chain_w, log_w)
+    dist = np.clip(log_true - rep_log[k] + axial_noise_ft, 0, jlen[k])
+    lat, lon, elev = _gps(f.chainage_ft.to_numpy())
+    clock = f.clock_min.to_numpy(dtype=float, na_value=np.nan)
+    clock_obs = np.where(np.isnan(clock), np.nan, np.mod(np.rint(clock + clock_noise), CLOCK_MINUTES))
+    meas = f[f"depth_{which}_meas_pct"].to_numpy()
+    is_ml = (f.feature_type == "metal_loss").to_numpy()
+    is_dent = (f.feature_type == "dent").to_numpy()
+    obs = pd.DataFrame({
+        "_true_id": f.true_id,
+        "feature_type": f.feature_type,
+        "log_dist_ft": rep_log[k] + dist,
+        "us_gw_id": np.asarray(gw_ids, dtype=object)[k],
+        "dist_from_us_gw_ft": dist,
+        "joint_length_ft": jlen[k],
+        "wt_nom_in": wt[k],
+        "depth_pct": np.where(is_ml | (is_dent & f.dent_metal_loss.to_numpy(dtype=bool)), meas, np.nan),
+        "dent_depth_in": np.where(is_dent, dent_obs, np.nan),
+        "length_in": length_obs,
+        "width_in": width_obs,
+        "clock_min": clock_obs,
+        "surface": f.surface,
+        "seam_interaction": np.where(f.population == "anchor", None, f.seam_interaction.astype(object)),
+        "dent_metal_loss": np.where(is_dent, f.dent_metal_loss.astype(object), None),
+        "vendor_cluster_id": None,
+        "lat": lat + gps_noise[:, 0],
+        "lon": lon + gps_noise[:, 1],
+        "elev_ft": elev,
+        "comments": None,
+    })
+
+    # Which true features this run reports, and how.
+    in_run = f.joint_key.isin(run_joints.joint_key).to_numpy()
+    status = np.where(in_run, "reported", "removed_by_repair").astype(object)
+    below = in_run & is_ml & (meas < thr)
+    status[below] = "below_threshold"
+
+    rows = []
+    pit_sites = f.cluster_site.to_numpy(dtype=float, na_value=np.nan)
+    cluster_parity = 0 if which == "prev" else 1
+    n_clusters = 0
+    for site in sorted(set(pit_sites[~np.isnan(pit_sites)].astype(int))):
+        if site % 2 != cluster_parity:
+            continue
+        members = np.nonzero((pit_sites == site) & in_run)[0]
+        if len(members) == 0:
+            continue
+        pits = obs.iloc[members]
+        if pits.depth_pct.max() < thr:
+            status[members] = "below_threshold"
+            continue
+        env = _cluster_envelope(pits, p.od_in)
+        kk = int(np.searchsorted(rep_log, env["log_center"], side="right") - 1)
+        d = float(np.clip(env["log_center"] - rep_log[kk], 0, jlen[kk]))
+        n_clusters += 1
+        first = pits.iloc[0]
+        rows.append(pd.DataFrame([{
+            "feature_type": "metal_loss",
+            "log_dist_ft": rep_log[kk] + d,
+            "us_gw_id": gw_ids[kk],
+            "dist_from_us_gw_ft": d,
+            "joint_length_ft": jlen[kk],
+            "wt_nom_in": wt[kk],
+            "depth_pct": env["depth_pct"],
+            "dent_depth_in": np.nan,
+            "length_in": env["length_in"],
+            "width_in": env["width_in"],
+            "clock_min": env["clock_min"],
+            "surface": "EXT",
+            "seam_interaction": env["seam_interaction"],
+            "dent_metal_loss": None,
+            "vendor_cluster_id": f"{vendor}C{n_clusters:03d}",
+            "lat": first.lat,
+            "lon": first.lon,
+            "elev_ft": first.elev_ft,
+            "comments": "CLUSTER",
+            "_tids": tuple(f.true_id.iloc[members]),
+        }]))
+        status[members] = "reported_in_cluster"
+
+    # Individually reported features (after clustering has claimed its pits).
+    single = status == "reported"
+    rows.append(obs[single].drop(columns="_true_id").assign(_tids=obs.loc[single, "_true_id"].map(lambda t: (t,))))
+
+    # Girth welds.
+    wlat, wlon, welev = _gps(rep_chain)
+    rows.append(pd.DataFrame({
+        "feature_type": "girth_weld",
+        "log_dist_ft": rep_log,
+        "us_gw_id": gw_ids,
+        "dist_from_us_gw_ft": 0.0,
+        "joint_length_ft": jlen,
+        "wt_nom_in": wt,
+        "lat": wlat,
+        "lon": wlon,
+        "elev_ft": welev,
+        "_tids": [()] * len(rep_idx),
+    }))
+
+    std = pd.concat([r for r in rows if len(r)], ignore_index=True)
+    std["_order"] = (std.feature_type != "girth_weld").astype(int)
+    std = std.sort_values(["log_dist_ft", "_order"], kind="stable").reset_index(drop=True)
+    std["feature_id"] = [f"{vendor}-{i:06d}" for i in range(1, len(std) + 1)]
+    std["run_id"] = run_id
+    std["run_date"] = run_date
+    std["clock_min"] = std.clock_min.astype("Int64")
+
+    tid_to_fid = {t: fid for fid, tids in zip(std.feature_id, std._tids) for t in tids}
+    feat_link = pd.DataFrame({
+        "true_id": f.true_id.to_numpy(),
+        "feature_id": [tid_to_fid.get(t) for t in f.true_id],
+        "status": status,
+    })
+    weld_status = np.where(line.welds[f"in_{which}"], "reported", "not_present").astype(object)
+    weld_status[line.welds.true_weld_idx.isin(missed).to_numpy()] = "missed"
+    gw_of = dict(zip(rep_idx.tolist(), gw_ids))
+    weld_link = pd.DataFrame({
+        "true_weld_idx": line.welds.true_weld_idx.to_numpy(),
+        "gw_id": [gw_of.get(int(i)) for i in line.welds.true_weld_idx],
+        "weld_status": weld_status,
+    })
+    return ObservedRun(std[STANDARD_COLUMNS], feat_link, weld_link, drift)
