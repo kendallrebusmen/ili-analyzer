@@ -1,0 +1,59 @@
+# ILI analyzer settings. Spec section 7.1.
+# Every value marked PLACEHOLDER needs integrity-engineer sign-off before use on real data.
+# Units: US customary. pct_wt = percent of nominal wall thickness; mpy = mils per year;
+# ipy = inches per year; _in = inches; _ft = feet; _min = clock minutes (720 per revolution).
+
+units: us_customary
+
+tool:
+  depth_tolerance_pct_wt: 10        # PLACEHOLDER - from vendor tool performance spec
+  depth_certainty: 0.80             # PLACEHOLDER
+  length_tolerance_in: 0.75         # PLACEHOLDER
+  length_certainty: 0.80            # PLACEHOLDER
+  reporting_threshold_pct_wt: 10    # PLACEHOLDER
+
+alignment:
+  joint_length_tol_ft: 0.5          # PLACEHOLDER
+  joint_length_tol_pct: 1.0         # PLACEHOLDER
+  gap_penalty: 5.0                  # tune on synthetic data
+
+matching:
+  axial_tol_in: 6                   # PLACEHOLDER
+  clock_tol_min: 45                 # PLACEHOLDER
+  near_weld_ft: 2
+  max_plausible_growth_mpy: 30      # PLACEHOLDER
+  weights: {axial: 1.0, circ: 1.0, depth_change: 0.5}
+  confidence_bands: {high: 0.3, medium: 0.6}   # score cutoffs; tune on synthetic data
+  interaction_rule:                 # PLACEHOLDER - use the IMP's interaction criteria
+    axial_spacing_in: 1.0
+    circ_spacing_in: 1.0
+
+growth:
+  k_sigma: 1.28                     # PLACEHOLDER
+  min_rate_mpy: 1.0                 # PLACEHOLDER
+  segment_definition: hca_segment   # hca_segment | fixed_length | reference_segments
+  fixed_segment_length_mi: 1.0
+  segment_percentile: 90            # PLACEHOLDER
+  default_rate_mpy: null            # PLACEHOLDER - IMP default rate
+  length_growth: none               # none | proportional | fixed_rate
+  length_rate_ipy: 0.0
+
+strength:
+  method: modified_b31g             # modified_b31g | original_b31g
+  depth_basis: reported_plus_tolerance   # reported | reported_plus_tolerance
+  design_factor: 0.72               # PLACEHOLDER
+
+remaining_life:
+  horizon_yr: 30
+  rl_factor: 0.5                    # PLACEHOLDER
+  default_next_assessment_yr: {hca: 5, non_hca: 10}
+  hca_max_interval_months: 68
+
+classification:
+  criteria_file: config/repair_criteria.yaml
+  girth_weld_proximity_in: null     # PLACEHOLDER
+  crossing_proximity_ft: null       # PLACEHOLDER
+
+cp_overlay:
+  cp_join_distance_ft: 500          # PLACEHOLDER
+  criterion_instant_off_mv: -850
