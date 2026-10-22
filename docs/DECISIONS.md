@@ -123,3 +123,30 @@ Interpretations of `docs/SPEC.md` and choices the spec leaves open. Newest at th
 - **`ingest_manifest.json`** records the DRAFT label, the UTC creation time, and per-run tally and vendor-map sha256, rows read/clean, and issue counts.
 - **Outputs default to `<project>/outputs`** whatever the working directory.
 - **Separate invocations accumulate.** `validation_issues.csv` and the manifest keep the entries of runs ingested earlier into the same `--out`; re-ingesting a run replaces only that run's entries. So ingesting runs one at a time never loses an earlier run's issue record.
+
+## M3: girth weld alignment (2026-10-22)
+
+- **Joints** are built from each run's clean girth-weld rows only (log order): joint k is [weld k, weld k+1), keyed by its upstream weld id. Features are never used to define joints, so a feature citing a weld that M2 excluded cannot affect alignment.
+- **Anchors.** A joint is an anchor if a valve, tee, or fitting lies inside it.
+  - Anchors are paired by a small alignment over the two anchor lists: same type required; current positions are scaled onto the previous run's span; the cost is the position difference; and an anchor with no counterpart is skipped at a cost of `anchor_tol_ft` (100 ft).
+  - Paired anchor joints are forced 1:1 and split the line into sections.
+- **Drift correction.** Each inner section's current-run lengths are scaled by previous span ÷ current span between its anchors. Head and tail sections (before the first and after the last anchor) borrow the nearest inner section's scale, because their own span depends on where each run starts.
+- **Section alignment** is a banded Needleman–Wunsch over joint lengths. Costs are in units of the length tolerance `max(joint_length_tol_ft, joint_length_tol_pct% × length)`:
+  - 1:1 costs its mismatch
+  - 2:1 and 1:2 cost their summed-length mismatch + `missed_weld_penalty` (1.0)
+  - an inserted or removed joint costs `gap_penalty` (5.0), or `gap_penalty_repair` (0.5) when it lies in a repaired span
+  - Ties resolve in the order 1:1, 2:1, 1:2, removed, inserted.
+  - The band is `band_joints` (30) around the proportional diagonal. If the band cannot reach the section end, the section is re-searched at full width. A narrower band can return a suboptimal path, so keep it well above the expected joint-count offset per section.
+  - 3:1 matches (two consecutive missed welds) are not modelled, per the spec's match types. They come out as a 2:1 plus a gap, or similar, and are visible as a changed section.
+- **Repaired spans.** A joint is in a repaired span when its midpoint falls inside a `repairs_between_runs.csv` row. Previous-run positions are mapped to current-run log distance through the paired anchors. Without repair records the replacement is still found as a changed section, but its edge can shift by a joint when an old joint's length happens to match its neighbour's; this is why the spec feeds repairs in.
+- **Confidence:**
+  - matches: `high` when the mismatch is ≤ 1.0 tolerance, `medium` ≤ 2.0, otherwise `low`
+  - 2:1/1:2 are never above `medium`
+  - inserted/removed are `high` inside a repaired span and `low` elsewhere, where they need review
+- **Alignment rate** = joints (both runs) in 1:1/2:1/1:2 rows ÷ all joints. It is also reported outside repaired spans.
+- **Changed sections** are maximal runs of consecutive non-1:1 weld-map rows.
+- **Scoring** (`validation.score_alignment`):
+  - Truth groups are the joints between consecutive welds reported in both runs. One previous and one current joint is 1:1, two and one is 2:1, one and two is 1:2; anything else, or a group containing a replaced weld, is all removed/inserted.
+  - Joint accuracy = joints in exactly reproduced groups ÷ all joints.
+  - Default dataset: 1.0000, with 6 missed-weld groups and the replacement all correct.
+- **New settings keys** (beyond spec §7.1): `missed_weld_penalty`, `gap_penalty_repair`, `anchor_tol_ft`, `band_joints`, and `alignment.confidence_bands`. All are tuning values set on synthetic data.

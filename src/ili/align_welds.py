@@ -16,13 +16,19 @@ DRAFT – for review by qualified personnel.
 
 from __future__ import annotations
 
+import argparse
+import json
+import sys
 from dataclasses import dataclass
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
-from ili.config import AlignmentCfg
+from ili.config import DEFAULT_SETTINGS, PROJECT_ROOT, AlignmentCfg, load_settings
+from ili.ingest import load_standardized
 from ili.schema import ANCHOR_TYPES
+from ili.validation import score_alignment, write_metrics
 
 JOINT_COLUMNS = ["joint_idx", "gw_id", "start_ft", "end_ft", "length_ft", "anchor_type"]
 _ANCHOR_VALUES = {t.value for t in ANCHOR_TYPES}
@@ -49,7 +55,9 @@ def build_joints(std: pd.DataFrame) -> pd.DataFrame:
         if 0 <= k < n and anchor_type[k] is None:
             anchor_type[k] = str(kind)
     joints["anchor_type"] = pd.Series(anchor_type, dtype=object)
-    return joints[JOINT_COLUMNS]
+    joints = joints[JOINT_COLUMNS]
+    joints.attrs["run_id"] = std.run_id.iloc[0] if "run_id" in std and len(std) else None
+    return joints
 
 
 def _span(joints: pd.DataFrame) -> tuple[float, float]:
@@ -341,6 +349,8 @@ def _summary(wm, pj, cj, changed, pairs, sections) -> dict:
     outside = ~wm.in_repair
     scales = [s for *_, s in sections]
     return {
+        "prev_run_id": str(pj.attrs.get("run_id")),
+        "curr_run_id": str(cj.attrs.get("run_id")),
         "n_prev_joints": int(len(pj)),
         "n_curr_joints": int(len(cj)),
         "n_anchor_pairs": len(pairs),
@@ -354,3 +364,77 @@ def _summary(wm, pj, cj, changed, pairs, sections) -> dict:
         "n_changed_sections": int(len(changed)),
         "n_changed_sections_in_repairs": int(changed.overlaps_repair.sum()) if len(changed) else 0,
     }
+
+
+# ---------------------------------------------------------------------------
+# Output and CLI
+# ---------------------------------------------------------------------------
+
+DRAFT_LABEL = "DRAFT – for review by qualified personnel."
+
+
+def comparison_dir(out_dir: Path, prev_run_id: str, curr_run_id: str) -> Path:
+    return Path(out_dir) / f"{prev_run_id}_vs_{curr_run_id}"
+
+
+def write_alignment(result: AlignmentResult, out_dir: Path) -> dict[str, Path]:
+    s = result.summary
+    folder = comparison_dir(out_dir, s["prev_run_id"], s["curr_run_id"])
+    folder.mkdir(parents=True, exist_ok=True)
+    paths = {
+        "weld_map.csv": folder / "weld_map.csv",
+        "changed_sections.csv": folder / "changed_sections.csv",
+        "alignment_summary.json": folder / "alignment_summary.json",
+    }
+    result.weld_map.to_csv(paths["weld_map.csv"], index=False, lineterminator="\n")
+    result.changed_sections.to_csv(paths["changed_sections.csv"], index=False, lineterminator="\n")
+    paths["alignment_summary.json"].write_text(json.dumps({"label": DRAFT_LABEL, **s}, indent=2), encoding="utf-8")
+    return paths
+
+
+def _parser() -> argparse.ArgumentParser:
+    ap = argparse.ArgumentParser(prog="python -m ili.align_welds",
+                                 description="Align girth welds between two ILI runs. " + DRAFT_LABEL)
+    ap.add_argument("--prev", type=Path, required=True, help="standardized CSV of the previous run")
+    ap.add_argument("--curr", type=Path, required=True, help="standardized CSV of the current run")
+    ap.add_argument("--repairs", type=Path, help="repairs_between_runs.csv (current-run log distance)")
+    ap.add_argument("--truth", type=Path, help="ground_truth_welds.csv (synthetic data only) to score against")
+    ap.add_argument("--settings", type=Path, default=DEFAULT_SETTINGS, help="settings YAML")
+    ap.add_argument("--out", type=Path, default=PROJECT_ROOT / "outputs", help="output directory")
+    return ap
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = _parser().parse_args(argv)
+    try:
+        prev, curr = load_standardized(args.prev), load_standardized(args.curr)
+        repairs = pd.read_csv(args.repairs) if args.repairs else None
+        result = align_welds(prev, curr, load_settings(args.settings), repairs)
+        paths = write_alignment(result, args.out)
+        score = None
+        if args.truth:
+            truth = pd.read_csv(args.truth, dtype={"prev_gw_id": str, "curr_gw_id": str})
+            score = score_alignment(result.weld_map, prev, curr, truth)
+            write_metrics("weld_alignment", score, Path(args.out) / "validation_metrics.json")
+    except (ValueError, OSError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    s = result.summary
+    print(DRAFT_LABEL)
+    print(f"{s['prev_run_id']} vs {s['curr_run_id']}: {s['n_prev_joints']} / {s['n_curr_joints']} joints, "
+          f"{s['n_anchor_pairs']} anchor pairs, {s['n_sections']} sections")
+    print(f"alignment rate {s['alignment_rate']:.4f} (outside repairs {s['alignment_rate_outside_repairs']:.4f})")
+    print("matches: " + ", ".join(f"{k} {v}" for k, v in s["counts_by_match_type"].items()))
+    print(f"changed sections: {s['n_changed_sections']} ({s['n_changed_sections_in_repairs']} in repaired spans)")
+    if len(result.changed_sections):
+        print(result.changed_sections.to_string(index=False, float_format=lambda v: f"{v:.1f}"))
+    if score is not None:
+        print(f"joint accuracy vs ground truth: {score['joint_accuracy']:.4f} "
+              f"(replaced section flagged: {score['replaced_section_flagged']}, "
+              f"missed welds handled: {score['missed_welds_handled']})")
+    print(f"wrote {paths['weld_map.csv'].parent}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
