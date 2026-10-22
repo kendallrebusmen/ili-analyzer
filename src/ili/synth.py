@@ -14,15 +14,29 @@ DRAFT – for review by qualified personnel. Synthetic data only.
 
 from __future__ import annotations
 
+import argparse
+import hashlib
+import json
+import sys
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, fields
 from datetime import date, timedelta
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
+import ili
 from ili.schema import STANDARD_COLUMNS
-from ili.units import CLOCK_MINUTES, sigma_from_tolerance, wrap_clock_min
+from ili.units import (
+    CLOCK_MINUTES,
+    FT_PER_M,
+    IN_PER_MM,
+    clock_min_to_degrees,
+    clock_min_to_hhmm,
+    sigma_from_tolerance,
+    wrap_clock_min,
+)
 
 FT_PER_MILE = 5280.0
 DAYS_PER_YEAR = 365.25
@@ -529,7 +543,8 @@ def observe_run(
     # Odometer: scale drift plus cumulative local slip at each weld.
     w = line.welds[line.welds[f"in_{which}"]]
     chain_w = w.chainage_ft.to_numpy()
-    drift = 0.0 if which == "prev" else float(rng.uniform(-p.odo_drift_max, p.odo_drift_max))
+    # Current-run drift is at least half the maximum, either sign, so it always matters.
+    drift = 0.0 if which == "prev" else float(rng.choice([-1, 1]) * rng.uniform(p.odo_drift_max / 2, p.odo_drift_max))
     clip = SLIP_CLIP_SIGMAS * p.slip_sigma_ft
     steps = np.clip(rng.normal(0, p.slip_sigma_ft, len(w)), -clip, clip)
     steps[0] = 0.0
@@ -681,3 +696,323 @@ def observe_run(
         "weld_status": weld_status,
     })
     return ObservedRun(std[STANDARD_COLUMNS], feat_link, weld_link, drift)
+
+
+# ---------------------------------------------------------------------------
+# Vendor formats
+# ---------------------------------------------------------------------------
+
+DRAFT_LABEL = "DRAFT – for review by qualified personnel. SYNTHETIC DATA – not from any real pipeline."
+
+_A_EVENT = {"girth_weld": "Girth Weld", "metal_loss": "Metal Loss", "dent": "Dent", "valve": "Valve", "tee": "Tee"}
+_A_SURFACE = {"EXT": "External", "INT": "Internal", "MID": "Mid-wall", "UNK": "Unknown"}
+_B_EVENT = {"girth_weld": "GWLD", "metal_loss": "ML-CORR", "dent": "DENT", "valve": "VALVE", "tee": "TEE"}
+
+
+def _yn(s: pd.Series) -> list[str]:
+    return ["" if v is None or pd.isna(v) else ("Y" if v else "N") for v in s]
+
+
+def _flag01(s: pd.Series) -> pd.Series:
+    return pd.Series([pd.NA if v is None or pd.isna(v) else int(bool(v)) for v in s], dtype="Int64")
+
+
+def to_vendor_a(std: pd.DataFrame) -> pd.DataFrame:
+    """Vendor A: CSV, feet and inches, hh:mm clock, spelled-out vocabulary, Y/N flags."""
+    return pd.DataFrame({
+        "Feature No": std.feature_id.to_numpy(),
+        "Event": std.feature_type.map(_A_EVENT).to_numpy(),
+        "Abs Dist (ft)": std.log_dist_ft.round(3).to_numpy(),
+        "US GW No": std.us_gw_id.to_numpy(),
+        "Dist to US GW (ft)": std.dist_from_us_gw_ft.round(3).to_numpy(),
+        "Jt Len (ft)": std.joint_length_ft.round(3).to_numpy(),
+        "WT (in)": std.wt_nom_in.round(3).to_numpy(),
+        "Depth (%)": std.depth_pct.round(1).to_numpy(),
+        "Dent Depth (in)": std.dent_depth_in.round(3).to_numpy(),
+        "Length (in)": std.length_in.round(2).to_numpy(),
+        "Width (in)": std.width_in.round(2).to_numpy(),
+        "O'clock": ["" if pd.isna(m) else clock_min_to_hhmm(int(m)) for m in std.clock_min],
+        "Int/Ext": std.surface.map(_A_SURFACE).fillna("").to_numpy(),
+        "Seam Interaction": _yn(std.seam_interaction),
+        "Dent w/ ML": _yn(std.dent_metal_loss),
+        "Cluster ID": std.vendor_cluster_id.to_numpy(),
+        "Latitude": std.lat.round(6).to_numpy(),
+        "Longitude": std.lon.round(6).to_numpy(),
+        "Elevation (ft)": std.elev_ft.round(1).to_numpy(),
+        "Comments": std.comments.to_numpy(),
+    })
+
+
+def to_vendor_b(std: pd.DataFrame) -> pd.DataFrame:
+    """Vendor B: metres and millimetres, degrees, coded vocabulary, 1/0 flags, own column order."""
+    feature = std.feature_type.map(_B_EVENT)
+    feature = feature.where(std.vendor_cluster_id.isna(), "ML-CLUS")
+    m_per_ft, mm_per_in = 1 / FT_PER_M, 1 / IN_PER_MM
+    return pd.DataFrame({
+        "Log Dist [m]": (std.log_dist_ft * m_per_ft).round(3).to_numpy(),
+        "Feature": feature.to_numpy(),
+        "Feature ID": std.feature_id.to_numpy(),
+        "Ref GW": pd.to_numeric(std.us_gw_id).astype("Int64").to_numpy(),
+        "Rel. Dist [m]": (std.dist_from_us_gw_ft * m_per_ft).round(3).to_numpy(),
+        "Joint Len [m]": (std.joint_length_ft * m_per_ft).round(3).to_numpy(),
+        "WT [mm]": (std.wt_nom_in * mm_per_in).round(2).to_numpy(),
+        "Peak Depth [%]": std.depth_pct.round(1).to_numpy(),
+        "Dent Depth [mm]": (std.dent_depth_in * mm_per_in).round(2).to_numpy(),
+        "Length [mm]": (std.length_in * mm_per_in).round(1).to_numpy(),
+        "Width [mm]": (std.width_in * mm_per_in).round(1).to_numpy(),
+        "Orientation [deg]": clock_min_to_degrees(std.clock_min.to_numpy(dtype=float, na_value=np.nan)),
+        "Location": std.surface.to_numpy(),
+        "Seam": _flag01(std.seam_interaction).to_numpy(),
+        "Dent ML": _flag01(std.dent_metal_loss).to_numpy(),
+        "Cluster": std.vendor_cluster_id.to_numpy(),
+        "Lat": std.lat.round(6).to_numpy(),
+        "Lon": std.lon.round(6).to_numpy(),
+        "Elev [m]": (std.elev_ft * m_per_ft).round(2).to_numpy(),
+        "Comment": std.comments.to_numpy(),
+    })
+
+
+# ---------------------------------------------------------------------------
+# Reference files and ground truth
+# ---------------------------------------------------------------------------
+
+OD_IN = 12.75
+GRADE = "X52"
+SEAM_TYPE = "ERW"
+INSTALL_YEAR = 1975
+COATING = "coal tar"
+REPLACEMENT_COATING = "FBE"
+MOP_PSIG = (1440, 1200)  # upstream half, downstream half
+N_HCA_SEGMENTS = 4
+OMITTED_NEXT_INSPECTION = "SEG-03"
+NEXT_ASSESSMENT_YEARS = {True: 5, False: 7}  # could_affect_hca -> years after current run
+N_CROSSINGS = 3
+N_DIGS = 15
+DIG_DEPTH_SIGMA_PCT = 2.0
+DIG_LENGTH_SIGMA_IN = 0.25
+
+
+def _chain_to_curr_log(curr: ObservedRun, line: LineTruth):
+    link = curr.weld_link[curr.weld_link.weld_status == "reported"]
+    chain = line.welds.set_index("true_weld_idx").chainage_ft.loc[link.true_weld_idx].to_numpy()
+    gw = curr.std[curr.std.feature_type == "girth_weld"].set_index("us_gw_id").log_dist_ft
+    log = gw.loc[link.gw_id].to_numpy()
+    return lambda c: np.interp(c, chain, log)
+
+
+def _segments(bounds_chain, to_log) -> tuple[np.ndarray, np.ndarray]:
+    edges = np.round(to_log(np.asarray(bounds_chain, dtype=float)), 3)
+    return edges[:-1], edges[1:]
+
+
+def build_reference(p: SynthParams, line: LineTruth, features: pd.DataFrame, curr: ObservedRun,
+                    rng: np.random.Generator) -> dict[str, pd.DataFrame]:
+    """Synthetic reference files, keyed to current-run log distance (spec 5.2)."""
+    to_log = _chain_to_curr_log(curr, line)
+    prev_date, curr_date = run_dates(p)
+    L = line.length_ft
+    lo, hi = line.replacement
+    repair_date = prev_date + (curr_date - prev_date) / 2
+
+    seg = line.pipe_segments
+    bounds = sorted(set(seg.start_ft) | set(seg.end_ft) | {lo, hi})
+    mids = (np.array(bounds[:-1]) + np.array(bounds[1:])) / 2
+    replaced = (mids > lo) & (mids < hi)
+    starts, ends = _segments(bounds, to_log)
+    pipe_properties = pd.DataFrame({
+        "start_ft": starts, "end_ft": ends, "od_in": OD_IN,
+        "wt_nom_in": seg.wt_nom_in.to_numpy()[np.searchsorted(seg.end_ft.to_numpy(), mids)],
+        "grade": GRADE, "smys_psi": p.smys_psi, "seam_type": SEAM_TYPE,
+        "install_year": np.where(replaced, repair_date.year, INSTALL_YEAR),
+        "coating_type": np.where(replaced, REPLACEMENT_COATING, COATING),
+    })
+
+    starts, ends = _segments([0, L / 2, L], to_log)
+    mop_profile = pd.DataFrame({"start_ft": starts, "end_ft": ends, "mop_psig": list(MOP_PSIG)})
+
+    starts, ends = _segments(np.linspace(0, L, N_HCA_SEGMENTS + 1), to_log)
+    seg_ids = [f"SEG-{i:02d}" for i in range(1, N_HCA_SEGMENTS + 1)]
+    could_affect = [i % 2 == 0 for i in range(N_HCA_SEGMENTS)]
+    hca_segments = pd.DataFrame({"start_ft": starts, "end_ft": ends, "segment_id": seg_ids,
+                                 "could_affect_hca": could_affect})
+
+    rep_lo, rep_hi = to_log(np.array([lo, hi]))
+    repairs = pd.DataFrame({"start_ft": [rep_lo], "end_ft": [rep_hi], "repair_type": ["pipe_replacement"],
+                            "repair_date": [repair_date.isoformat()],
+                            "notes": [f"Synthetic {REPLACED_JOINTS}-joint replacement"]})
+
+    # Crossings sit beside existing metal loss so crossing rules have something to find.
+    ext = features[features.population == "ext_ml"]
+    near = rng.choice(ext.chainage_ft.to_numpy(), N_CROSSINGS, replace=False)
+    crossings = pd.DataFrame({"log_dist_ft": np.sort(to_log(near + rng.uniform(-3, 3, N_CROSSINGS))),
+                              "description": "Foreign pipeline crossing (synthetic)"})
+
+    next_inspection = pd.DataFrame([
+        {"segment_id": s,
+         "planned_next_assessment_date": curr_date.replace(year=curr_date.year + NEXT_ASSESSMENT_YEARS[c]).isoformat()}
+        for s, c in zip(seg_ids, could_affect) if s != OMITTED_NEXT_INSPECTION
+    ])
+
+    # Digs on the deepest individually reported current-run metal loss.
+    link = curr.feat_link[curr.feat_link.status == "reported"].merge(features, on="true_id")
+    link = link[link.feature_type == "metal_loss"]
+    m = link.merge(curr.std[["feature_id", "depth_pct"]], on="feature_id").nlargest(N_DIGS, "depth_pct")
+    digs = pd.DataFrame({
+        "feature_id": m.feature_id.to_numpy(),
+        "field_depth_pct": np.clip(m.depth_curr_true_pct + rng.normal(0, DIG_DEPTH_SIGMA_PCT, len(m)), 0, 100).round(1),
+        "field_length_in": np.maximum(m.length_in + rng.normal(0, DIG_LENGTH_SIGMA_IN, len(m)), 0.1).round(2),
+        "dig_date": [(curr_date + timedelta(days=int(d))).isoformat() for d in rng.integers(90, 300, len(m))],
+    })
+    return {
+        "pipe_properties": pipe_properties,
+        "mop_profile": mop_profile,
+        "hca_segments": hca_segments,
+        "repairs_between_runs": repairs,
+        "foreign_crossings": crossings,
+        "next_inspection": next_inspection,
+        "digs": digs,
+    }
+
+
+_REPORTED = {"reported", "reported_in_cluster"}
+
+
+def build_ground_truth(features: pd.DataFrame, prev: ObservedRun, curr: ObservedRun) -> pd.DataFrame:
+    gt = features.drop(columns=["depth_prev_meas_pct", "depth_curr_meas_pct"])
+    for which, run in (("prev", prev), ("curr", curr)):
+        link = run.feat_link.set_index("true_id").loc[gt.true_id]
+        gt[f"{which}_feature_id"] = link.feature_id.to_numpy()
+        gt[f"{which}_status"] = link.status.to_numpy()
+    in_prev = gt.prev_status.isin(_REPORTED)
+    in_curr = gt.curr_status.isin(_REPORTED)
+    clustered = (gt.prev_status == "reported_in_cluster") | (gt.curr_status == "reported_in_cluster")
+    gt["truth_class"] = np.select(
+        [in_prev & in_curr & clustered, in_prev & in_curr, ~in_prev & in_curr, in_prev & ~in_curr],
+        ["matched_cluster", "matched_1to1", "new", "missing"],
+        default="not_reported",
+    )
+    return gt
+
+
+def build_weld_truth(line: LineTruth, prev: ObservedRun, curr: ObservedRun) -> pd.DataFrame:
+    lo, hi = line.replacement
+    w = line.welds
+    return pd.DataFrame({
+        "true_weld_idx": w.true_weld_idx.to_numpy(),
+        "chainage_ft": w.chainage_ft.to_numpy(),
+        "prev_gw_id": prev.weld_link.gw_id.to_numpy(),
+        "curr_gw_id": curr.weld_link.gw_id.to_numpy(),
+        "prev_status": prev.weld_link.weld_status.to_numpy(),
+        "curr_status": curr.weld_link.weld_status.to_numpy(),
+        "in_replacement": ((w.chainage_ft > lo) & (w.chainage_ft < hi)).to_numpy(),
+    })
+
+
+# ---------------------------------------------------------------------------
+# Orchestration, output, CLI
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class SynthResult:
+    prev_std: pd.DataFrame
+    curr_std: pd.DataFrame
+    vendor_a: pd.DataFrame
+    vendor_b: pd.DataFrame
+    ground_truth: pd.DataFrame
+    weld_truth: pd.DataFrame
+    reference: dict[str, pd.DataFrame]
+    params: SynthParams
+    curr_drift: float
+
+
+def generate(p: SynthParams) -> SynthResult:
+    rng = np.random.default_rng(p.seed)
+    line = build_line(p, rng)
+    features = build_features(p, line, rng)
+    prev = observe_run("prev", p, line, features, rng)
+    missed_prev = set(prev.weld_link.loc[prev.weld_link.weld_status == "missed", "true_weld_idx"])
+    curr = observe_run("curr", p, line, features, rng, exclude_welds=missed_prev)
+    return SynthResult(
+        prev_std=prev.std,
+        curr_std=curr.std,
+        vendor_a=to_vendor_a(prev.std),
+        vendor_b=to_vendor_b(curr.std),
+        ground_truth=build_ground_truth(features, prev, curr),
+        weld_truth=build_weld_truth(line, prev, curr),
+        reference=build_reference(p, line, features, curr, rng),
+        params=p,
+        curr_drift=curr.drift,
+    )
+
+
+def write_outputs(r: SynthResult, out_dir: Path) -> dict[str, Path]:
+    out_dir = Path(out_dir)
+    (out_dir / "reference").mkdir(parents=True, exist_ok=True)
+    paths: dict[str, Path] = {}
+
+    def csv(rel: str, df: pd.DataFrame) -> None:
+        df.to_csv(out_dir / rel, index=False, lineterminator="\n")
+        paths[rel] = out_dir / rel
+
+    csv("tally_prev_vendor_a.csv", r.vendor_a)
+    rel = "tally_curr_vendor_b.xlsx"
+    prev_date, curr_date = run_dates(r.params)
+    with pd.ExcelWriter(out_dir / rel, engine="openpyxl") as xw:
+        r.vendor_b.to_excel(xw, sheet_name="Pipe Tally", startrow=2, index=False)
+        ws = xw.sheets["Pipe Tally"]
+        ws["A1"] = "Synthetic Vendor B – MFL Run (SYNTHETIC DATA)"
+        ws["A2"] = f"Run date: {curr_date.isoformat()}"
+        ws.freeze_panes = "A4"
+    paths[rel] = out_dir / rel
+    csv("ground_truth.csv", r.ground_truth)
+    csv("ground_truth_welds.csv", r.weld_truth)
+    for name, df in r.reference.items():
+        csv(f"reference/{name}.csv", df)
+
+    params = {k: (v.isoformat() if isinstance(v, date) else v) for k, v in asdict(r.params).items()}
+    manifest = {
+        "label": DRAFT_LABEL,
+        "generator": f"ili.synth {ili.__version__}",
+        "params": params,
+        "run_dates": {"prev": prev_date.isoformat(), "curr": curr_date.isoformat()},
+        "curr_drift": r.curr_drift,
+        "sha256": {k: hashlib.sha256(v.read_bytes()).hexdigest() for k, v in paths.items() if k.endswith(".csv")},
+        "note": "xlsx bytes embed a timestamp, so only CSVs are hashed; compare xlsx by content.",
+    }
+    rel = "synth_manifest.json"
+    (out_dir / rel).write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    paths[rel] = out_dir / rel
+    return paths
+
+
+def _parser() -> argparse.ArgumentParser:
+    ap = argparse.ArgumentParser(prog="python -m ili.synth", description=__doc__.split("\n\n")[0])
+    ap.add_argument("--out", type=Path, default=Path("data/synthetic"), help="output directory")
+    for fld in fields(SynthParams):
+        default = getattr(SynthParams, fld.name)
+        kind = date.fromisoformat if isinstance(default, date) else type(default)
+        ap.add_argument(f"--{fld.name.replace('_', '-')}", dest=fld.name, type=kind, default=default,
+                        help=f"default: {default}")
+    return ap
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = vars(_parser().parse_args(argv))
+    out = args.pop("out")
+    try:
+        result = generate(SynthParams(**args))
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    write_outputs(result, out)
+    print(DRAFT_LABEL)
+    print(f"wrote {out}")
+    print(f"current-run odometer drift: {result.curr_drift:+.4%}")
+    print("ground truth by class:")
+    print(result.ground_truth.truth_class.value_counts().to_string())
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

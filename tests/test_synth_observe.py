@@ -80,6 +80,18 @@ def test_odometer_drift(obs):
     assert runs["prev"].drift == 0.0
 
 
+@pytest.mark.parametrize("seed", [1, 2, 42])
+def test_curr_drift_is_meaningful(seed):
+    """Drift is 'up to 0.5 %' but never negligible, so alignment is always exercised."""
+    p = SynthParams(seed=seed, line_miles=2)
+    rng = np.random.default_rng(seed)
+    line = build_line(p, rng)
+    f = build_features(p, line, rng)
+    observe_run("prev", p, line, f, rng)
+    curr = observe_run("curr", p, line, f, rng)
+    assert 0.0025 <= abs(curr.drift) <= 0.005
+
+
 def test_missed_welds(obs):
     p, line, _, runs = obs
     missed = {}
