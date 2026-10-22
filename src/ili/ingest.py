@@ -128,6 +128,22 @@ def load_vendor_map(path: Path) -> VendorMap:
         return VendorMap.model_validate(yaml.safe_load(fh) or {})
 
 
+def load_standardized(path: Path) -> pd.DataFrame:
+    """Read a ``standardized/<run_id>.csv`` back with the schema's types: ids stay text
+    (``"1"``, never ``1.0``), clock is Int64, run_date a date, flags True/False/None."""
+    text_cols = ["run_id", "feature_id", "feature_type", "us_gw_id", "surface", "vendor_cluster_id", "comments"]
+    numeric_cols = [*UNIT_GROUP, *PLAIN_NUMBERS, "clock_min", "source_row"]
+    df = pd.read_csv(path, dtype={c: str for c in text_cols + FLAG_FIELDS + ["run_date"]}, keep_default_na=False,
+                     na_values={c: [""] for c in numeric_cols})
+    for c in text_cols:
+        df[c] = df[c].astype(object).where(df[c] != "", None)
+    for c in FLAG_FIELDS:
+        df[c] = df[c].map({"True": True, "False": False}).astype(object).where(df[c] != "", None)
+    df["run_date"] = df.run_date.map(date.fromisoformat)
+    df["clock_min"] = df.clock_min.astype("Int64")
+    return df
+
+
 # ---------------------------------------------------------------------------
 # Reading
 # ---------------------------------------------------------------------------

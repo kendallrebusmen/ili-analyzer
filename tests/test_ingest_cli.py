@@ -101,6 +101,20 @@ def test_separate_invocations_keep_each_runs_issues(synth, tmp_path):
     assert {r["run_id"]: r["issues"] for r in m["runs"]} == {"2021_vendorA": 0, "2026_vendorB": 0}
 
 
+def test_load_standardized_roundtrip(synth, tmp_path):
+    from ili.ingest import load_standardized
+
+    a, b = _paths(synth)
+    assert main(["--run", str(a), str(MAP_A), "2021-06-15", "--run", str(b), str(MAP_B), "--out", str(tmp_path)]) == 0
+    std = load_standardized(tmp_path / "standardized" / "2026_vendorB.csv")
+    gw = std.loc[std.feature_type == "girth_weld", "us_gw_id"]
+    assert gw.iloc[0] == "1" and all(isinstance(v, str) for v in gw)
+    assert str(std.clock_min.dtype) == "Int64"
+    assert std.run_date.iloc[0] == date(2026, 6, 15)
+    assert std.seam_interaction.dropna().map(type).eq(bool).all()
+    assert_matches_oracle(std.drop(columns="source_row"), synth[0].curr_std)
+
+
 def test_default_out_is_project_root():
     assert _parser().parse_args(["--run", "x", "y"]).out == PROJECT_ROOT / "outputs"
 

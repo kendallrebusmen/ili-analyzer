@@ -32,21 +32,26 @@ class ToolCfg(_Strict):
     reporting_threshold_pct_wt: float
 
 
+class ConfidenceBands(_Strict):
+    high: float
+    medium: float
+
+
 class AlignmentCfg(_Strict):
     joint_length_tol_ft: float
     joint_length_tol_pct: float
     gap_penalty: float
+    missed_weld_penalty: float
+    gap_penalty_repair: float
+    anchor_tol_ft: float
+    band_joints: int
+    confidence_bands: ConfidenceBands
 
 
 class MatchWeights(_Strict):
     axial: float
     circ: float
     depth_change: float
-
-
-class ConfidenceBands(_Strict):
-    high: float
-    medium: float
 
 
 class InteractionRule(_Strict):

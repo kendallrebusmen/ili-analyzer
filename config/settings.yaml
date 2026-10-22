@@ -16,6 +16,12 @@ alignment:
   joint_length_tol_ft: 0.5          # PLACEHOLDER
   joint_length_tol_pct: 1.0         # PLACEHOLDER
   gap_penalty: 5.0                  # tune on synthetic data
+  # Added in M3 (not in spec 7.1). Costs are in units of the length tolerance above.
+  missed_weld_penalty: 1.0          # extra cost of a 2:1 / 1:2 match, so 1:1 wins ties
+  gap_penalty_repair: 0.5           # gap cost inside a repaired span (joints expected to change)
+  anchor_tol_ft: 100                # max position difference, ft, to pair a valve/tee/fitting between runs
+  band_joints: 30                   # DP search half-width, joints; must exceed the joint-count drift in a section
+  confidence_bands: {high: 1.0, medium: 2.0}   # normalized length mismatch cutoffs; tune on synthetic data
 
 matching:
   axial_tol_in: 6                   # PLACEHOLDER
