@@ -30,7 +30,7 @@ Interpretations of `docs/SPEC.md` and choices the spec leaves open. Newest at th
 | Replacement | 3 consecutive joints replaced by 4 new joints over the same span, ≥5 joints from any fitting or line end; dated mid-interval; new pipe is FBE-coated and installed in the repair year | Exercises `removed` and `inserted`. The plan said 20 joints of clearance, which won't fit on 2-mile test lines |
 | Run dates | prev 2021-06-15; curr = prev + round(5 × 365.25) days = 2026-06-15 | |
 | Odometer | prev drift 0; curr drift ±U(0.25%, 0.5%); cumulative slip N(0, 0.05 ft) per weld, clipped at 3σ | "Up to 0.5%", never negligible |
-| Missed welds | 3 per run, different in each run, never adjacent to each other, a fitting, the replaced span, or the line ends, and always just upstream of a joint holding metal loss | Guarantees features whose upstream weld is wrong |
+| Missed welds | 3 per run (0 allowed). Never adjacent to each other, never at or next to a weld the *other* run missed, never at a fitting, the replaced span, a wall-thickness change, or the line ends. Placed just upstream of a joint holding external metal loss where possible | Guarantees features whose upstream weld is wrong. A crossed miss across runs would give a joint correspondence that no §6.3 match type can express. A miss at a wall change would make the merged joint report the wrong wall |
 | Growth | min(Exponential(mean 1.5 mpy), 10 mpy) | Right-skewed, many near zero |
 | 500 external ML | True prev depth U(5, 55)%. Accepted only if the pre-drawn previous-run measurement is ≥ threshold, so exactly 500 are *reported* in the previous run. 3 of them sit in the replaced joints | "500 features in the previous run" read as 500 reported |
 | 50 new | True prev depth U(2, 12)%; accepted only if prev measurement < threshold and curr measurement ≥ threshold | §6.1 |
@@ -47,6 +47,9 @@ Interpretations of `docs/SPEC.md` and choices the spec leaves open. Newest at th
 
 - **`ground_truth.csv`**: one row per true feature, with true depths, growth, dimensions, and population. It also gives each run's `feature_id` and `status` (`reported`, `reported_in_cluster`, `below_threshold`, `removed_by_repair`), plus a `truth_class`:
   - `matched_1to1`, `matched_cluster`, `new`, `missing`, and `not_reported` (valid, but the generator rarely produces it)
+  - **One class per vendor cluster report:** if any pit in a cluster report is matched, every pit in that report is `matched_cluster`. A pit that was below threshold in the other run keeps that in `prev_status`/`curr_status`. So each vendor feature id has exactly one truth class.
+  - `wt_nom_in` is the true nominal wall of the feature's joint, so scorers can check the tally wall.
+- **Counts:** every `n_*` parameter may be 0; negative counts, or a non-positive `line_miles`/`years_between`/`od_in`, raise `ValueError` naming the parameter (CLI exit code 2).
 - **`ground_truth_welds.csv`** (added beyond §6.1 because M3 needs it to score joints): every true weld with each run's gw id and status (`reported`/`missed`/`not_present`). `in_replacement` marks the 5 interior welds of the replaced span (2 removed, 3 inserted); tie-in welds are not counted.
 - **Reference files** are keyed to current-run log distance (§5.2) and rounded to 0.001 ft:
   - MOP: 1440 psig for the upstream half, 1200 downstream

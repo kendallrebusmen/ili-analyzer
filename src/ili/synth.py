@@ -105,6 +105,15 @@ class SynthParams:
     smys_psi: float = 52000.0
     seam_clock_min: int = 60
 
+    def __post_init__(self):
+        for fld in fields(self):
+            value = getattr(self, fld.name)
+            if fld.name.startswith("n_") and value < 0:
+                raise ValueError(f"{fld.name} must be >= 0, got {value}")
+        for name in ("line_miles", "years_between", "od_in"):
+            if getattr(self, name) <= 0:
+                raise ValueError(f"{name} must be > 0, got {getattr(self, name)}")
+
 
 @dataclass
 class LineTruth:
@@ -255,6 +264,8 @@ def _rejection_sample(
     n: int, name: str, draw: Callable[[int], dict], accept: Callable[[dict], np.ndarray]
 ) -> dict:
     """Draw candidate batches until n are accepted; raise rather than spin forever."""
+    if n == 0:
+        return {k: np.asarray(v)[:0] for k, v in draw(0).items()}
     kept: dict[str, list] = {}
     got = drawn = 0
     while got < n:
@@ -384,6 +395,7 @@ def build_features(p: SynthParams, line: LineTruth, rng: np.random.Generator) ->
 
     f = pd.concat(blocks, ignore_index=True).sort_values("chainage_ft", kind="stable").reset_index(drop=True)
     f.insert(0, "true_id", [f"T{i:05d}" for i in range(1, len(f) + 1)])
+    f.insert(5, "wt_nom_in", placer.wt(f.joint_key))  # true nominal wall of the feature's joint
     f["clock_min"] = f.clock_min.astype("Int64")
     f["cluster_site"] = f.cluster_site.astype("Int64")
     return f
@@ -484,25 +496,39 @@ def _gps(chain: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
 
 
 def _pick_missed_welds(which, p, line, features, rng, exclude) -> set[int]:
-    """Welds this run fails to report. Each sits upstream of a joint holding metal loss,
-    away from fittings, the replaced span, the line ends, and each other."""
+    """Welds this run fails to report. Preferably each sits upstream of a joint holding
+    metal loss. Never at a fitting, the replaced span, a wall change, the line ends,
+    next to another missed weld in this run, or at/next to one missed by the other run
+    (``exclude``) - those would make joint correspondences no match type can express."""
+    if p.n_missed_welds == 0:
+        return set()
     w = line.welds
     present = w[w[f"in_{which}"]]
     lo, hi = line.replacement
     fit = line.joints[line.joints.fitting.notna()]
-    banned = set(fit.us_weld_idx) | set(fit.us_weld_idx + 1) | set(exclude)
+    banned = set(fit.us_weld_idx) | set(fit.us_weld_idx + 1)
+    banned |= {int(e) + d for e in exclude for d in (-1, 0, 1)}
     banned |= {int(w.true_weld_idx.iloc[0]), int(w.true_weld_idx.iloc[-1])}
     banned |= set(w.loc[w.chainage_ft.between(lo, hi), "true_weld_idx"])
+    wall_change = line.pipe_segments.start_ft.to_numpy()[1:]
+    banned |= set(w.loc[np.isin(w.chainage_ft.to_numpy(), wall_change), "true_weld_idx"])
     joints = line.joints[line.joints[f"in_{which}"]]
     ml_joints = features.loc[features.population == "ext_ml", "joint_key"]
     useful = set(joints.loc[joints.joint_key.isin(ml_joints), "us_weld_idx"])
-    candidates = [int(i) for i in present.true_weld_idx if i in useful and i not in banned]
+    eligible = [int(i) for i in present.true_weld_idx if i not in banned]
+    preferred = [i for i in eligible if i in useful]
     chosen: list[int] = []
-    for idx in rng.permutation(candidates):
-        if all(abs(int(idx) - c) > 1 for c in chosen):
-            chosen.append(int(idx))
-        if len(chosen) == p.n_missed_welds:
-            return set(chosen)
+
+    def take(pool):
+        for idx in rng.permutation(pool):
+            if all(abs(int(idx) - c) > 1 for c in chosen):
+                chosen.append(int(idx))
+            if len(chosen) == p.n_missed_welds:
+                return True
+        return False
+
+    if take(preferred) or take([i for i in eligible if i not in useful and i not in chosen]):
+        return set(chosen)
     raise ValueError(f"n_missed_welds={p.n_missed_welds} cannot be placed on this line; reduce it")
 
 
@@ -843,7 +869,10 @@ def build_reference(p: SynthParams, line: LineTruth, features: pd.DataFrame, cur
 
     # Crossings sit beside existing metal loss so crossing rules have something to find.
     ext = features[features.population == "ext_ml"]
-    near = rng.choice(ext.chainage_ft.to_numpy(), N_CROSSINGS, replace=False)
+    if len(ext) >= N_CROSSINGS:
+        near = rng.choice(ext.chainage_ft.to_numpy(), N_CROSSINGS, replace=False)
+    else:
+        near = np.linspace(0, L, N_CROSSINGS + 2)[1:-1]
     crossings = pd.DataFrame({"log_dist_ft": np.sort(to_log(near + rng.uniform(-3, 3, N_CROSSINGS))),
                               "description": "Foreign pipeline crossing (synthetic)"})
 
@@ -891,6 +920,12 @@ def build_ground_truth(features: pd.DataFrame, prev: ObservedRun, curr: Observed
         ["matched_cluster", "matched_1to1", "new", "missing"],
         default="not_reported",
     )
+    # One class per vendor cluster report: if any pit in it is matched, the whole report is
+    # matched_cluster (pits below threshold in the other run keep that in their *_status).
+    for which in ("prev", "curr"):
+        in_cluster = gt[f"{which}_status"] == "reported_in_cluster"
+        matched_ids = gt.loc[in_cluster & (gt.truth_class == "matched_cluster"), f"{which}_feature_id"]
+        gt.loc[in_cluster & gt[f"{which}_feature_id"].isin(matched_ids), "truth_class"] = "matched_cluster"
     return gt
 
 
