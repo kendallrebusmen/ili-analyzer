@@ -16,6 +16,8 @@ DRAFT – for review by qualified personnel.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import numpy as np
 import pandas as pd
 
@@ -93,3 +95,87 @@ def match_anchors(prev_j: pd.DataFrame, curr_j: pd.DataFrame, cfg: AlignmentCfg)
         else:
             j -= 1
     return pairs[::-1]
+
+
+# ---------------------------------------------------------------------------
+# Section alignment (banded Needleman-Wunsch)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class Step:
+    match_type: str  # "1:1" | "2:1" | "1:2" | "inserted" | "removed"
+    prev_idx: tuple[int, ...]
+    curr_idx: tuple[int, ...]
+    mismatch: float  # |a - b| / tolerance; NaN for inserted/removed
+    cost: float
+
+
+def _tolerance(a: float, b: float, cfg: AlignmentCfg) -> float:
+    return max(cfg.joint_length_tol_ft, cfg.joint_length_tol_pct / 100 * max(a, b))
+
+
+def _mismatch(a: float, b: float, cfg: AlignmentCfg) -> float:
+    return abs(a - b) / _tolerance(a, b, cfg)
+
+
+# (match type, prev joints consumed, curr joints consumed), in tie-break order.
+_MOVES = (("1:1", 1, 1), ("2:1", 2, 1), ("1:2", 1, 2), ("removed", 1, 0), ("inserted", 0, 1))
+
+
+def align_section(prev_len: np.ndarray, curr_len: np.ndarray, prev_repair: np.ndarray,
+                  curr_repair: np.ndarray, cfg: AlignmentCfg) -> list[Step]:
+    """Globally align two joint-length sequences (curr already drift-scaled).
+
+    Costs are in units of the length tolerance: a 1:1 match costs its mismatch, a 2:1 or 1:2
+    match its mismatch plus ``missed_weld_penalty``, and an inserted or removed joint
+    ``gap_penalty`` (``gap_penalty_repair`` inside a repaired span). The search is banded to
+    ``band_joints`` around the diagonal. Ties resolve in the order of ``_MOVES``.
+    """
+    n, m = len(prev_len), len(curr_len)
+    cost = np.full((n + 1, m + 1), np.inf)
+    move = np.full((n + 1, m + 1), -1, dtype=np.int8)
+    cost[0, 0] = 0.0
+
+    def gap(repair: bool) -> float:
+        return cfg.gap_penalty_repair if repair else cfg.gap_penalty
+
+    for i in range(n + 1):
+        if n and m:
+            centre = round(i * m / n)
+            j_lo, j_hi = max(0, centre - cfg.band_joints), min(m, centre + cfg.band_joints)
+        else:
+            j_lo, j_hi = 0, m
+        for j in range(j_lo, j_hi + 1):
+            if i == 0 and j == 0:
+                continue
+            best, best_k = np.inf, -1
+            for k, (kind, dp, dc) in enumerate(_MOVES):
+                if i < dp or j < dc or not np.isfinite(cost[i - dp, j - dc]):
+                    continue
+                if kind == "removed":
+                    c = gap(prev_repair[i - 1])
+                elif kind == "inserted":
+                    c = gap(curr_repair[j - 1])
+                else:
+                    c = _mismatch(prev_len[i - dp:i].sum(), curr_len[j - dc:j].sum(), cfg)
+                    if dp + dc == 3:
+                        c += cfg.missed_weld_penalty
+                total = cost[i - dp, j - dc] + c
+                if total < best:
+                    best, best_k = total, k
+            cost[i, j], move[i, j] = best, best_k
+
+    if not np.isfinite(cost[n, m]):  # band too narrow for this section: search it in full
+        return align_section(prev_len, curr_len, prev_repair, curr_repair,
+                             cfg.model_copy(update={"band_joints": max(n, m)}))
+    steps: list[Step] = []
+    i, j = n, m
+    while i or j:
+        kind, dp, dc = _MOVES[move[i, j]]
+        pi, ci = tuple(range(i - dp, i)), tuple(range(j - dc, j))
+        mis = np.nan if kind in ("removed", "inserted") else _mismatch(prev_len[i - dp:i].sum(),
+                                                                      curr_len[j - dc:j].sum(), cfg)
+        steps.append(Step(kind, pi, ci, float(mis), float(cost[i, j] - cost[i - dp, j - dc])))
+        i, j = i - dp, j - dc
+    return steps[::-1]
