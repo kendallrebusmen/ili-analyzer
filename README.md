@@ -15,7 +15,8 @@ Compares two in-line inspection (ILI) runs on the same 49 CFR Part 195 hazardous
 | Milestone | State |
 |---|---|
 | M1 Skeleton, config, schema, synthetic generator | done |
-| M2–M10 | not started |
+| M2 Ingestion and vendor maps | done (awaiting review) |
+| M3–M10 | not started |
 
 ## Setup
 
@@ -32,7 +33,22 @@ py -3.13 -m venv .venv
 .\.venv\Scripts\python.exe -m ili.synth                  # synthetic data -> data/synthetic/
 .\.venv\Scripts\python.exe -m ili.synth --help           # every generator parameter
 .\.venv\Scripts\python.exe -m ili.synth --seed 7 --line-miles 5 --out data/synthetic/small
+
+# Ingest tallies into the standard schema -> outputs/standardized/<run_id>.csv,
+# outputs/validation_issues.csv, outputs/ingest_manifest.json
+.\.venv\Scripts\python.exe -m ili.ingest `
+    --run data\synthetic\tally_prev_vendor_a.csv config\vendor_maps\synthetic_vendor_a.yaml 2021-06-15 `
+    --run data\synthetic\tally_curr_vendor_b.xlsx config\vendor_maps\synthetic_vendor_b.yaml
 ```
+
+The run date is the third `--run` value. It can be left out when the vendor map says where the file states it (vendor B's title row). The run id is `<run year>_<run_label from the vendor map>`.
+
+### Adding a vendor
+
+Copy a file in `config/vendor_maps/` and edit:
+- `columns` maps each standard field (spec §5.1) to the vendor's header; unmapped fields are left blank
+- `units`, `clock_format` (`hhmm` | `degrees` | `decimal_hours`), and `file` (csv/excel, sheet, 1-based header row)
+- the vendor's vocabulary for feature types, surfaces, and true/false flags. Matching ignores case and surrounding spaces. Any value not listed becomes a validation issue rather than being guessed.
 
 ### Synthetic generator outputs (`data/synthetic/`)
 

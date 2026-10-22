@@ -1,0 +1,63 @@
+# Vendor map: synthetic vendor B (current run, Excel, metric). See docs/DECISIONS.md "Vendor formats".
+# columns: standard field -> vendor header. Units are what the vendor writes; ingestion converts
+# to ft / in / % of nominal wall / clock minutes.
+
+vendor: synthetic_vendor_b
+run_label: vendorB
+
+file:
+  format: excel
+  sheet: "Pipe Tally"
+  header_row: 3             # rows 1-2 are title rows
+
+run_date:                   # read from a title cell
+  cell: A2
+  pattern: 'Run date:\s*(\d{4}-\d{2}-\d{2})'
+
+columns:
+  log_dist_ft: "Log Dist [m]"
+  feature_type: "Feature"
+  feature_id: "Feature ID"
+  us_gw_id: "Ref GW"
+  dist_from_us_gw_ft: "Rel. Dist [m]"
+  joint_length_ft: "Joint Len [m]"
+  wt_nom_in: "WT [mm]"
+  depth_pct: "Peak Depth [%]"
+  dent_depth_in: "Dent Depth [mm]"
+  length_in: "Length [mm]"
+  width_in: "Width [mm]"
+  clock_min: "Orientation [deg]"
+  surface: "Location"
+  seam_interaction: "Seam"
+  dent_metal_loss: "Dent ML"
+  vendor_cluster_id: "Cluster"
+  lat: "Lat"
+  lon: "Lon"
+  elev_ft: "Elev [m]"
+  comments: "Comment"
+
+units:
+  distance: m
+  wall: mm
+  size: mm
+  dent_depth: mm
+  elevation: m
+
+clock_format: degrees       # 0-360 clockwise from top
+
+feature_types:
+  "GWLD": girth_weld
+  "ML-CORR": metal_loss
+  "ML-CLUS": metal_loss     # vendor cluster report; vendor_cluster_id is set
+  "DENT": dent
+  "VALVE": valve
+  "TEE": tee
+
+surfaces:
+  "EXT": EXT
+  "INT": INT
+  "MID": MID
+  "UNK": UNK
+
+true_values: ["1"]
+false_values: ["0"]

@@ -1,0 +1,59 @@
+# Vendor map: synthetic vendor A (previous run, CSV). See docs/DECISIONS.md "Vendor formats".
+# columns: standard field -> vendor header. Units are what the vendor writes; ingestion converts
+# to ft / in / % of nominal wall / clock minutes.
+
+vendor: synthetic_vendor_a
+run_label: vendorA
+
+file:
+  format: csv
+  header_row: 1             # 1-based row holding the column headers
+
+run_date: null              # not in the file; give it as the third --run value at ingestion
+
+columns:
+  feature_id: "Feature No"
+  feature_type: "Event"
+  log_dist_ft: "Abs Dist (ft)"
+  us_gw_id: "US GW No"
+  dist_from_us_gw_ft: "Dist to US GW (ft)"
+  joint_length_ft: "Jt Len (ft)"
+  wt_nom_in: "WT (in)"
+  depth_pct: "Depth (%)"
+  dent_depth_in: "Dent Depth (in)"
+  length_in: "Length (in)"
+  width_in: "Width (in)"
+  clock_min: "O'clock"
+  surface: "Int/Ext"
+  seam_interaction: "Seam Interaction"
+  dent_metal_loss: "Dent w/ ML"
+  vendor_cluster_id: "Cluster ID"
+  lat: "Latitude"
+  lon: "Longitude"
+  elev_ft: "Elevation (ft)"
+  comments: "Comments"
+
+units:
+  distance: ft              # log distance, distance from weld, joint length
+  wall: in                  # nominal wall thickness
+  size: in                  # length, width
+  dent_depth: in
+  elevation: ft
+
+clock_format: hhmm          # 12-hour face, "12:30" = 30 minutes past top
+
+feature_types:              # vendor vocabulary -> standard (matched after strip + casefold)
+  "Girth Weld": girth_weld
+  "Metal Loss": metal_loss
+  "Dent": dent
+  "Valve": valve
+  "Tee": tee
+
+surfaces:
+  "External": EXT
+  "Internal": INT
+  "Mid-wall": MID
+  "Unknown": UNK
+
+true_values: ["Y"]
+false_values: ["N"]
