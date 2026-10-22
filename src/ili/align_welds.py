@@ -179,3 +179,178 @@ def align_section(prev_len: np.ndarray, curr_len: np.ndarray, prev_repair: np.nd
         steps.append(Step(kind, pi, ci, float(mis), float(cost[i, j] - cost[i - dp, j - dc])))
         i, j = i - dp, j - dc
     return steps[::-1]
+
+
+# ---------------------------------------------------------------------------
+# Whole-line alignment
+# ---------------------------------------------------------------------------
+
+WELD_MAP_COLUMNS = [
+    "section_id", "match_type", "prev_gw_id", "prev_gw_id_2", "curr_gw_id", "curr_gw_id_2",
+    "prev_start_ft", "curr_start_ft", "prev_length_ft", "curr_length_ft", "curr_length_scaled_ft",
+    "mismatch", "cost", "confidence", "in_repair", "is_anchor",
+]
+MATCH_TYPES = ["1:1", "2:1", "1:2", "inserted", "removed"]
+
+
+@dataclass
+class AlignmentResult:
+    weld_map: pd.DataFrame
+    changed_sections: pd.DataFrame
+    summary: dict
+
+
+def _confidence(kind: str, mismatch: float, in_repair: bool, cfg: AlignmentCfg) -> str:
+    if kind in ("inserted", "removed"):
+        return "high" if in_repair else "low"
+    level = "high" if mismatch <= cfg.confidence_bands.high else (
+        "medium" if mismatch <= cfg.confidence_bands.medium else "low")
+    return "medium" if kind in ("2:1", "1:2") and level == "high" else level
+
+
+def _in_spans(x: np.ndarray, spans: np.ndarray) -> np.ndarray:
+    if len(spans) == 0 or len(x) == 0:
+        return np.zeros(len(x), dtype=bool)
+    return ((x[:, None] >= spans[None, :, 0]) & (x[:, None] <= spans[None, :, 1])).any(axis=1)
+
+
+def align_welds(prev_std: pd.DataFrame, curr_std: pd.DataFrame, settings, repairs: pd.DataFrame | None = None
+                ) -> AlignmentResult:
+    cfg = settings.alignment
+    pj, cj = build_joints(prev_std), build_joints(curr_std)
+    if pj.empty or cj.empty:
+        raise ValueError("each run needs at least two girth welds to align")
+    pairs = match_anchors(pj, cj, cfg)
+
+    # Prev -> curr log mapping through the paired anchors (drift between anchors is linear).
+    (p0, p1), (c0, c1) = _span(pj), _span(cj)
+    global_scale = (p1 - p0) / (c1 - c0)
+    pmid = np.array([(pj.start_ft[a] + pj.end_ft[a]) / 2 for a, _ in pairs])
+    cmid = np.array([(cj.start_ft[b] + cj.end_ft[b]) / 2 for _, b in pairs])
+
+    def prev_to_curr(x: np.ndarray) -> np.ndarray:
+        if len(pairs) < 2:
+            ref_p, ref_c = (pmid[0], cmid[0]) if pairs else (p0, c0)
+            return ref_c + (x - ref_p) / global_scale
+        inside = np.interp(x, pmid, cmid)
+        lo = cmid[0] + (x - pmid[0]) / global_scale
+        hi = cmid[-1] + (x - pmid[-1]) / global_scale
+        return np.where(x < pmid[0], lo, np.where(x > pmid[-1], hi, inside))
+
+    spans = np.empty((0, 2)) if repairs is None or repairs.empty else \
+        repairs[["start_ft", "end_ft"]].to_numpy(dtype=float)
+    curr_rep = _in_spans(((cj.start_ft + cj.end_ft) / 2).to_numpy(), spans)
+    prev_rep = _in_spans(prev_to_curr(((pj.start_ft + pj.end_ft) / 2).to_numpy()), spans)
+
+    # Sections between anchor pairs; head and tail borrow the nearest inner scale.
+    bounds = [(-1, -1), *pairs, (len(pj), len(cj))]
+    sections = []
+    for (pa, ca), (pb, cb) in zip(bounds[:-1], bounds[1:]):
+        p_idx, c_idx = np.arange(pa + 1, pb), np.arange(ca + 1, cb)
+        inner = pa >= 0 and pb < len(pj)
+        p_span = pj.length_ft.to_numpy()[p_idx].sum()
+        c_span = cj.length_ft.to_numpy()[c_idx].sum()
+        scale = p_span / c_span if inner and c_span > 0 and p_span > 0 else None
+        sections.append((p_idx, c_idx, scale))
+    inner_scales = [s for *_, s in sections if s is not None]
+    for k, (p_idx, c_idx, scale) in enumerate(sections):
+        if scale is None:
+            near = [s for *_, s in (sections[k + 1:] if k == 0 else sections[:k][::-1]) if s is not None]
+            sections[k] = (p_idx, c_idx, near[0] if near else (inner_scales[0] if inner_scales else global_scale))
+
+    rows = []
+
+    def add(section_id, kind, pi, ci, mismatch, cost, scale, is_anchor):
+        rep = bool(prev_rep[list(pi)].any() or curr_rep[list(ci)].any())
+        c_len = float(cj.length_ft.to_numpy()[list(ci)].sum()) if ci else np.nan
+        rows.append({
+            "section_id": section_id,
+            "match_type": kind,
+            "prev_gw_id": pj.gw_id[pi[0]] if pi else None,
+            "prev_gw_id_2": pj.gw_id[pi[1]] if len(pi) > 1 else None,
+            "curr_gw_id": cj.gw_id[ci[0]] if ci else None,
+            "curr_gw_id_2": cj.gw_id[ci[1]] if len(ci) > 1 else None,
+            "prev_start_ft": float(pj.start_ft[pi[0]]) if pi else np.nan,
+            "curr_start_ft": float(cj.start_ft[ci[0]]) if ci else np.nan,
+            "prev_length_ft": float(pj.length_ft.to_numpy()[list(pi)].sum()) if pi else np.nan,
+            "curr_length_ft": c_len,
+            "curr_length_scaled_ft": c_len * scale,
+            "mismatch": mismatch,
+            "cost": cost,
+            "confidence": _confidence(kind, mismatch, rep, cfg),
+            "in_repair": rep,
+            "is_anchor": is_anchor,
+        })
+
+    for k, (p_idx, c_idx, scale) in enumerate(sections):
+        steps = align_section(pj.length_ft.to_numpy()[p_idx], cj.length_ft.to_numpy()[c_idx] * scale,
+                              prev_rep[p_idx], curr_rep[c_idx], cfg)
+        for s in steps:
+            add(k, s.match_type, tuple(int(p_idx[i]) for i in s.prev_idx),
+                tuple(int(c_idx[j]) for j in s.curr_idx), s.mismatch, s.cost, scale, False)
+        if k < len(pairs):
+            a, b = pairs[k]
+            mis = _mismatch(pj.length_ft[a], cj.length_ft[b] * global_scale, cfg)
+            add(k + 1, "1:1", (a,), (b,), mis, mis, global_scale, True)
+
+    weld_map = pd.DataFrame(rows, columns=WELD_MAP_COLUMNS)
+    changed = _changed_sections(weld_map)
+    summary = _summary(weld_map, pj, cj, changed, pairs, sections)
+    return AlignmentResult(weld_map, changed, summary)
+
+
+def _joint_counts(wm: pd.DataFrame) -> tuple[pd.Series, pd.Series]:
+    n_prev = wm.prev_gw_id.notna().astype(int) + wm.prev_gw_id_2.notna().astype(int)
+    n_curr = wm.curr_gw_id.notna().astype(int) + wm.curr_gw_id_2.notna().astype(int)
+    return n_prev, n_curr
+
+
+def _changed_sections(wm: pd.DataFrame) -> pd.DataFrame:
+    cols = ["section_id", "prev_start_ft", "prev_end_ft", "curr_start_ft", "curr_end_ft", "match_types",
+            "n_prev_joints", "n_curr_joints", "overlaps_repair"]
+    changed = (wm.match_type != "1:1").to_numpy()
+    n_prev, n_curr = _joint_counts(wm)
+    out, k = [], 0
+    while k < len(wm):
+        if not changed[k]:
+            k += 1
+            continue
+        end = k
+        while end + 1 < len(wm) and changed[end + 1]:
+            end += 1
+        g = wm.iloc[k:end + 1]
+        out.append({
+            "section_id": int(g.section_id.iloc[0]),
+            "prev_start_ft": g.prev_start_ft.min(),
+            "prev_end_ft": (g.prev_start_ft + g.prev_length_ft).max(),
+            "curr_start_ft": g.curr_start_ft.min(),
+            "curr_end_ft": (g.curr_start_ft + g.curr_length_ft).max(),
+            "match_types": ";".join(t for t in MATCH_TYPES if t in set(g.match_type)),
+            "n_prev_joints": int(n_prev.iloc[k:end + 1].sum()),
+            "n_curr_joints": int(n_curr.iloc[k:end + 1].sum()),
+            "overlaps_repair": bool(g.in_repair.any()),
+        })
+        k = end + 1
+    return pd.DataFrame(out, columns=cols)
+
+
+def _summary(wm, pj, cj, changed, pairs, sections) -> dict:
+    n_prev, n_curr = _joint_counts(wm)
+    joints = n_prev + n_curr
+    matched = wm.match_type.isin(["1:1", "2:1", "1:2"])
+    outside = ~wm.in_repair
+    scales = [s for *_, s in sections]
+    return {
+        "n_prev_joints": int(len(pj)),
+        "n_curr_joints": int(len(cj)),
+        "n_anchor_pairs": len(pairs),
+        "n_sections": len(sections),
+        "section_scale_min": float(min(scales)),
+        "section_scale_max": float(max(scales)),
+        "counts_by_match_type": {t: int((wm.match_type == t).sum()) for t in MATCH_TYPES},
+        "counts_by_confidence": {c: int((wm.confidence == c).sum()) for c in ("high", "medium", "low")},
+        "alignment_rate": float(joints[matched].sum() / joints.sum()),
+        "alignment_rate_outside_repairs": float(joints[matched & outside].sum() / max(joints[outside].sum(), 1)),
+        "n_changed_sections": int(len(changed)),
+        "n_changed_sections_in_repairs": int(changed.overlaps_repair.sum()) if len(changed) else 0,
+    }
