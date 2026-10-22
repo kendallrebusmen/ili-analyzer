@@ -14,13 +14,17 @@ DRAFT – for review by qualified personnel. Synthetic data only.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, timedelta
 
 import numpy as np
 import pandas as pd
 
+from ili.units import CLOCK_MINUTES, sigma_from_tolerance
+
 FT_PER_MILE = 5280.0
+DAYS_PER_YEAR = 365.25
 
 # Line geometry (D: see docs/DECISIONS.md)
 JOINT_LEN_FT = (38.0, 42.0)
@@ -33,6 +37,28 @@ HEAVY_WALL_SPAN = (0.45, 0.55)  # fraction of line length
 REPLACED_JOINTS = 3
 REPLACEMENT_NEW_JOINTS = 4
 REPLACEMENT_CLEARANCE_JOINTS = 5  # from any fitting joint or line end
+
+# Feature population (D: see docs/DECISIONS.md)
+EXT_ML_PREV_DEPTH_PCT = (5.0, 55.0)
+NEW_PREV_DEPTH_PCT = (2.0, 12.0)
+SEVERE_PREV_DEPTH_PCT = (70.0, 75.0)
+SEVERE_GROWTH_MPY = (8.0, 10.0)
+INTERNAL_PREV_DEPTH_PCT = (10.0, 40.0)
+PIT_PREV_DEPTH_PCT = (15.0, 40.0)
+ML_LENGTH_IN = (0.5, 4.0)
+ML_WIDTH_IN = (0.5, 3.0)
+PIT_SIZE_IN = (0.3, 0.8)
+PIT_SPACING_IN = (0.3, 0.9)
+PIT_CLOCK_SPREAD_MIN = 10
+PITS_PER_SITE = (2, 4)
+DENT_DEPTH_PCT_OD = (1.0, 7.0)
+DENT_SIZE_IN = (3.0, 12.0)
+DENT_ML_DEPTH_PCT = (10.0, 30.0)
+SEAM_PROXIMITY_MIN = 10
+MAX_TRUE_DEPTH_PCT = 99.0
+WELD_CLEARANCE_FT = 0.25  # features sit at least this far from a weld
+N_IN_REPLACED_SECTION = 3
+REJECTION_GUARD = 100  # max draws = guard x requested count
 
 
 @dataclass
@@ -189,3 +215,221 @@ def build_line(p: SynthParams, rng: np.random.Generator) -> LineTruth:
         }
     )
     return LineTruth(welds, joints, pipe_segments, (rep_lo, rep_hi), length_ft)
+
+
+# ---------------------------------------------------------------------------
+# True feature population
+# ---------------------------------------------------------------------------
+
+
+def run_dates(p: SynthParams) -> tuple[date, date]:
+    return p.prev_run_date, p.prev_run_date + timedelta(days=round(p.years_between * DAYS_PER_YEAR))
+
+
+def delta_t_years(p: SynthParams) -> float:
+    prev, curr = run_dates(p)
+    return (curr - prev).days / DAYS_PER_YEAR
+
+
+def _growth_rates(p: SynthParams, rng, n: int) -> np.ndarray:
+    """Right-skewed true growth: exponential, capped (many near zero)."""
+    return np.minimum(rng.exponential(p.growth_mean_mpy, n), p.max_growth_mpy)
+
+
+def _rejection_sample(
+    n: int, name: str, draw: Callable[[int], dict], accept: Callable[[dict], np.ndarray]
+) -> dict:
+    """Draw candidate batches until n are accepted; raise rather than spin forever."""
+    kept: dict[str, list] = {}
+    got = drawn = 0
+    while got < n:
+        if drawn >= REJECTION_GUARD * max(n, 1):
+            raise ValueError(f"could not generate {name}={n} features within {drawn} draws; check parameters")
+        batch = draw(max(2 * (n - got), 8))
+        drawn += len(next(iter(batch.values())))
+        ok = accept(batch)
+        for k, v in batch.items():
+            kept.setdefault(k, []).append(np.asarray(v)[ok])
+        got += int(ok.sum())
+    return {k: np.concatenate(v)[:n] for k, v in kept.items()}
+
+
+class _Placer:
+    """Picks joints and in-joint positions for features."""
+
+    def __init__(self, line: LineTruth, rng):
+        j = line.joints
+        self.rng = rng
+        self.joints = j.set_index("joint_key")
+        self.normal = j.loc[j.fitting.isna() & j.in_prev & j.in_curr, "joint_key"].to_numpy()
+        self.replaced = j.loc[j.in_prev & ~j.in_curr, "joint_key"].to_numpy()
+
+    def place(self, n: int, pool: np.ndarray | None = None, span_ft: float = 0.0) -> tuple[np.ndarray, np.ndarray]:
+        """Random joints and positions; a span of ``span_ft`` after each position stays in the joint."""
+        pool = self.normal if pool is None else pool
+        keys = self.rng.choice(pool, n)
+        start = self.joints.start_ft.loc[keys].to_numpy()
+        length = self.joints.length_ft.loc[keys].to_numpy()
+        pos = start + self.rng.uniform(WELD_CLEARANCE_FT, length - WELD_CLEARANCE_FT - span_ft)
+        return keys, pos
+
+    def wt(self, keys) -> np.ndarray:
+        return self.joints.wt_nom_in.loc[keys].to_numpy()
+
+
+def _ml_block(p, rng, placer, population, keys, chain, prev_true, growth, surface,
+              length, width, clock, cluster_site=None, draws=None) -> pd.DataFrame:
+    n = len(keys)
+    dt = delta_t_years(p)
+    sigma = sigma_from_tolerance(p.depth_tol_pct, p.tol_certainty)
+    curr_true = np.minimum(prev_true + growth / 1000 * dt / placer.wt(keys) * 100, MAX_TRUE_DEPTH_PCT)
+    if draws is None:
+        draws = {"prev_meas": prev_true + rng.normal(0, sigma, n),
+                 "curr_meas": curr_true + rng.normal(0, sigma, n)}
+    d = np.abs(clock - p.seam_clock_min)
+    return pd.DataFrame({
+        "feature_type": "metal_loss",
+        "surface": surface,
+        "chainage_ft": chain,
+        "joint_key": keys,
+        "clock_min": clock.astype(int),
+        "depth_prev_true_pct": prev_true,
+        "depth_curr_true_pct": curr_true,
+        "depth_prev_meas_pct": np.clip(draws["prev_meas"], 0, 100),
+        "depth_curr_meas_pct": np.clip(draws["curr_meas"], 0, 100),
+        "growth_mpy": growth,
+        "length_in": length,
+        "width_in": width,
+        "dent_depth_in": np.nan,
+        "dent_metal_loss": False,
+        "seam_interaction": np.minimum(d, CLOCK_MINUTES - d) <= SEAM_PROXIMITY_MIN,
+        "cluster_site": cluster_site if cluster_site is not None else pd.NA,
+        "population": population,
+    })
+
+
+def _reported_ml(p, rng, placer, population, n, depth_range, accept, pool=None, growth=None, surface="EXT"):
+    """Metal loss whose pre-drawn run measurements satisfy ``accept``."""
+    dt = delta_t_years(p)
+    sigma = sigma_from_tolerance(p.depth_tol_pct, p.tol_certainty)
+
+    def draw(m):
+        keys, chain = placer.place(m, pool)
+        g = growth(m) if growth else _growth_rates(p, rng, m)
+        prev = rng.uniform(*depth_range, m)
+        curr = np.minimum(prev + g / 1000 * dt / placer.wt(keys) * 100, MAX_TRUE_DEPTH_PCT)
+        return {"keys": keys, "chain": chain, "prev": prev, "growth": g,
+                "prev_meas": prev + rng.normal(0, sigma, m), "curr_meas": curr + rng.normal(0, sigma, m)}
+
+    s = _rejection_sample(n, f"n_{population}" if population != "ext_ml" else "n_ext_ml_prev", draw, accept)
+    return _ml_block(
+        p, rng, placer, population, s["keys"], s["chain"], s["prev"], s["growth"], surface,
+        rng.uniform(*ML_LENGTH_IN, n), rng.uniform(*ML_WIDTH_IN, n), rng.integers(0, CLOCK_MINUTES, n),
+        draws={"prev_meas": s["prev_meas"], "curr_meas": s["curr_meas"]},
+    )
+
+
+def build_features(p: SynthParams, line: LineTruth, rng: np.random.Generator) -> pd.DataFrame:
+    placer = _Placer(line, rng)
+    thr = p.reporting_threshold_pct
+    reported_prev = lambda b: b["prev_meas"] >= thr  # noqa: E731
+    blocks = []
+
+    # External metal loss reported in the previous run; a few sit in the replaced joints.
+    n_rep = min(N_IN_REPLACED_SECTION, p.n_ext_ml_prev)
+    blocks.append(_reported_ml(p, rng, placer, "ext_ml", n_rep, EXT_ML_PREV_DEPTH_PCT, reported_prev,
+                               pool=placer.replaced))
+    blocks.append(_reported_ml(p, rng, placer, "ext_ml", p.n_ext_ml_prev - n_rep, EXT_ML_PREV_DEPTH_PCT,
+                               reported_prev))
+    # New: below threshold in the previous run, reported in the current run.
+    blocks.append(_reported_ml(p, rng, placer, "new", p.n_new, NEW_PREV_DEPTH_PCT,
+                               lambda b: (b["prev_meas"] < thr) & (b["curr_meas"] >= thr)))
+    # Severe: pass 80 % of wall by the current run.
+    blocks.append(_reported_ml(p, rng, placer, "severe", p.n_severe, SEVERE_PREV_DEPTH_PCT, reported_prev,
+                               growth=lambda m: rng.uniform(*SEVERE_GROWTH_MPY, m)))
+    blocks.append(_reported_ml(p, rng, placer, "internal", p.n_internal, INTERNAL_PREV_DEPTH_PCT,
+                               reported_prev, surface="INT"))
+
+    # Cluster sites: 2-4 pits closer together than the interaction spacing.
+    for site in range(p.n_cluster_sites):
+        k = int(rng.integers(PITS_PER_SITE[0], PITS_PER_SITE[1] + 1))
+        offsets_ft = np.concatenate([[0.0], np.cumsum(rng.uniform(*PIT_SPACING_IN, k - 1))]) / 12
+        keys, base = placer.place(1, span_ft=offsets_ft[-1])
+        chain = base[0] + offsets_ft
+        clock = np.mod(rng.integers(0, CLOCK_MINUTES) + rng.integers(-PIT_CLOCK_SPREAD_MIN,
+                                                                      PIT_CLOCK_SPREAD_MIN + 1, k), CLOCK_MINUTES)
+        blocks.append(_ml_block(
+            p, rng, placer, "cluster_pit", np.repeat(keys, k), chain, rng.uniform(*PIT_PREV_DEPTH_PCT, k),
+            _growth_rates(p, rng, k), "EXT", rng.uniform(*PIT_SIZE_IN, k), rng.uniform(*PIT_SIZE_IN, k), clock,
+            cluster_site=site,
+        ))
+
+    blocks.append(_dents(p, rng, placer))
+    blocks.append(_anchors(line))
+
+    f = pd.concat(blocks, ignore_index=True).sort_values("chainage_ft", kind="stable").reset_index(drop=True)
+    f.insert(0, "true_id", [f"T{i:05d}" for i in range(1, len(f) + 1)])
+    f["clock_min"] = f.clock_min.astype("Int64")
+    f["cluster_site"] = f.cluster_site.astype("Int64")
+    return f
+
+
+def _dents(p: SynthParams, rng, placer: _Placer) -> pd.DataFrame:
+    n = p.n_dents
+    n_top = (n + 1) // 2
+    top = np.arange(n) < n_top
+    clock = np.where(
+        top,
+        np.mod(rng.integers(480, 480 + 481, n), CLOCK_MINUTES),  # 8:00 through 4:00 over the top
+        rng.integers(241, 480, n),  # strictly below 4 and 8 o'clock
+    )
+    with_ml = np.zeros(n, dtype=bool)
+    with_ml[:2] = True  # two top
+    with_ml[n_top:n_top + 2] = True  # two bottom
+    pct_od = rng.permutation(np.linspace(*DENT_DEPTH_PCT_OD, n))
+    keys, chain = placer.place(n)
+    ml_prev = np.where(with_ml, rng.uniform(*DENT_ML_DEPTH_PCT, n), np.nan)
+    sigma = sigma_from_tolerance(p.depth_tol_pct, p.tol_certainty)
+    d = np.abs(clock - p.seam_clock_min)
+    return pd.DataFrame({
+        "feature_type": "dent",
+        "surface": "EXT",
+        "chainage_ft": chain,
+        "joint_key": keys,
+        "clock_min": clock,
+        "depth_prev_true_pct": ml_prev,
+        "depth_curr_true_pct": ml_prev,  # dents do not grow
+        "depth_prev_meas_pct": np.clip(ml_prev + rng.normal(0, sigma, n), 0, 100),
+        "depth_curr_meas_pct": np.clip(ml_prev + rng.normal(0, sigma, n), 0, 100),
+        "growth_mpy": 0.0,
+        "length_in": rng.uniform(*DENT_SIZE_IN, n),
+        "width_in": rng.uniform(*DENT_SIZE_IN, n),
+        "dent_depth_in": pct_od / 100 * p.od_in,
+        "dent_metal_loss": with_ml,
+        "seam_interaction": np.minimum(d, CLOCK_MINUTES - d) <= SEAM_PROXIMITY_MIN,
+        "cluster_site": pd.NA,
+        "population": "dent",
+    })
+
+
+def _anchors(line: LineTruth) -> pd.DataFrame:
+    fit = line.joints[line.joints.fitting.notna()]
+    return pd.DataFrame({
+        "feature_type": fit.fitting.to_numpy(),
+        "surface": None,
+        "chainage_ft": (fit.start_ft + fit.length_ft / 2).to_numpy(),
+        "joint_key": fit.joint_key.to_numpy(),
+        "clock_min": pd.NA,
+        "depth_prev_true_pct": np.nan,
+        "depth_curr_true_pct": np.nan,
+        "depth_prev_meas_pct": np.nan,
+        "depth_curr_meas_pct": np.nan,
+        "growth_mpy": np.nan,
+        "length_in": np.nan,
+        "width_in": np.nan,
+        "dent_depth_in": np.nan,
+        "dent_metal_loss": False,
+        "seam_interaction": False,
+        "cluster_site": pd.NA,
+        "population": "anchor",
+    })
