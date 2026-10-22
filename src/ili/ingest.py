@@ -268,3 +268,53 @@ def standardize(raw: pd.DataFrame, vmap: VendorMap, run_id: str, run_date: date)
     issues_df = pd.concat([i for i in issues if len(i)], ignore_index=True) if any(len(i) for i in issues) \
         else pd.DataFrame(columns=ISSUE_COLUMNS)
     return out[STANDARD_COLUMNS + ["source_row"]].reset_index(drop=True), issues_df
+
+
+# ---------------------------------------------------------------------------
+# Validation
+# ---------------------------------------------------------------------------
+
+REQUIRED_FIELDS = ["feature_id", "feature_type", "log_dist_ft"]
+
+
+def validate(std: pd.DataFrame, run_id: str, parse_issues: pd.DataFrame | None = None
+             ) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Split a standardized run into clean rows and issue rows (spec 5.1).
+
+    Each problem is one issue line; a row with any problem, including a parse issue from
+    ``standardize``, is excluded from the clean output exactly once.
+    """
+    parse_issues = parse_issues if parse_issues is not None else pd.DataFrame(columns=ISSUE_COLUMNS)
+    already = set(zip(parse_issues.source_row, parse_issues.field))
+    issues = [parse_issues]
+
+    for f in REQUIRED_FIELDS:
+        missing = std[f].isna().to_numpy() & np.array([(r, f) not in already for r in std.source_row], dtype=bool)
+        issues.append(_issues(run_id, std, missing, f, std[f], "missing_required"))
+
+    depth = std.depth_pct
+    issues.append(_issues(run_id, std, depth.notna() & ~depth.between(0, 100), "depth_pct", depth,
+                          "depth_out_of_range"))
+    clock = std.clock_min.astype("Float64")
+    bad_clock = (clock.notna() & ((clock < 0) | (clock >= CLOCK_MINUTES))).fillna(False)
+    issues.append(_issues(run_id, std, bad_clock, "clock_min", std.clock_min.astype(object), "clock_out_of_range"))
+
+    dup = std.feature_id.notna() & std.feature_id.duplicated(keep="first")
+    issues.append(_issues(run_id, std, dup, "feature_id", std.feature_id, "duplicate_feature_id"))
+
+    # Adjacent welds (file order) whose log distance does not increase: flag both, since
+    # either could be the wrong one. Alignment then treats them as missed welds.
+    welds = std[(std.feature_type == "girth_weld") & std.log_dist_ft.notna()].sort_values("source_row")
+    step_bad = np.diff(welds.log_dist_ft.to_numpy()) <= 0
+    flagged = np.zeros(len(welds), dtype=bool)
+    flagged[:-1] |= step_bad
+    flagged[1:] |= step_bad
+    bad_rows = set(welds.source_row[flagged])
+    not_mono = std.source_row.isin(bad_rows).to_numpy()
+    issues.append(_issues(run_id, std, not_mono, "log_dist_ft", std.log_dist_ft, "girth_weld_not_monotonic"))
+
+    found = [i for i in issues if len(i)]
+    all_issues = (pd.concat(found, ignore_index=True) if found else pd.DataFrame(columns=ISSUE_COLUMNS))
+    all_issues = all_issues.sort_values("source_row", kind="stable").reset_index(drop=True)
+    clean = std[~std.source_row.isin(set(all_issues.source_row))].reset_index(drop=True)
+    return clean, all_issues
