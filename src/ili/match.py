@@ -343,7 +343,8 @@ def envelope(f: pd.DataFrame) -> dict:
 
     Axial: member pos_prev_ft +- length / 24 ft, so the box spans the outer edges (pos_curr_ft the
     same way from the members' current-run positions). Circumferential: member clocks are unwrapped
-    relative to the first member into (-360, 360], converted to arc inches (pi * OD), boxed, and the
+    relative to the first member into (-CLOCK_MINUTES / 2, CLOCK_MINUTES / 2], converted to arc inches
+    (pi * OD), boxed, and the
     centre converted back to minutes and wrapped (as ``synth._cluster_envelope``); a missing clock
     uses only the members that have one; with none (or no OD) ``clock_min`` is NaN and the width the widest member. Depth is the maximum; the surface
     is the first non-UNK member surface; ``wt_nom_in`` the first non-missing value."""
@@ -364,7 +365,8 @@ def envelope(f: pd.DataFrame) -> dict:
         clock_min, width_in = np.nan, width.max()
     else:  # box of the members that report a clock; clockless members add axial extent only
         c, w = clock[has], width[has]
-        rel = (c - c[0] + 360) % CLOCK_MINUTES - 360
+        half_turn = CLOCK_MINUTES / 2
+        rel = (c - c[0] + half_turn) % CLOCK_MINUTES - half_turn
         arc = _arc_in(rel, od)
         lo, hi = (arc - w / 2).min(), (arc + w / 2).max()
         clock_min = float(wrap_clock_min(c[0] + (lo + hi) / 2 / (np.pi * od) * CLOCK_MINUTES))

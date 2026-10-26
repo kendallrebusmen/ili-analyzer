@@ -104,6 +104,30 @@ def test_cross_weld_candidate_only_near_weld():
     assert c.empty
 
 
+def test_cross_weld_prev_feature_in_the_later_row():
+    """The p_later=False branch: the previous-run feature is downstream of the weld (row 1) and the
+    current-run feature upstream (row 0)."""
+    prev, curr, c = _pair([("metal_loss", 100.02)], [("metal_loss", 99.98)], wm=_WM2)
+    assert (prev.wm_row.iloc[0], curr.wm_row.iloc[0]) == (1, 0)
+    assert len(c) == 1 and c.axial_diff_in.iloc[0] == pytest.approx(0.48)
+    _, _, c = _pair([("metal_loss", 100.02)], [("metal_loss", 99.98)], wm=_WM2, near_weld_ft=0.01)
+    assert c.empty
+
+
+@pytest.mark.parametrize("prev_x, curr_x", [
+    (99.98, 100.2),   # prev near the weld (0.02 ft), curr 0.2 ft past it
+    (99.8, 100.02),   # prev 0.2 ft before the weld, curr near it
+    (100.02, 99.8),   # prev in the later row and near, curr 0.2 ft back in the earlier row
+    (100.2, 99.98),   # prev in the later row 0.2 ft past the weld, curr near it
+])
+def test_cross_weld_rejected_when_one_feature_is_far(prev_x, curr_x):
+    """Within the axial tolerance (2.64 in) but only one of the two within near_weld_ft = 0.1 ft."""
+    _, _, c = _pair([("metal_loss", prev_x)], [("metal_loss", curr_x)], wm=_WM2, near_weld_ft=0.1)
+    assert c.empty
+    _, _, c = _pair([("metal_loss", prev_x)], [("metal_loss", curr_x)], wm=_WM2, near_weld_ft=0.25)
+    assert len(c) == 1
+
+
 def test_cross_row_needs_matched_adjacent_rows():
     wm = _wm(("1:1", 0.0, 100.0, 0.0, 100.0), ("removed", 100.0, 100.0, np.nan, np.nan),
              ("1:1", 200.0, 100.0, 100.0, 100.0))
