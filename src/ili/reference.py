@@ -20,10 +20,12 @@ def _require_columns(df: pd.DataFrame, cols: tuple, what: str) -> None:
         raise ValueError(f"{what} is missing required column(s) {missing}")
 
 
-def lookup(table: pd.DataFrame, pos_ft, column: str, tol_ft: float, what: str = "reference table") -> np.ndarray:
+def lookup(table: pd.DataFrame, pos_ft, column: str, tol_ft: float, what: str = "reference table",
+           allow_nan: bool = False) -> np.ndarray:
     """``column`` at each current-run position: the row covering it (``[start_ft, end_ft)``), else the
     nearest row within ``tol_ft`` of the table. ValueError naming the first position that is not
-    covered, and for an empty table, a missing column, or a NaN in ``column`` among the rows."""
+    covered, and for an empty table, a missing column, or (unless ``allow_nan``, which returns it as NaN)
+    a NaN in ``column`` among the rows used."""
     _require_columns(table, ("start_ft", "end_ft", column), what.removesuffix(" table"))
     if table.empty:
         raise ValueError(f"the {what} has no rows")
@@ -39,7 +41,7 @@ def lookup(table: pd.DataFrame, pos_ft, column: str, tol_ft: float, what: str = 
     if bad.any():
         raise ValueError(f"position {x[bad][0]:.3f} ft is outside the {what} by more than {tol_ft} ft")
     got = val[row]
-    if np.isnan(got).any():  # only the rows the positions resolve to matter
+    if not allow_nan and np.isnan(got).any():  # only the rows the positions resolve to matter
         r = row[np.isnan(got)][0]
         raise ValueError(f"{what.removesuffix(' table')} row starting at {start[r]:.3f} ft has no {column}")
     return got

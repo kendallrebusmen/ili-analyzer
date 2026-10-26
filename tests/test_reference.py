@@ -33,6 +33,10 @@ def test_lookup_nearest_row_and_errors():
     with pytest.raises(ValueError):
         lookup(nan, [150.0], "v", 5.0)
     assert lookup(nan, [25.0, 10.0], "v", 5.0).tolist() == [10.0, 10.0]  # NaN row unused: fine
+    got = lookup(nan, [150.0, 25.0], "v", 5.0, allow_nan=True)  # allow_nan returns the NaN ...
+    assert np.isnan(got[0]) and got[1] == 10.0
+    with pytest.raises(ValueError, match="206"):  # ... but coverage is still checked
+        lookup(nan, [206.0], "v", 5.0, allow_nan=True)
 
 
 def test_lookup_od_unchanged():

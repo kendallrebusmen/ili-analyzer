@@ -281,6 +281,23 @@ def test_new_pipe_is_no_history(settings):
     assert f3.loc["P1", "history_class"] == "new"
 
 
+def test_missing_install_year_is_no_history(settings):
+    # A NaN install year is a gap in the pipe table, not a reason to abort the run: full_life is NaN and the
+    # row cannot be `new` (that needs a known year), so it is no_history and, with no rate, flagged.
+    pipe = PIPE.assign(install_year=[1975, 2023, NAN])
+    rows = [_row("Y1", "new", 1500.0, d_curr=30.0), _row("Y2", "matched_1to1", 1600.0, 30.0, 32.0),
+            _row("Y3", "new", 400.0, d_curr=30.0)]
+    f = _by_id(_run(rows, settings, pipe=pipe))
+    assert math.isnan(f.loc["Y1", "install_year"]) and math.isnan(f.loc["Y1", "full_life_mpy"])
+    assert f.loc["Y1", "history_class"] == "no_history"
+    assert math.isnan(f.loc["Y1", "governing_mpy"]) and bool(f.loc["Y1", "needs_review"]) is True
+    assert f.loc["Y2", "history_class"] == "matched" and math.isnan(f.loc["Y2", "full_life_mpy"])
+    assert f.loc["Y3", "history_class"] == "new" and f.loc["Y3", "install_year"] == 1975
+    # coverage is still a data error
+    with pytest.raises(ValueError, match="outside the pipe properties table"):
+        _run([_row("Y4", "new", 9000.0, d_curr=30.0)], settings, pipe=pipe)
+
+
 def test_length_growth_options(settings):
     rows = [
         _row("L1", "new", 1050.0, d_curr=30.0, length=3.0),  # no_history, governing 25 mpy, d 0.075 in

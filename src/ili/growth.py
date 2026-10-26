@@ -276,7 +276,8 @@ def compute_growth(match_table: pd.DataFrame, dt_yr: float, prev_year: int, curr
     wt = wall_thickness(rows, pipe, settings)
     d_prev_pct, d_curr_pct = rows.prev_depth_pct.to_numpy(float), rows.curr_depth_pct.to_numpy(float)
     d_prev, d_curr = depth_in(d_prev_pct, wt), depth_in(d_curr_pct, wt)
-    install = lookup(pipe, pos, "install_year", settings.alignment.anchor_tol_ft, what=PIPE_WHAT)
+    # An unknown install year is NaN, not an error: full_life is NaN and the row is no_history, flagged.
+    install = lookup(pipe, pos, "install_year", settings.alignment.anchor_tol_ft, what=PIPE_WHAT, allow_nan=True)
     seg_id = assign_segment(seg_table, pos)
     cls = history_class(rows.match_type, d_prev_pct, d_curr_pct, install, prev_year)
     matched, new = cls == "matched", cls == "new"
