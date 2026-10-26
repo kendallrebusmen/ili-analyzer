@@ -127,16 +127,19 @@ Interpretations of `docs/SPEC.md` and choices the spec leaves open. Newest at th
 ## M3: girth weld alignment (2026-10-22)
 
 - **Joints** are built from each run's clean girth-weld rows only (log order): joint k is [weld k, weld k+1), keyed by its upstream weld id. Features are never used to define joints, so a feature citing a weld that M2 excluded cannot affect alignment.
-- **Anchors.** A joint is an anchor if a valve, tee, or fitting lies inside it.
-  - Anchors are paired by a small alignment over the two anchor lists: same type required; current positions are scaled onto the previous run's span; the cost is the position difference; and an anchor with no counterpart is skipped at a cost of `anchor_tol_ft` (100 ft).
-  - Paired anchor joints are forced 1:1 and split the line into sections.
-- **Drift correction.** Each inner section's current-run lengths are scaled by previous span ÷ current span between its anchors. Head and tail sections (before the first and after the last anchor) borrow the nearest inner section's scale, because their own span depends on where each run starts.
+- **Anchors.** A joint is an anchor if a valve, tee, or fitting lies inside it. Its position is the feature's log distance.
+  - Anchors are paired by a small alignment over the two anchor lists under a current → previous log map: same type required; the cost is the position difference; pairs more than `anchor_tol_ft` (100 ft) apart are never formed; and an anchor with no counterpart is skipped at a cost of `anchor_tol_ft`.
+  - The map is not taken from the runs' endpoints alone, which are wrong by a joint length per joint when one run starts or ends at a different weld. Two starting maps are tried: the endpoints, and the offset most same-type anchor pairs agree on. Each is refined by pairing, refitting a least-squares line to the pairs, and pairing again until the pairs stop changing. The result with the most pairs wins (ties: smaller residual). *(Final-review fix.)*
+  - The fitted map (endpoints if no anchors pair) maps previous-run positions to current-run log distance. It interpolates between paired anchors and extrapolates at the fitted scale.
+  - A paired anchor bounds a section (its joints forced 1:1) only when the two anchor joints' lengths agree within the `medium` confidence band. Otherwise a weld beside the anchor was missed in one run; forcing 1:1 would turn the true 2:1 into a 1:1 plus a gap. Such an anchor joint is left to the section alignment instead. It still counts as a pair for the log map. *(Final-review fix.)*
+- **Different run extents.** A joint whose midpoint lies more than `anchor_tol_ft` beyond the other run's first or last weld (through the log map) has no counterpart. It is removed/inserted outright. Within the head and tail sections, gaps before the first and after the last match cost nothing (semi-global alignment), because charged end gaps push the alignment into coincidental length matches. Swept on seeds 1–5, prev or curr, start or end, 1–100 joints: every case ≥ 0.995 joint accuracy. *(Final-review fix.)*
+- **Drift correction** has two passes per section. Pass 1 aligns at the fitted line-wide scale. Pass 2 rescales by the median previous/current length ratio of the section's 1:1 matches within the `high` band, then aligns again. A span ratio spread a local odometer jump (or one missed weld's length) over every joint in the section, e.g. scale 0.884 and 20 low-confidence joints for a 150 ft jump. The median follows the section's own drift but ignores the one changed joint. *(Final-review fix.)*
 - **Section alignment** is a banded Needleman–Wunsch over joint lengths. Costs are in units of the length tolerance `max(joint_length_tol_ft, joint_length_tol_pct% × length)`:
   - 1:1 costs its mismatch
   - 2:1 and 1:2 cost their summed-length mismatch + `missed_weld_penalty` (1.0)
   - an inserted or removed joint costs `gap_penalty` (5.0), or `gap_penalty_repair` (0.5) when it lies in a repaired span
   - Ties resolve in the order 1:1, 2:1, 1:2, removed, inserted.
-  - The band is `band_joints` (30) around the proportional diagonal. If the band cannot reach the section end, the section is re-searched at full width. A narrower band can return a suboptimal path, so keep it well above the expected joint-count offset per section.
+  - The band spans the start-aligned diagonal (j = i) to the end-aligned one (j = i − (n − m)), plus `band_joints` (30) on each side. A head or tail offset of any size is searched and the end is always reachable. The band only limits mid-section excursions from both alignments. It replaced a band centred on the proportional diagonal, which cut off the true path of a head offset over 30 joints (488/600 correct at 40). *(Final-review fix.)*
   - 3:1 matches (two consecutive missed welds) are not modelled, per the spec's match types. They come out as a 2:1 plus a gap, or similar, and are visible as a changed section.
 - **Repaired spans.** A joint is in a repaired span when its midpoint falls inside a `repairs_between_runs.csv` row. Previous-run positions are mapped to current-run log distance through the paired anchors. Without repair records the replacement is still found as a changed section, but its edge can shift by a joint when an old joint's length happens to match its neighbour's; this is why the spec feeds repairs in.
 - **Confidence:**
@@ -144,9 +147,10 @@ Interpretations of `docs/SPEC.md` and choices the spec leaves open. Newest at th
   - 2:1/1:2 are never above `medium`
   - inserted/removed are `high` inside a repaired span and `low` elsewhere, where they need review
 - **Alignment rate** = joints (both runs) in 1:1/2:1/1:2 rows ÷ all joints. It is also reported outside repaired spans.
+- **The summary** also reports `n_anchor_pairs` (pairs feeding the log map), `n_anchor_bounds` (those forced 1:1 as section boundaries), `line_scale` (the fitted map's scale), and the range of section scales.
 - **Changed sections** are maximal runs of consecutive non-1:1 weld-map rows.
 - **Scoring** (`validation.score_alignment`):
   - Truth groups are the joints between consecutive welds reported in both runs. One previous and one current joint is 1:1, two and one is 2:1, one and two is 1:2; anything else, or a group containing a replaced weld, is all removed/inserted.
-  - Joint accuracy = joints in exactly reproduced groups ÷ all joints.
+  - Joint accuracy = joints in exactly reproduced groups ÷ all joints. A group is reproduced only if each of its joints appears in exactly one weld-map row, so duplicated, contradictory, or missing rows count against it. A weld-map id that is not a joint of its run, or a run weld missing from the truth file, is a `ValueError` (CLI exit 2). *(Final-review fix: the first scorer accepted a map with every row duplicated.)*
   - Default dataset: 1.0000, with 6 missed-weld groups and the replacement all correct.
 - **New settings keys** (beyond spec §7.1): `missed_weld_penalty`, `gap_penalty_repair`, `anchor_tol_ft`, `band_joints`, and `alignment.confidence_bands`. All are tuning values set on synthetic data.

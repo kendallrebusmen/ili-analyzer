@@ -2,12 +2,15 @@
 
 Maps each joint of the current run to its joint in the previous run:
 1. Joints come from each run's girth-weld rows (log order).
-2. Fixed features (valves, tees, fittings) are paired between runs and their
-   joints forced 1:1; they split the line into sections.
-3. Within a section, current-run lengths are scaled to the previous run's span
-   (removes odometer drift), then a banded Needleman-Wunsch alignment over the
-   joint-length sequences chooses 1:1, 2:1, 1:2, inserted, or removed matches.
-   Gaps are cheaper inside spans listed in repairs_between_runs.csv.
+2. Fixed features (valves, tees, fittings) are paired between runs by position, and a
+   current -> previous log map is fitted to the pairs. Paired anchor joints of matching
+   length are forced 1:1 and split the line into sections. Joints beyond the other run's
+   first or last weld have no counterpart.
+3. Within a section, current-run lengths are drift-scaled (line-wide scale, then the
+   median ratio of the section's confident matches), and a banded Needleman-Wunsch
+   alignment over the joint-length sequences chooses 1:1, 2:1, 1:2, inserted, or removed
+   matches. Gaps are cheaper inside spans listed in repairs_between_runs.csv, and free at
+   the line's open ends.
 
 Every tuning value comes from ``settings.alignment``.
 
@@ -30,13 +33,13 @@ from ili.ingest import load_standardized
 from ili.schema import ANCHOR_TYPES
 from ili.validation import score_alignment, write_metrics
 
-JOINT_COLUMNS = ["joint_idx", "gw_id", "start_ft", "end_ft", "length_ft", "anchor_type"]
+JOINT_COLUMNS = ["joint_idx", "gw_id", "start_ft", "end_ft", "length_ft", "anchor_type", "anchor_ft"]
 _ANCHOR_VALUES = {t.value for t in ANCHOR_TYPES}
 
 
 def build_joints(std: pd.DataFrame) -> pd.DataFrame:
-    """One row per joint [weld k, weld k+1) from the run's girth-weld rows, with the type of
-    the first fixed feature (valve/tee/fitting) inside it, if any."""
+    """One row per joint [weld k, weld k+1) from the run's girth-weld rows, with the type and
+    log distance of the first fixed feature (valve/tee/fitting) inside it, if any."""
     welds = std[std.feature_type == "girth_weld"].sort_values("log_dist_ft", kind="stable")
     logs = welds.log_dist_ft.to_numpy(dtype=float)
     ids = welds.us_gw_id.astype(object).to_numpy()
@@ -48,13 +51,14 @@ def build_joints(std: pd.DataFrame) -> pd.DataFrame:
         "end_ft": logs[1:n + 1],
         "length_ft": np.diff(logs) if n else np.array([], dtype=float),
     })
-    anchor_type = [None] * n
+    anchor_type, anchor_ft = [None] * n, np.full(n, np.nan)
     anchors = std[std.feature_type.isin(_ANCHOR_VALUES)].sort_values("log_dist_ft", kind="stable")
     for kind, x in zip(anchors.feature_type, anchors.log_dist_ft):
         k = int(np.searchsorted(logs, x, side="right") - 1)
         if 0 <= k < n and anchor_type[k] is None:
-            anchor_type[k] = str(kind)
+            anchor_type[k], anchor_ft[k] = str(kind), float(x)
     joints["anchor_type"] = pd.Series(anchor_type, dtype=object)
+    joints["anchor_ft"] = anchor_ft
     joints = joints[JOINT_COLUMNS]
     joints.attrs["run_id"] = std.run_id.iloc[0] if "run_id" in std and len(std) else None
     return joints
@@ -64,45 +68,105 @@ def _span(joints: pd.DataFrame) -> tuple[float, float]:
     return float(joints.start_ft.iloc[0]), float(joints.end_ft.iloc[-1])
 
 
-def match_anchors(prev_j: pd.DataFrame, curr_j: pd.DataFrame, cfg: AlignmentCfg) -> list[tuple[int, int]]:
-    """Pair anchor joints between runs, in line order.
+@dataclass(frozen=True)
+class LogMap:
+    """Linear map between the runs' log distances: prev = offset + scale * curr."""
+    scale: float
+    offset: float
 
-    Current-run positions are scaled onto the previous run's span. A small alignment over
-    the two anchor lists pairs same-type anchors within ``anchor_tol_ft``; an anchor with no
-    counterpart (not reported in the other run) is skipped at a cost of ``anchor_tol_ft``.
-    """
-    pa = prev_j[prev_j.anchor_type.notna()]
-    ca = curr_j[curr_j.anchor_type.notna()]
-    if pa.empty or ca.empty:
-        return []
+    def to_prev(self, x):
+        return self.offset + self.scale * x
+
+    def to_curr(self, x):
+        return (x - self.offset) / self.scale
+
+
+def _endpoint_map(prev_j: pd.DataFrame, curr_j: pd.DataFrame) -> LogMap:
+    """Map the runs' first and last welds onto each other (right when both cover the same welds)."""
     (p0, p1), (c0, c1) = _span(prev_j), _span(curr_j)
     scale = (p1 - p0) / (c1 - c0)
-    ppos = ((pa.start_ft + pa.end_ft) / 2).to_numpy()
-    cpos = p0 + ((ca.start_ft + ca.end_ft) / 2 - c0).to_numpy() * scale
-    ptype, ctype = pa.anchor_type.to_numpy(), ca.anchor_type.to_numpy()
-    n, m, skip = len(pa), len(ca), cfg.anchor_tol_ft
+    return LogMap(scale, p0 - scale * c0)
 
+
+def _fit_map(ppos: np.ndarray, cpos: np.ndarray, fallback: LogMap) -> LogMap:
+    """Least-squares line through paired anchor positions; a single pair keeps the fallback scale."""
+    if len(ppos) == 0:
+        return fallback
+    if len(ppos) == 1:
+        return LogMap(fallback.scale, float(ppos[0] - fallback.scale * cpos[0]))
+    scale, offset = np.polyfit(cpos, ppos, 1)
+    return LogMap(float(scale), float(offset))
+
+
+def _pair_anchor_lists(ppos, ptype, cpos, ctype, tol) -> list[tuple[int, int]]:
+    """Order-preserving pairing of two anchor lists (curr positions already mapped onto prev):
+    same type and |d| <= tol to pair, cost |d|; an unpaired anchor costs ``tol``."""
+    n, m = len(ppos), len(cpos)
     cost = np.zeros((n + 1, m + 1))
-    cost[:, 0] = np.arange(n + 1) * skip
-    cost[0, :] = np.arange(m + 1) * skip
+    cost[:, 0] = np.arange(n + 1) * tol
+    cost[0, :] = np.arange(m + 1) * tol
     for i in range(1, n + 1):
         for j in range(1, m + 1):
             d = abs(ppos[i - 1] - cpos[j - 1])
-            pair = cost[i - 1, j - 1] + d if ptype[i - 1] == ctype[j - 1] and d <= skip else np.inf
-            cost[i, j] = min(pair, cost[i - 1, j] + skip, cost[i, j - 1] + skip)
+            pair = cost[i - 1, j - 1] + d if ptype[i - 1] == ctype[j - 1] and d <= tol else np.inf
+            cost[i, j] = min(pair, cost[i - 1, j] + tol, cost[i, j - 1] + tol)
 
     pairs = []
     i, j = n, m
     while i > 0 and j > 0:
         d = abs(ppos[i - 1] - cpos[j - 1])
-        if ptype[i - 1] == ctype[j - 1] and d <= skip and np.isclose(cost[i, j], cost[i - 1, j - 1] + d):
-            pairs.append((int(pa.joint_idx.iloc[i - 1]), int(ca.joint_idx.iloc[j - 1])))
+        if ptype[i - 1] == ctype[j - 1] and d <= tol and np.isclose(cost[i, j], cost[i - 1, j - 1] + d):
+            pairs.append((i - 1, j - 1))
             i, j = i - 1, j - 1
-        elif np.isclose(cost[i, j], cost[i - 1, j] + skip):
+        elif np.isclose(cost[i, j], cost[i - 1, j] + tol):
             i -= 1
         else:
             j -= 1
     return pairs[::-1]
+
+
+def _anchors(joints: pd.DataFrame) -> pd.DataFrame:
+    return joints[joints.anchor_type.notna()]
+
+
+def match_anchors(prev_j: pd.DataFrame, curr_j: pd.DataFrame, cfg: AlignmentCfg) -> list[tuple[int, int]]:
+    """Pair anchor joints between runs, in line order, as (prev joint_idx, curr joint_idx).
+
+    Anchors are paired by position (the feature's log distance) under a current -> previous log
+    map. Two starting maps are tried: the runs' endpoints, which is right when both runs cover
+    the same welds, and the offset most same-type anchor pairs agree on, which is right when
+    one run starts or ends elsewhere. Each is refined by pairing, refitting the map to the pairs
+    by least squares, and pairing again until the pairs stop changing. The result with the most
+    pairs wins (then the smaller total residual). An anchor with no counterpart is skipped.
+    """
+    pa, ca = _anchors(prev_j), _anchors(curr_j)
+    if pa.empty or ca.empty:
+        return []
+    ppos, cpos = pa.anchor_ft.to_numpy(), ca.anchor_ft.to_numpy()
+    ptype, ctype = pa.anchor_type.to_numpy(), ca.anchor_type.to_numpy()
+    tol = cfg.anchor_tol_ft
+
+    starts = [_endpoint_map(prev_j, curr_j)]
+    offsets = (ppos[:, None] - cpos[None, :])[ptype[:, None] == ctype[None, :]]
+    if len(offsets):
+        votes = (np.abs(offsets[:, None] - offsets[None, :]) <= tol).sum(axis=1)
+        starts.append(LogMap(1.0, float(offsets[np.argmax(votes)])))
+
+    best_key, best_pairs = None, []
+    for start in starts:
+        log_map, pairs = start, None
+        for _ in range(len(ppos) + 1):  # each round can only settle the pairing further
+            new = _pair_anchor_lists(ppos, ptype, log_map.to_prev(cpos), ctype, tol)
+            if new == pairs:
+                break
+            pairs = new
+            i, j = [a for a, _ in pairs], [b for _, b in pairs]
+            log_map = _fit_map(ppos[i], cpos[j], start)
+        resid = float(np.abs(ppos[i] - log_map.to_prev(cpos[j])).sum())
+        key = (-len(pairs), resid)
+        if best_key is None or key < best_key:
+            best_key, best_pairs = key, pairs
+    return [(int(pa.joint_idx.iloc[i]), int(ca.joint_idx.iloc[j])) for i, j in best_pairs]
 
 
 # ---------------------------------------------------------------------------
@@ -127,34 +191,42 @@ def _mismatch(a: float, b: float, cfg: AlignmentCfg) -> float:
     return abs(a - b) / _tolerance(a, b, cfg)
 
 
+def _gap_cost(repair: bool, cfg: AlignmentCfg) -> float:
+    return cfg.gap_penalty_repair if repair else cfg.gap_penalty
+
+
 # (match type, prev joints consumed, curr joints consumed), in tie-break order.
 _MOVES = (("1:1", 1, 1), ("2:1", 2, 1), ("1:2", 1, 2), ("removed", 1, 0), ("inserted", 0, 1))
 
 
 def align_section(prev_len: np.ndarray, curr_len: np.ndarray, prev_repair: np.ndarray,
-                  curr_repair: np.ndarray, cfg: AlignmentCfg) -> list[Step]:
+                  curr_repair: np.ndarray, cfg: AlignmentCfg, free_start: bool = False,
+                  free_end: bool = False) -> list[Step]:
     """Globally align two joint-length sequences (curr already drift-scaled).
 
     Costs are in units of the length tolerance: a 1:1 match costs its mismatch, a 2:1 or 1:2
     match its mismatch plus ``missed_weld_penalty``, and an inserted or removed joint
-    ``gap_penalty`` (``gap_penalty_repair`` inside a repaired span). The search is banded to
-    ``band_joints`` around the diagonal. Ties resolve in the order of ``_MOVES``.
+    ``gap_penalty`` (``gap_penalty_repair`` inside a repaired span). The search is banded: row i
+    covers the columns between the start-aligned diagonal (j = i) and the end-aligned one
+    (j = i - (n - m)), widened by ``band_joints`` each side. So a head or tail offset of any size
+    is searched, the end is always reachable, and the band only limits how far a path may stray
+    from both alignments in mid-section. Ties resolve in the order of ``_MOVES``.
+
+    ``free_start``/``free_end`` make gaps before the first (after the last) match cost nothing,
+    for the head and tail of a line, where the two runs need not begin or end at the same weld.
+    Charged there, the unavoidable gaps would push the alignment into coincidental length
+    matches instead.
     """
     n, m = len(prev_len), len(curr_len)
     cost = np.full((n + 1, m + 1), np.inf)
     move = np.full((n + 1, m + 1), -1, dtype=np.int8)
     cost[0, 0] = 0.0
-
-    def gap(repair: bool) -> float:
-        return cfg.gap_penalty_repair if repair else cfg.gap_penalty
+    rows = np.arange(n + 1)
+    j_lo = np.maximum(0, np.minimum(rows, rows - (n - m)) - cfg.band_joints)
+    j_hi = np.minimum(m, np.maximum(rows, rows - (n - m)) + cfg.band_joints)
 
     for i in range(n + 1):
-        if n and m:
-            centre = round(i * m / n)
-            j_lo, j_hi = max(0, centre - cfg.band_joints), min(m, centre + cfg.band_joints)
-        else:
-            j_lo, j_hi = 0, m
-        for j in range(j_lo, j_hi + 1):
+        for j in range(j_lo[i], j_hi[i] + 1):
             if i == 0 and j == 0:
                 continue
             best, best_k = np.inf, -1
@@ -162,9 +234,11 @@ def align_section(prev_len: np.ndarray, curr_len: np.ndarray, prev_repair: np.nd
                 if i < dp or j < dc or not np.isfinite(cost[i - dp, j - dc]):
                     continue
                 if kind == "removed":
-                    c = gap(prev_repair[i - 1])
+                    free = (free_start and j == 0) or (free_end and j == m)
+                    c = 0.0 if free else _gap_cost(prev_repair[i - 1], cfg)
                 elif kind == "inserted":
-                    c = gap(curr_repair[j - 1])
+                    free = (free_start and i == 0) or (free_end and i == n)
+                    c = 0.0 if free else _gap_cost(curr_repair[j - 1], cfg)
                 else:
                     c = _mismatch(prev_len[i - dp:i].sum(), curr_len[j - dc:j].sum(), cfg)
                     if dp + dc == 3:
@@ -174,9 +248,6 @@ def align_section(prev_len: np.ndarray, curr_len: np.ndarray, prev_repair: np.nd
                     best, best_k = total, k
             cost[i, j], move[i, j] = best, best_k
 
-    if not np.isfinite(cost[n, m]):  # band too narrow for this section: search it in full
-        return align_section(prev_len, curr_len, prev_repair, curr_repair,
-                             cfg.model_copy(update={"band_joints": max(n, m)}))
     steps: list[Step] = []
     i, j = n, m
     while i or j:
@@ -228,43 +299,64 @@ def align_welds(prev_std: pd.DataFrame, curr_std: pd.DataFrame, settings, repair
     pj, cj = build_joints(prev_std), build_joints(curr_std)
     if pj.empty or cj.empty:
         raise ValueError("each run needs at least two girth welds to align")
+    if repairs is not None and not {"start_ft", "end_ft"} <= set(repairs.columns):
+        raise ValueError("repairs need start_ft and end_ft columns (current-run log distance)")
     pairs = match_anchors(pj, cj, cfg)
+    plen, clen = pj.length_ft.to_numpy(), cj.length_ft.to_numpy()
 
-    # Prev -> curr log mapping through the paired anchors (drift between anchors is linear).
-    (p0, p1), (c0, c1) = _span(pj), _span(cj)
-    global_scale = (p1 - p0) / (c1 - c0)
-    pmid = np.array([(pj.start_ft[a] + pj.end_ft[a]) / 2 for a, _ in pairs])
-    cmid = np.array([(cj.start_ft[b] + cj.end_ft[b]) / 2 for _, b in pairs])
+    # Current -> previous log map fitted to the paired anchors (the run endpoints if none);
+    # between anchors drift is taken as linear.
+    ppos = np.array([pj.anchor_ft[a] for a, _ in pairs])
+    cpos = np.array([cj.anchor_ft[b] for _, b in pairs])
+    log_map = _fit_map(ppos, cpos, _endpoint_map(pj, cj))
 
     def prev_to_curr(x: np.ndarray) -> np.ndarray:
         if len(pairs) < 2:
-            ref_p, ref_c = (pmid[0], cmid[0]) if pairs else (p0, c0)
-            return ref_c + (x - ref_p) / global_scale
-        inside = np.interp(x, pmid, cmid)
-        lo = cmid[0] + (x - pmid[0]) / global_scale
-        hi = cmid[-1] + (x - pmid[-1]) / global_scale
-        return np.where(x < pmid[0], lo, np.where(x > pmid[-1], hi, inside))
+            return log_map.to_curr(x)
+        lo = cpos[0] + (x - ppos[0]) / log_map.scale
+        hi = cpos[-1] + (x - ppos[-1]) / log_map.scale
+        return np.where(x < ppos[0], lo, np.where(x > ppos[-1], hi, np.interp(x, ppos, cpos)))
 
-    spans = np.empty((0, 2)) if repairs is None or repairs.empty else \
-        repairs[["start_ft", "end_ft"]].to_numpy(dtype=float)
-    curr_rep = _in_spans(((cj.start_ft + cj.end_ft) / 2).to_numpy(), spans)
-    prev_rep = _in_spans(prev_to_curr(((pj.start_ft + pj.end_ft) / 2).to_numpy()), spans)
+    spans = np.empty((0, 2)) if repairs is None or repairs.empty else         repairs[["start_ft", "end_ft"]].to_numpy(dtype=float)
+    cmid = ((cj.start_ft + cj.end_ft) / 2).to_numpy()
+    pmid = prev_to_curr(((pj.start_ft + pj.end_ft) / 2).to_numpy())  # in curr log distance
+    curr_rep, prev_rep = _in_spans(cmid, spans), _in_spans(pmid, spans)
 
-    # Sections between anchor pairs; head and tail borrow the nearest inner scale.
-    bounds = [(-1, -1), *pairs, (len(pj), len(cj))]
+    # A joint lying beyond the other run's first or last weld (by more than the anchor position
+    # tolerance) has no counterpart, so it is removed/inserted outright. Left to the section
+    # alignment, lengths alone could pair it with a joint far from its position.
+    tol = cfg.anchor_tol_ft
+    (c0, c1), (p0, p1) = _span(cj), prev_to_curr(np.array(_span(pj)))
+    p_lead, p_trail = pmid < c0 - tol, pmid > c1 + tol
+    c_lead, c_trail = cmid < p0 - tol, cmid > p1 + tol
+
+    # A paired anchor bounds a section (its joints forced 1:1) only when the two anchor joints
+    # agree in length. Otherwise a weld beside the anchor was missed in one run, and the anchor
+    # joint is left to the section alignment, where it can take part in a 2:1 or 1:2.
+    bounds = [(a, b) for a, b in pairs
+              if _mismatch(plen[a], clen[b] * log_map.scale, cfg) <= cfg.confidence_bands.medium]
+    edges = [(-1, -1), *bounds, (len(pj), len(cj))]
+    for a, b in bounds:  # a section boundary is matched, never beyond the other run
+        p_lead[a] = p_trail[a] = c_lead[b] = c_trail[b] = False
+
+    def align(k, p_idx, c_idx, scale):
+        return align_section(plen[p_idx], clen[c_idx] * scale, prev_rep[p_idx], curr_rep[c_idx], cfg,
+                             free_start=k == 0, free_end=k == len(edges) - 2)
+
+    # Drift correction in two passes: align each section at the line-wide scale, then rescale it
+    # by the median length ratio of its confident 1:1 matches and align again. A median follows
+    # the section's own drift but ignores the one joint a local odometer jump or a missed weld
+    # changes, which a span ratio would spread over every joint.
     sections = []
-    for (pa, ca), (pb, cb) in zip(bounds[:-1], bounds[1:]):
+    for k, ((pa, ca), (pb, cb)) in enumerate(zip(edges[:-1], edges[1:])):
         p_idx, c_idx = np.arange(pa + 1, pb), np.arange(ca + 1, cb)
-        inner = pa >= 0 and pb < len(pj)
-        p_span = pj.length_ft.to_numpy()[p_idx].sum()
-        c_span = cj.length_ft.to_numpy()[c_idx].sum()
-        scale = p_span / c_span if inner and c_span > 0 and p_span > 0 else None
-        sections.append((p_idx, c_idx, scale))
-    inner_scales = [s for *_, s in sections if s is not None]
-    for k, (p_idx, c_idx, scale) in enumerate(sections):
-        if scale is None:
-            near = [s for *_, s in (sections[k + 1:] if k == 0 else sections[:k][::-1]) if s is not None]
-            sections[k] = (p_idx, c_idx, near[0] if near else (inner_scales[0] if inner_scales else global_scale))
+        p_idx = p_idx[~(p_lead | p_trail)[p_idx]]
+        c_idx = c_idx[~(c_lead | c_trail)[c_idx]]
+        steps = align(k, p_idx, c_idx, log_map.scale)
+        ratios = [plen[p_idx[s.prev_idx[0]]] / clen[c_idx[s.curr_idx[0]]] for s in steps
+                  if s.match_type == "1:1" and s.mismatch <= cfg.confidence_bands.high]
+        scale = float(np.median(ratios)) if ratios else log_map.scale
+        sections.append((p_idx, c_idx, scale, align(k, p_idx, c_idx, scale) if ratios else steps))
 
     rows = []
 
@@ -290,20 +382,26 @@ def align_welds(prev_std: pd.DataFrame, curr_std: pd.DataFrame, settings, repair
             "is_anchor": is_anchor,
         })
 
-    for k, (p_idx, c_idx, scale) in enumerate(sections):
-        steps = align_section(pj.length_ft.to_numpy()[p_idx], cj.length_ft.to_numpy()[c_idx] * scale,
-                              prev_rep[p_idx], curr_rep[c_idx], cfg)
+    def add_unmatched(section_id, p_mask, c_mask, scale):
+        for i in np.flatnonzero(p_mask):
+            add(section_id, "removed", (int(i),), (), np.nan, _gap_cost(prev_rep[i], cfg), scale, False)
+        for j in np.flatnonzero(c_mask):
+            add(section_id, "inserted", (), (int(j),), np.nan, _gap_cost(curr_rep[j], cfg), scale, False)
+
+    add_unmatched(0, p_lead, c_lead, sections[0][2])
+    for k, (p_idx, c_idx, scale, steps) in enumerate(sections):
         for s in steps:
             add(k, s.match_type, tuple(int(p_idx[i]) for i in s.prev_idx),
                 tuple(int(c_idx[j]) for j in s.curr_idx), s.mismatch, s.cost, scale, False)
-        if k < len(pairs):
-            a, b = pairs[k]
-            mis = _mismatch(pj.length_ft[a], cj.length_ft[b] * global_scale, cfg)
-            add(k + 1, "1:1", (a,), (b,), mis, mis, global_scale, True)
+        if k < len(bounds):
+            a, b = bounds[k]
+            mis = _mismatch(plen[a], clen[b] * log_map.scale, cfg)
+            add(k + 1, "1:1", (a,), (b,), mis, mis, log_map.scale, True)
+    add_unmatched(len(sections) - 1, p_trail, c_trail, sections[-1][2])
 
     weld_map = pd.DataFrame(rows, columns=WELD_MAP_COLUMNS)
     changed = _changed_sections(weld_map)
-    summary = _summary(weld_map, pj, cj, changed, pairs, sections)
+    summary = _summary(weld_map, pj, cj, changed, pairs, bounds, log_map, [sc for *_, sc, _ in sections])
     return AlignmentResult(weld_map, changed, summary)
 
 
@@ -342,19 +440,20 @@ def _changed_sections(wm: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(out, columns=cols)
 
 
-def _summary(wm, pj, cj, changed, pairs, sections) -> dict:
+def _summary(wm, pj, cj, changed, pairs, bounds, log_map, scales) -> dict:
     n_prev, n_curr = _joint_counts(wm)
     joints = n_prev + n_curr
     matched = wm.match_type.isin(["1:1", "2:1", "1:2"])
     outside = ~wm.in_repair
-    scales = [s for *_, s in sections]
     return {
         "prev_run_id": str(pj.attrs.get("run_id")),
         "curr_run_id": str(cj.attrs.get("run_id")),
         "n_prev_joints": int(len(pj)),
         "n_curr_joints": int(len(cj)),
         "n_anchor_pairs": len(pairs),
-        "n_sections": len(sections),
+        "n_anchor_bounds": len(bounds),
+        "n_sections": len(scales),
+        "line_scale": log_map.scale,
         "section_scale_min": float(min(scales)),
         "section_scale_max": float(max(scales)),
         "counts_by_match_type": {t: int((wm.match_type == t).sum()) for t in MATCH_TYPES},

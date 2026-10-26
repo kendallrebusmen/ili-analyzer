@@ -36,3 +36,18 @@ def test_cli_missing_file_exit_2(tmp_path, capsys):
                              "--out", str(tmp_path)])
     assert code == 2
     assert "nope.csv" in capsys.readouterr().err
+
+
+def test_cli_wrong_truth_file_exit_2(synth, tmp_path, capsys):
+    _, data = synth
+    out = tmp_path / "out"
+    ingest.main(["--run", str(data / "tally_prev_vendor_a.csv"), str(MAP_A), "2021-06-15",
+                 "--run", str(data / "tally_curr_vendor_b.xlsx"), str(MAP_B), "--out", str(out)])
+    code = align_welds.main([
+        "--prev", str(out / "standardized" / "2021_vendorA.csv"),
+        "--curr", str(out / "standardized" / "2026_vendorB.csv"),
+        "--truth", str(data / "reference" / "repairs_between_runs.csv"),  # not a truth file
+        "--out", str(out),
+    ])
+    assert code == 2
+    assert "error:" in capsys.readouterr().err

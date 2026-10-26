@@ -35,7 +35,10 @@ def test_build_joints_counts(runs):
     assert np.allclose(j.end_ft.to_numpy()[:-1], j.start_ft.to_numpy()[1:])
     assert j.anchor_type.notna().sum() == 10
     assert set(j.anchor_type.dropna()) == {"valve", "tee"}
-    assert list(j.columns) == ["joint_idx", "gw_id", "start_ft", "end_ft", "length_ft", "anchor_type"]
+    assert list(j.columns) == ["joint_idx", "gw_id", "start_ft", "end_ft", "length_ft", "anchor_type", "anchor_ft"]
+    a = j[j.anchor_type.notna()]
+    assert ((a.anchor_ft >= a.start_ft) & (a.anchor_ft < a.end_ft)).all()
+    assert j[j.anchor_type.isna()].anchor_ft.isna().all()
 
 
 def test_build_joints_ignores_non_weld_rows():

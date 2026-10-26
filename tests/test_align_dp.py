@@ -84,8 +84,9 @@ def test_double_missed_weld_no_crash():
     assert_each_joint_once(steps, 5, 3)
 
 
-def test_unreachable_band_falls_back_to_full_search():
-    """With band 0, (1, 10) cannot be reached from (0, 0) inside the band."""
+def test_zero_band_still_spans_the_start_to_end_offset():
+    """With band 0 the search still covers the start- and end-aligned diagonals, so the
+    9-joint offset between them is searched and the optimum found."""
     narrow = CFG.model_copy(update={"band_joints": 0})
     prev = np.array([40.0])
     curr = np.array([10.0, 11, 12, 13, 14, 15, 16, 17, 18, 40])  # no pair sums to ~40
@@ -128,3 +129,27 @@ def test_missed_weld_recovered_in_long_random_section():
     steps = run(prev, curr)
     assert ("2:1", (100, 101), (100,)) in shape(steps)
     assert sum(s.match_type == "1:1" for s in steps) == 198
+
+
+def test_free_ends_prefer_gaps_over_coincidental_matches():
+    """prev ends partway through curr. With charged end gaps the DP would rather pair prev's
+    last joints with later curr joints of similar length than leave curr's tail unmatched."""
+    prev = [40.0, 38.0, 41.0, 39.5, 42.0]
+    curr = [40.0, 38.0, 41.0, 81.5, 39.6, 42.1, 40.3]  # prev 3+4 missed in curr (2:1), then 3 extra joints
+    z = np.zeros
+    charged = align_section(np.array(prev), np.array(curr), z(5, bool), z(7, bool), CFG)
+    free = align_section(np.array(prev), np.array(curr), z(5, bool), z(7, bool), CFG, free_end=True)
+    assert ("2:1", (3, 4), (3,)) not in shape(charged)
+    assert shape(free)[3] == ("2:1", (3, 4), (3,))
+    assert [s.match_type for s in free[4:]] == ["inserted"] * 3 and all(s.cost == 0 for s in free[4:])
+    assert_each_joint_once(free, 5, 7)
+
+
+def test_free_start_skips_leading_extra_joints():
+    curr = [40.0, 38.0, 41.0]
+    prev = [39.0, 41.5, 40.0, 38.0, 41.0]
+    steps = align_section(np.array(prev), np.array(curr), np.zeros(5, bool), np.zeros(3, bool), CFG,
+                          free_start=True)
+    assert shape(steps) == [("removed", (0,), ()), ("removed", (1,), ()),
+                            ("1:1", (2,), (0,)), ("1:1", (3,), (1,)), ("1:1", (4,), (2,))]
+    assert steps[0].cost == steps[1].cost == 0
