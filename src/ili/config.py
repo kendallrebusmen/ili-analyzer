@@ -8,7 +8,7 @@ default engineering value.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Literal
+from typing import Annotated, Literal
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -114,6 +114,13 @@ class RemainingLifeCfg(_Strict):
     hca_max_interval_months: float
 
 
+# 195.452(h)(2): an operator must obtain sufficient information to discover a condition no later than
+# 180 days after an assessment. A configured discovery limit beyond it would allow a non-compliant date.
+REGULATORY_MAX_DISCOVERY_DAYS = 180
+DUE_DAY_CATEGORIES = ("60_day", "180_day")
+_PositiveInt = Annotated[int, Field(strict=True, gt=0)]
+
+
 class ClassificationCfg(_Strict):
     criteria_file: str
     girth_weld_proximity_in: float | None
@@ -122,8 +129,16 @@ class ClassificationCfg(_Strict):
     seam_clock_tol_min: float | None
     general_corrosion_min_dim_in: float | None
     widespread_circ_min_width_frac: float | None
-    due_days: dict[Literal["60_day", "180_day"], int]
-    discovery_max_days: int
+    due_days: dict[Literal["60_day", "180_day"], _PositiveInt]
+    discovery_max_days: Annotated[int, Field(strict=True, gt=0, le=REGULATORY_MAX_DISCOVERY_DAYS)]
+
+    @field_validator("due_days")
+    @classmethod
+    def _both_timelines(cls, due_days: dict) -> dict:
+        missing = [c for c in DUE_DAY_CATEGORIES if c not in due_days]
+        if missing:
+            raise ValueError(f"due_days needs a positive whole number of days for {', '.join(missing)}")
+        return due_days
 
 
 class CpOverlayCfg(_Strict):
@@ -189,8 +204,13 @@ class RepairCriteria(_Strict):
 
 
 def _read_yaml(path: Path) -> dict:
+    """The parsed YAML file (empty file: ``{}``). Malformed YAML is a ``ValueError`` naming the file, so
+    every CLI reports it as a usage error (exit 2) rather than a traceback."""
     with open(path, encoding="utf-8") as fh:
-        return yaml.safe_load(fh) or {}
+        try:
+            return yaml.safe_load(fh) or {}
+        except yaml.YAMLError as exc:
+            raise ValueError(f"{path}: malformed YAML: {exc}") from None
 
 
 def load_settings(path: Path = DEFAULT_SETTINGS) -> Settings:

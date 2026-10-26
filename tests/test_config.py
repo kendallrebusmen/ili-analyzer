@@ -108,3 +108,40 @@ def test_strength_length_basis_loads(tmp_path):
     bad = _write_settings(tmp_path, lambda r: r["strength"].update(length_basis="bogus"))
     with pytest.raises(ValidationError):
         load_settings(bad)
+
+
+@pytest.mark.parametrize("loader,name", [(load_settings, "settings.yaml"), (load_repair_criteria, "criteria.yaml")])
+def test_malformed_yaml_is_a_value_error_naming_the_file(tmp_path, loader, name):
+    path = tmp_path / name
+    path.write_text("rules: [\n  - id: x", encoding="utf-8")
+    with pytest.raises(ValueError, match="malformed YAML") as exc:
+        loader(path)
+    assert str(path) in str(exc.value)
+
+
+@pytest.mark.parametrize("due_days", [
+    {"60_day": 60},  # 180_day missing
+    {"180_day": 180},  # 60_day missing
+    {"60_day": 0, "180_day": 180},
+    {"60_day": 60, "180_day": -1},
+    {"60_day": 60.5, "180_day": 180},
+    {"60_day": "60", "180_day": 180},
+    {"60_day": True, "180_day": 180},
+    {"60_day": 60, "180_day": 180, "30_day": 30},
+])
+def test_due_days_need_both_timelines_as_positive_ints(tmp_path, due_days):
+    path = _write_settings(tmp_path, lambda r: r["classification"].update(due_days=due_days))
+    with pytest.raises(ValidationError, match="due_days"):
+        load_settings(path)
+
+
+@pytest.mark.parametrize("days, ok", [(0, False), (-5, False), (1, True), (180, True), (181, False),
+                                      (90.0, False)])
+def test_discovery_max_days_bounds(tmp_path, days, ok):
+    """195.452(h)(2): discovery no later than 180 days after the assessment."""
+    path = _write_settings(tmp_path, lambda r: r["classification"].update(discovery_max_days=days))
+    if ok:
+        assert load_settings(path).classification.discovery_max_days == days
+    else:
+        with pytest.raises(ValidationError, match="discovery_max_days"):
+            load_settings(path)
