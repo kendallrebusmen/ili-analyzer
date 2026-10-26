@@ -29,6 +29,7 @@ from ili.units import CLOCK_MINUTES, wrap_clock_min
 from ili.validation import score_matching, write_metrics
 
 _MATCHED = ("1:1", "2:1", "1:2")
+WELD_MAP_COLUMNS = ("match_type", "prev_start_ft", "curr_start_ft", "prev_length_ft", "curr_length_ft", "in_repair")
 DAYS_PER_YEAR = 365.25
 NONCANDIDATE_COST = 1e9  # cost of a non-candidate cell in the assignment; pairs chosen at it are dropped
 FT_PER_IN = 1 / 12
@@ -484,10 +485,15 @@ def _require_columns(df: pd.DataFrame, cols: tuple, what: str) -> None:
 
 def lookup_od(pos_ft, pipe: pd.DataFrame, tol_ft: float) -> np.ndarray:
     """Outside diameter (in) at each current-run position: the covering pipe row, else the nearest
-    one within ``tol_ft`` of the table; ValueError naming the first position that is not covered."""
+    one within ``tol_ft`` of the table; ValueError naming the first position that is not covered,
+    and for an empty table or a row without ``od_in``."""
     _require_columns(pipe, ("start_ft", "end_ft", "od_in"), "pipe properties")
+    if pipe.empty:
+        raise ValueError("the pipe properties table has no rows")
     pipe = pipe.sort_values("start_ft", kind="stable")
     start, end, od = (pipe[c].to_numpy(float) for c in ("start_ft", "end_ft", "od_in"))
+    if np.isnan(od).any():
+        raise ValueError(f"pipe properties row starting at {start[np.isnan(od)][0]:.3f} ft has no od_in")
     x = np.asarray(pos_ft, dtype=float)
     k = np.clip(np.searchsorted(start, x, side="right") - 1, 0, len(start) - 1)
     alt = np.minimum(k + 1, len(start) - 1)  # in a gap between rows the next row may be nearer
@@ -501,7 +507,12 @@ def lookup_od(pos_ft, pipe: pd.DataFrame, tol_ft: float) -> np.ndarray:
 
 
 def _with_od(placed: pd.DataFrame, pipe: pd.DataFrame, tol_ft: float) -> pd.DataFrame:
-    return placed.assign(od_in=lookup_od(placed.pos_curr_ft.to_numpy(float), pipe, tol_ft))
+    """``od_in`` for features in matched rows, the only ones that use it; NaN elsewhere, so a run
+    covering more line than the other (or than the pipe table) does not need OD there."""
+    od = np.full(len(placed), np.nan)
+    use = placed.in_matched_row.to_numpy(bool)
+    od[use] = lookup_od(placed.pos_curr_ft.to_numpy(float)[use], pipe, tol_ft)
+    return placed.assign(od_in=od)
 
 
 def _feature_side(f: pd.DataFrame) -> pd.DataFrame:
@@ -559,7 +570,7 @@ def _cluster_part(prev: pd.DataFrame, curr: pd.DataFrame, found: list) -> pd.Dat
 
 def _repair_flags(prev: pd.DataFrame, wm: pd.DataFrame, repairs) -> np.ndarray:
     """Prev features whose row was removed in a repair, or whose current-run position is in a repairs span."""
-    in_repair = wm.get("in_repair", pd.Series(False, index=wm.index)).fillna(False).astype(bool).to_numpy()
+    in_repair = wm.in_repair.fillna(False).astype(bool).to_numpy()
     removed = (wm.match_type == "removed").to_numpy() & in_repair
     row = prev.wm_row.to_numpy()
     flag = (row >= 0) & removed[np.maximum(row, 0)]
@@ -650,6 +661,7 @@ def match_anomalies(prev_std, curr_std, weld_map, settings: Settings, pipe, repa
     """Match the anomalies of two runs: 1:1 pairs, then many-to-one clusters, then missing and new.
 
     Every anomaly of each run lands in exactly one row of the match table."""
+    _require_columns(weld_map, WELD_MAP_COLUMNS, "weld map")
     if repairs is not None:
         _require_columns(repairs, ("start_ft", "end_ft"), "repairs")
     tol = settings.alignment.anchor_tol_ft

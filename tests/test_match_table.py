@@ -211,6 +211,79 @@ def test_reference_errors():
     assert len(ok.match_table) == 8
 
 
+def test_empty_pipe_table_or_missing_od_is_value_error():
+    prev, curr, wm, pipe, repairs = _runs()
+    with pytest.raises(ValueError, match="no rows"):
+        match_anomalies(prev, curr, wm, S, pipe.iloc[:0], repairs)
+    with pytest.raises(ValueError, match="od_in"):
+        match_anomalies(prev, curr, wm, S, pipe.assign(od_in=np.nan), repairs)
+
+
+def test_weld_map_missing_columns_is_value_error():
+    prev, curr, wm, pipe, repairs = _runs()
+    with pytest.raises(ValueError, match=r"weld map.*'curr_length_ft'.*'in_repair'"):
+        match_anomalies(prev, curr, wm.drop(columns=["in_repair", "curr_length_ft"]), S, pipe, repairs)
+
+
+def test_od_only_needed_in_matched_rows():
+    """Prev features in the removed row and past the last matched row map outside a pipe table that
+    ends with the current run; they never use OD, so matching succeeds."""
+    prev, curr, wm, pipe, repairs = _runs()
+    prev = prev[prev.feature_id != "Pspan"]
+    curr_end = pd.DataFrame({"start_ft": [0.0], "end_ft": [920.0], "od_in": [12.75]})
+    wm = wm.iloc[:2]  # the run ends after the removed row: Prow (removed) has no OD
+    t = match_anomalies(prev, curr, wm, S, curr_end, None).match_table.set_index("prev_feature_id")
+    assert t.loc["Prow"].match_type == "missing" and t.loc["Prow"].missing_hint == "in_repaired_section"
+
+
+# ---- runs of different extent ----------------------------------------------------------------
+
+@pytest.fixture(scope="module")
+def seed1():
+    r = generate(SynthParams(line_miles=5, seed=1))
+    welds = r.curr_std[r.curr_std.feature_type == "girth_weld"].log_dist_ft.sort_values().to_numpy()
+    return r, welds
+
+
+def _match_extent(r, curr, pipe, repairs):
+    wm = align_welds(r.prev_std, curr, S, repairs).weld_map
+    t = match_anomalies(r.prev_std, curr, wm, S, pipe, repairs).match_table
+    for side, std in (("prev", r.prev_std), ("curr", curr)):
+        got = _split(t[f"{side}_feature_id"])
+        assert sorted(got) == sorted(std[std.feature_type.isin(ANOMALY_TYPES)].feature_id)
+    return t
+
+
+def test_current_run_starting_later_rezeroed(seed1):
+    """The current run starts 60 joints downstream with its odometer re-zeroed (pipe and repairs in
+    its frame): the previous run's first 60 joints map to negative current-run positions."""
+    r, welds = seed1
+    x0 = welds[60]
+    curr = r.curr_std[r.curr_std.log_dist_ft >= x0].copy()
+    curr["log_dist_ft"] -= x0
+    pipe = r.reference["pipe_properties"].copy()
+    pipe[["start_ft", "end_ft"]] -= x0
+    pipe = pipe[pipe.end_ft > 0].copy()
+    pipe.loc[pipe.index[0], "start_ft"] = 0.0
+    repairs = r.reference["repairs_between_runs"].copy()
+    repairs[["start_ft", "end_ft"]] -= x0
+    t = _match_extent(r, curr, pipe, repairs)
+    head = t[(t.match_type == "missing") & (t.prev_log_dist_ft < x0 - S.alignment.anchor_tol_ft)]
+    assert len(head) > 0 and t.match_type.eq("matched_1to1").sum() > 400
+
+
+def test_current_run_ending_early_with_pipe_table(seed1):
+    r, welds = seed1
+    xe = welds[-61]
+    curr = r.curr_std[r.curr_std.log_dist_ft <= xe]
+    pipe = r.reference["pipe_properties"]
+    pipe = pipe[pipe.start_ft < xe].copy()
+    pipe.loc[pipe.index[-1], "end_ft"] = xe
+    t = _match_extent(r, curr, pipe, r.reference["repairs_between_runs"])
+    tail = t[(t.match_type == "missing") & (t.prev_log_dist_ft > xe + S.alignment.anchor_tol_ft)]
+    assert len(tail) > 0 and t.match_type.eq("matched_1to1").sum() > 400
+
+
 def test_hand_built_summary_ids():
     prev, curr, wm, pipe, repairs = _runs()
     s = match_anomalies(prev, curr, wm, S, pipe, repairs).summary
