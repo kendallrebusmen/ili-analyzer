@@ -169,10 +169,32 @@ class Rule(_Strict):
     requires_review: bool
 
 
-REQUIRED_HCA_IDS = (
-    "IMM-1", "IMM-2", "IMM-3", "IMM-4", "IMM-5", "D60-1", "D60-2",
-    "D180-1", "D180-2", "D180-3", "D180-4", "D180-5", "D180-6", "D180-7", "D180-8", "D180-9",
-)
+_ML, _DENT, _GOUGE = FeatureType.metal_loss, FeatureType.dent, FeatureType.gouge
+_ALL_ANOMALIES = frozenset({_ML, _DENT, _GOUGE})
+# The 16 HCA rules of spec 6.8 (49 CFR 195.452(h)(4)) with the category the regulation assigns and the
+# feature types each must cover at least (as shipped). Their thresholds live in the criteria file; this is
+# the structural floor an edit of the file may not go below: a required rule must apply to HCA features
+# (applies_to hca or all), keep its regulatory category, and keep every one of these feature types.
+REQUIRED_HCA_RULES: dict[str, tuple[str, frozenset[FeatureType]]] = {
+    "IMM-1": ("immediate", frozenset({_ML, _GOUGE})),  # (i)(A); a gouge is metal loss too
+    "IMM-2": ("immediate", frozenset({_ML})),  # (i)(B)
+    "IMM-3": ("immediate", frozenset({_DENT})),  # (i)(C)
+    "IMM-4": ("immediate", frozenset({_DENT})),  # (i)(D)
+    "IMM-5": ("immediate", _ALL_ANOMALIES),  # (i)(E)
+    "D60-1": ("60_day", frozenset({_DENT})),  # (ii)(A)
+    "D60-2": ("60_day", frozenset({_DENT})),  # (ii)(B)
+    "D180-1": ("180_day", frozenset({_DENT})),  # (iii)(A)
+    "D180-2": ("180_day", frozenset({_DENT})),  # (iii)(B)
+    "D180-3": ("180_day", frozenset({_DENT})),  # (iii)(C)
+    "D180-4": ("180_day", frozenset({_ML})),  # (iii)(D)
+    "D180-5": ("180_day", frozenset({_ML})),  # (iii)(E)
+    "D180-6": ("180_day", frozenset({_ML})),  # (iii)(F)
+    "D180-7": ("180_day", _ALL_ANOMALIES),  # (iii)(G)
+    "D180-8": ("180_day", frozenset({_ML})),  # (iii)(H)
+    "D180-9": ("180_day", frozenset({_GOUGE})),  # (iii)(I)
+}
+REQUIRED_HCA_IDS = tuple(REQUIRED_HCA_RULES)
+HCA_APPLIES_TO = ("hca", "all")
 
 
 class RepairCriteria(_Strict):
@@ -196,10 +218,22 @@ class RepairCriteria(_Strict):
                 compile_condition(r.condition, names)
             except ValueError as exc:
                 raise ValueError(f"rule {r.id}: invalid condition: {exc}") from exc
-        present = {r.id for r in self.rules}
-        missing = [i for i in REQUIRED_HCA_IDS if i not in present]
+        by_id = {r.id: r for r in self.rules}
+        missing = [i for i in REQUIRED_HCA_IDS if i not in by_id]
         if missing:
             raise ValueError(f"missing required 195.452(h)(4) rule ids: {', '.join(missing)}")
+        for rid, (category, types) in REQUIRED_HCA_RULES.items():
+            r = by_id[rid]
+            if r.applies_to not in HCA_APPLIES_TO:
+                raise ValueError(f"rule {rid}: a required 195.452(h)(4) rule must apply to HCA features "
+                                 f"(applies_to {' or '.join(HCA_APPLIES_TO)}), got {r.applies_to!r}")
+            if r.category != category:
+                raise ValueError(f"rule {rid}: a required 195.452(h)(4) rule keeps its regulatory category "
+                                 f"{category!r}, got {r.category!r}")
+            lost = sorted(t.value for t in types - set(r.feature_types))
+            if lost:
+                raise ValueError(f"rule {rid}: a required 195.452(h)(4) rule must cover feature types "
+                                 f"{sorted(t.value for t in types)}; missing {lost}")
         return self
 
 

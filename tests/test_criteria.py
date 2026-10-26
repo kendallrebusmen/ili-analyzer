@@ -48,6 +48,53 @@ def test_criteria_loads_all_hca_rules():
     assert hca == HCA_IDS
 
 
+def _edit_rule(rid, **changes):
+    def mutate(raw):
+        rule = next(r for r in raw["rules"] if r["id"] == rid)
+        rule.update(changes)
+    return mutate
+
+
+@pytest.mark.parametrize("rid, changes, message", [
+    ("IMM-1", {"applies_to": "non_hca"}, "must apply to HCA features"),
+    ("D180-9", {"applies_to": "non_hca"}, "must apply to HCA features"),
+    ("IMM-4", {"category": "evaluate"}, "regulatory category 'immediate'"),
+    ("IMM-2", {"category": "180_day"}, "regulatory category 'immediate'"),
+    ("D60-2", {"category": "180_day"}, "regulatory category '60_day'"),
+    ("D180-4", {"category": "imp_scheduled"}, "regulatory category '180_day'"),
+    ("IMM-3", {"feature_types": []}, r"missing \['dent'\]"),
+    ("IMM-1", {"feature_types": ["metal_loss"]}, r"missing \['gouge'\]"),
+    ("IMM-5", {"feature_types": ["metal_loss", "dent"]}, r"missing \['gouge'\]"),
+    ("D180-7", {"feature_types": ["dent"]}, r"missing \['gouge', 'metal_loss'\]"),
+    ("D180-8", {"feature_types": ["gouge"]}, r"missing \['metal_loss'\]"),
+])
+def test_required_rule_cannot_be_weakened_by_editing(tmp_path, rid, changes, message):
+    """Each required 195.452(h)(4) id must keep applies_to hca/all, its regulatory category and (at least)
+    the shipped feature types; an edit that loses any of them is a load error naming the rule."""
+    with pytest.raises(ValidationError, match=message) as exc:
+        load_repair_criteria(write_criteria(tmp_path, _edit_rule(rid, **changes)))
+    assert f"rule {rid}:" in str(exc.value)
+
+
+def test_required_rule_may_be_widened(tmp_path):
+    """applies_to all and extra feature types keep the floor, so they load."""
+    def widen(raw):
+        _edit_rule("IMM-1", applies_to="all")(raw)
+        _edit_rule("D180-9", feature_types=["gouge", "metal_loss"])(raw)
+    crit = load_repair_criteria(write_criteria(tmp_path, widen))
+    rules = {r.id: r for r in crit.rules}
+    assert rules["IMM-1"].applies_to == "all"
+    assert [str(t) for t in rules["D180-9"].feature_types] == ["gouge", "metal_loss"]
+
+
+def test_required_rules_table_matches_shipped_file():
+    from ili.config import REQUIRED_HCA_RULES
+    hca = {r.id: r for r in CRITERIA.rules if r.applies_to == "hca"}
+    assert set(REQUIRED_HCA_RULES) == set(hca)
+    for rid, (category, types) in REQUIRED_HCA_RULES.items():
+        assert hca[rid].category == category and set(hca[rid].feature_types) == set(types)
+
+
 def test_missing_rule_id_is_error(tmp_path):
     def drop(raw):
         raw["rules"] = [r for r in raw["rules"] if r["id"] != "D180-9"]
@@ -190,7 +237,8 @@ def test_unknown_does_not_mask_a_definite_false():
 
 def test_feature_types_per_rule():
     ft = {r.id: [str(f) for f in r.feature_types] for r in CRITERIA.rules if r.applies_to == "hca"}
-    for rid in ("IMM-1", "IMM-2", "D180-4", "D180-5", "D180-6", "D180-8"):
+    assert ft["IMM-1"] == ["metal_loss", "gouge"]  # a gouge deeper than 80% is immediate too
+    for rid in ("IMM-2", "D180-4", "D180-5", "D180-6", "D180-8"):
         assert ft[rid] == ["metal_loss"]
     for rid in ("IMM-3", "IMM-4", "D60-1", "D60-2", "D180-1", "D180-2", "D180-3"):
         assert ft[rid] == ["dent"]

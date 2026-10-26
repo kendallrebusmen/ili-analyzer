@@ -227,7 +227,20 @@ def test_feature_type_filter(settings, criteria):
               base("D", "dent", depth_pct_assessed=90.0)], settings, criteria)
     assert (rec(res, "G")["governing_category"], rec(res, "G")["triggered_rules"]) == ("180_day", "D180-9")
     assert rec(res, "G0")["governing_category"] == "evaluate"
-    assert rec(res, "D")["triggered_rules"] is None  # IMM-1 is metal loss only
+    assert rec(res, "D")["triggered_rules"] is None  # IMM-1 is metal loss and gouges, not dents
+
+
+def test_gouge_deeper_than_80_pct_is_immediate(settings, criteria):
+    """A gouge is metal loss: > 80% of wall is IMM-1 (immediate), not only D180-9; NH-IMM-1 likewise."""
+    res = go([base("G85", "gouge", depth_pct_reported=75.0, depth_pct_assessed=85.0),
+              base("G80", "gouge", depth_pct_reported=70.0, depth_pct_assessed=80.0),
+              base("NG85", "gouge", could_affect_hca=False, segment_id="SEG-02", depth_pct_reported=75.0,
+                   depth_pct_assessed=85.0)], settings, criteria)
+    g85, g80, ng85 = rec(res, "G85"), rec(res, "G80"), rec(res, "NG85")
+    assert (g85["governing_category"], g85["governing_rule"], g85["triggered_rules"]) ==         ("immediate", "IMM-1", "IMM-1;D180-9")
+    assert g85["due_date"] == DISCOVERED and g85["action_note"] == IMMEDIATE_ACTION_NOTE
+    assert (g80["governing_category"], g80["governing_rule"]) == ("180_day", "D180-9")  # strict > 80
+    assert (ng85["governing_category"], ng85["governing_rule"]) == ("immediate", "NH-IMM-1")
 
 
 # --- due dates ---------------------------------------------------------------------------------------

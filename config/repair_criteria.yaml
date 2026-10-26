@@ -10,7 +10,7 @@ rules:
   - id: IMM-1
     category: immediate
     applies_to: hca
-    feature_types: [metal_loss]
+    feature_types: [metal_loss, gouge]  # a gouge is metal loss too: > 80% of wall is immediate (needs engineer sign-off)
     condition: "depth_pct_assessed > 80"
     description: "Metal loss greater than 80% of nominal wall regardless of dimensions"
     citation: "195.452(h)(4)(i)(A)"
@@ -156,7 +156,7 @@ rules:
   - id: NH-IMM-1
     category: immediate
     applies_to: non_hca
-    feature_types: [metal_loss]
+    feature_types: [metal_loss, gouge]  # a gouge is metal loss too: > 80% of wall is immediate (needs engineer sign-off)
     condition: "depth_pct_assessed > 80"
     description: "PLACEHOLDER pending IMP non-HCA criteria: Metal loss greater than 80% of nominal wall regardless of dimensions"
     citation: "195.401(b) via 195.416(g) — operator IMP (PLACEHOLDER)"
