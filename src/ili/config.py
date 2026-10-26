@@ -95,6 +95,7 @@ class GrowthCfg(_Strict):
 class StrengthCfg(_Strict):
     method: Literal["modified_b31g", "original_b31g"]
     depth_basis: Literal["reported", "reported_plus_tolerance"]
+    length_basis: Literal["reported", "reported_plus_tolerance"]
     design_factor: float
 
 

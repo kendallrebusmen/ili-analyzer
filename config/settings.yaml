@@ -52,6 +52,7 @@ growth:
 strength:
   method: modified_b31g             # modified_b31g | original_b31g
   depth_basis: reported_plus_tolerance   # reported | reported_plus_tolerance
+  length_basis: reported            # reported | reported_plus_tolerance; PLACEHOLDER (spec 6.6: "length can optionally be adjusted the same way")
   design_factor: 0.72               # PLACEHOLDER
 
 remaining_life:
