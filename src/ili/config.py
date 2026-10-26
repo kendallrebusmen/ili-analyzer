@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Literal
 
 import yaml
-from pydantic import BaseModel, ConfigDict, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from ili.schema import FeatureType
 
@@ -73,9 +73,10 @@ GrowthMethod = Literal["raw", "tolerance_adjusted", "segment_percentile", "new_f
 
 
 class GoverningRule(_Strict):
-    matched: list[GrowthMethod]
-    new: list[GrowthMethod]
-    no_history: list[GrowthMethod]
+    # At least one method per class: an empty list would leave every row of the class without a rate.
+    matched: list[GrowthMethod] = Field(min_length=1)
+    new: list[GrowthMethod] = Field(min_length=1)
+    no_history: list[GrowthMethod] = Field(min_length=1)
 
 
 class GrowthCfg(_Strict):

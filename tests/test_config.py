@@ -93,3 +93,9 @@ def test_growth_governing_rejects_unknown_method(tmp_path):
     path = _write_settings(tmp_path, lambda r: r["growth"]["governing"].update(matched=["segment_percentile", "median"]))
     with pytest.raises(ValueError):
         load_settings(path)
+
+
+def test_growth_governing_rejects_empty_list(tmp_path):
+    path = _write_settings(tmp_path, lambda r: r["growth"]["governing"].update(new=[]))
+    with pytest.raises(ValueError, match="new"):
+        load_settings(path)

@@ -45,16 +45,36 @@ def lookup(table: pd.DataFrame, pos_ft, column: str, tol_ft: float, what: str = 
     return got
 
 
+def _check_segments(seg: pd.DataFrame) -> None:
+    """ValueError for a repeated segment id or overlapping segments (sorted by start, a start before the
+    previous end): either would pool or double-count features in the per-segment statistics."""
+    ids = seg.segment_id.astype(str)
+    dup = ids[ids.duplicated()]
+    if not dup.empty:
+        raise ValueError(f"segments table repeats segment_id {dup.iloc[0]!r}; segment ids must be unique")
+    s = seg.sort_values("start_ft", kind="stable")
+    start, end = s.start_ft.to_numpy(float), s.end_ft.to_numpy(float)
+    over = np.flatnonzero(start[1:] < end[:-1])
+    if len(over):
+        k = over[0]
+        a, b = s.segment_id.astype(str).iloc[k], s.segment_id.astype(str).iloc[k + 1]
+        raise ValueError(f"segments {a!r} and {b!r} overlap ({b!r} starts at {start[k + 1]:.3f} ft, before "
+                         f"{a!r} ends at {end[k]:.3f} ft)")
+
+
 def segment_table(settings: Settings, segments: pd.DataFrame | None, line_start_ft: float,
                   line_end_ft: float) -> pd.DataFrame:
     """Segments for growth statistics, columns ``start_ft, end_ft, segment_id``: the supplied table
-    for ``hca_segment`` / ``reference_segments``, or consecutive fixed-length segments."""
+    for ``hca_segment`` / ``reference_segments`` (ValueError for a repeated id or overlapping segments), or
+    consecutive fixed-length segments."""
     g = settings.growth
     if g.segment_definition != "fixed_length":
         if segments is None:
             raise ValueError(f"segment_definition {g.segment_definition!r} needs a segments table, none was given")
         _require_columns(segments, SEGMENT_COLUMNS, "segments table")
-        return segments[list(SEGMENT_COLUMNS)].reset_index(drop=True)
+        seg = segments[list(SEGMENT_COLUMNS)].reset_index(drop=True)
+        _check_segments(seg)
+        return seg
     length = g.fixed_segment_length_mi * FT_PER_MI
     if not length > 0:
         raise ValueError("fixed_segment_length_mi must be positive")

@@ -112,3 +112,18 @@ def test_load_match_table_roundtrip(tmp_path):
         assert all(v is None or isinstance(v, bool) for v in t[c]), c
         assert t[c].tolist() == [None if pd.isna(v) else bool(v) for v in src[c]], c
     assert t.curr_seam_interaction.map(lambda v: v is None).any() and t.curr_seam_interaction.map(lambda v: v is not None).any()
+
+
+def test_segment_table_rejects_duplicate_ids_and_overlap():
+    # Unsorted input; segments that touch (end == next start) are fine.
+    ok = pd.DataFrame({"start_ft": [100.0, 0.0], "end_ft": [200.0, 100.0], "segment_id": ["B", "A"]})
+    assert segment_table(S, ok, 0.0, 200.0).segment_id.tolist() == ["B", "A"]
+    dup = pd.DataFrame({"start_ft": [0.0, 1100.0], "end_ft": [1000.0, 2000.0], "segment_id": ["HCA-1", "HCA-1"]})
+    with pytest.raises(ValueError, match="repeats segment_id 'HCA-1'"):
+        segment_table(S, dup, 0.0, 2000.0)
+    numeric = pd.DataFrame({"start_ft": [0.0, 100.0], "end_ft": [100.0, 200.0], "segment_id": [7, "7"]})
+    with pytest.raises(ValueError, match="repeats segment_id '7'"):  # ids compare as strings
+        segment_table(S, numeric, 0.0, 200.0)
+    overlap = pd.DataFrame({"start_ft": [500.0, 0.0], "end_ft": [900.0, 600.0], "segment_id": ["B", "A"]})
+    with pytest.raises(ValueError, match="'A' and 'B' overlap"):
+        segment_table(S, overlap, 0.0, 900.0)
