@@ -17,6 +17,9 @@ from ili.validation import MIN_GROWTH_CONSERVATISM, score_growth
 SETTINGS = load_settings()
 ID_DTYPES = {"prev_feature_id": str, "curr_feature_id": str}
 NAN = float("nan")
+# Test bound, not a tuning value: raw growth is unbiased by construction (same tool both runs), so a units
+# or scaling bug in raw_mpy shows up as a bias well beyond this.
+RAW_BIAS_BOUND_MPY = 1.0
 
 
 def _growth(prev, curr, pipe, hca_segments, repairs):
@@ -55,12 +58,17 @@ def _assert_reports_errors(score: dict, features: pd.DataFrame):
     json.dumps(score)  # write_metrics dumps it
 
 
-def test_default_dataset_growth_acceptance(default_line):
-    features, truth = default_line
-    score = score_growth(features, truth)
+def _assert_acceptance(score: dict, features: pd.DataFrame):
     _assert_reports_errors(score, features)
+    assert abs(score["raw"]["bias_mpy"]) <= RAW_BIAS_BOUND_MPY, score["raw"]
+    assert math.isfinite(score["governing"]["rmse_mpy"])
     assert score["conservatism_rate"] >= MIN_GROWTH_CONSERVATISM, score
     assert score["passes"] is True
+
+
+def test_default_dataset_growth_acceptance(default_line):
+    features, truth = default_line
+    _assert_acceptance(score_growth(features, truth), features)
 
 
 @pytest.mark.parametrize("seed", range(1, 6))
@@ -69,10 +77,7 @@ def test_growth_acceptance_across_seeds(seed):
     ref = r.reference
     features = _growth(r.prev_std, r.curr_std, ref["pipe_properties"], ref["hca_segments"],
                        ref["repairs_between_runs"])
-    score = score_growth(features, r.ground_truth)
-    _assert_reports_errors(score, features)
-    assert score["conservatism_rate"] >= MIN_GROWTH_CONSERVATISM, score
-    assert score["passes"] is True
+    _assert_acceptance(score_growth(features, r.ground_truth), features)
 
 
 def test_target_is_spec_value():
@@ -190,6 +195,23 @@ def test_score_growth_unknown_id_is_value_error():
             score_growth(HAND, TRUTH.drop(columns=col))
     with pytest.raises(ValueError, match="governing_mpy"):
         score_growth(HAND.drop(columns="governing_mpy"), TRUTH)
+
+
+def test_unknown_history_class_is_value_error():
+    # With every class unknown no row is raw-scored, yet conservatism alone would still pass.
+    with pytest.raises(ValueError, match="bogus"):
+        score_growth(GOOD.assign(history_class="bogus"), TRUTH)
+    with pytest.raises(ValueError, match="history_class"):
+        score_growth(GOOD.assign(history_class=["matched", "matched", None]), TRUTH)
+
+
+def test_scaled_raw_rates_fail_the_bias_bound(default_line):
+    # A mils/inches slip (x10) still passes conservatism; the raw bias bound in the acceptance tests catches it.
+    features, truth = default_line
+    s = score_growth(features.assign(raw_mpy=features.raw_mpy * 10, governing_mpy=features.governing_mpy * 10),
+                     truth)
+    assert s["passes"] is True
+    assert abs(s["raw"]["bias_mpy"]) > RAW_BIAS_BOUND_MPY
 
 
 def test_ids_compare_as_strings():

@@ -286,7 +286,8 @@ def score_growth(features: pd.DataFrame, truth: pd.DataFrame) -> dict:
     reported or reported_in_cluster, ``truth_class`` matched_1to1, matched_cluster or new) in no row,
     and ``n_duplicated`` the current ids in more than one row or twice in one cell. ``passes`` needs the
     conservatism target and both counts 0. A current id absent from the truth, one whose truth rows
-    have no growth, or missing columns are a ``ValueError``.
+    have no growth, a ``history_class`` outside matched/new/no_history, or missing columns are a
+    ``ValueError``.
     """
     for df, cols, what in ((truth, ("feature_type", "curr_feature_id", "curr_status", "truth_class",
                                     "growth_mpy"), "truth (expected ground_truth.csv)"),
@@ -296,6 +297,10 @@ def score_growth(features: pd.DataFrame, truth: pd.DataFrame) -> dict:
         if missing:
             raise ValueError(f"{what} is missing columns {missing}")
 
+    unknown = sorted({str(c) for c in features.history_class} - set(_GROWTH_HISTORY_CLASSES))
+    if unknown:  # an unknown class would silently drop rows from the raw score
+        raise ValueError(f"growth features have history_class {unknown}; expected one of "
+                         f"{list(_GROWTH_HISTORY_CLASSES)}")
     by_id = _true_growth_by_id(truth)
     true = np.empty(len(features))
     seen: dict[str, int] = {}
