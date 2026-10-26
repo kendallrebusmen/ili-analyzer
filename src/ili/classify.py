@@ -156,40 +156,58 @@ def seam_interaction(flag, clock_min, seam_clock_min, seam_clock_tol_min) -> np.
     return _objects([_kleene_or([v, o]) for v, o in zip(vendor, overlap)])
 
 
+def reference_positions(values, what: str) -> np.ndarray:
+    """Sorted log distances (ft) of a reference table's points. ValueError naming ``what`` and the row
+    (0-based, in the order given) for a blank position: an incomplete reference table is a data error,
+    never a point silently dropped (it could be the one next to a feature)."""
+    v = _floats(values)
+    bad = np.flatnonzero(np.isnan(v))
+    if bad.size:
+        raise ValueError(f"{what}: row {bad[0]} has a blank log_dist_ft")
+    return np.sort(v)
+
+
+def _nearest_gap(x: np.ndarray, points: np.ndarray) -> np.ndarray:
+    """|x - nearest point| for each x (points sorted, non-empty); NaN where x is NaN."""
+    k = np.clip(np.searchsorted(points, np.nan_to_num(x)), 1, max(points.size - 1, 1))
+    return np.minimum(np.abs(x - points[k - 1]), np.abs(x - points[np.minimum(k, points.size - 1)]))
+
+
 def near_girth_weld(pos_ft, length_in, weld_pos_ft, proximity_in) -> np.ndarray:
     """Edge distance to the nearest current-run girth weld <= ``proximity_in`` (inches).
 
     Edge distance = max(|x - w| x 12 - length / 2, 0), with x the feature's and w the nearest weld's log
-    distance (ft) and length the feature's axial length (in). None when the setting is null, the
-    position or length is unknown, or the run has no girth welds."""
+    distance (ft) and length the feature's axial length (in). Inside the run's weld span (first to last
+    weld) the result is True or False. Outside it an unrecorded weld could lie beyond the last known one,
+    so the result is True when within ``proximity_in`` of the nearest known weld and None otherwise.
+    None when the setting is null, the position or length is unknown, or the run has no girth welds.
+    ValueError for a blank weld position (``reference_positions``)."""
     x, length = _floats(pos_ft), _floats(length_in)
-    welds = np.sort(_floats(weld_pos_ft))
-    welds = welds[~np.isnan(welds)]
+    welds = reference_positions(weld_pos_ft, "current-run girth welds")
     if proximity_in is None or welds.size == 0:
         return np.full(len(x), None, dtype=object)
-    known = ~np.isnan(x) & ~np.isnan(length)
-    k = np.clip(np.searchsorted(welds, np.nan_to_num(x)), 1, max(welds.size - 1, 1))
-    gap_ft = np.minimum(np.abs(x - welds[k - 1]), np.abs(x - welds[np.minimum(k, welds.size - 1)]))
-    edge_in = np.maximum(gap_ft * IN_PER_FT - length / 2, 0.0)
+    edge_in = np.maximum(_nearest_gap(x, welds) * IN_PER_FT - length / 2, 0.0)
     with np.errstate(invalid="ignore"):
-        return _tri(known, edge_in <= proximity_in)
+        near = edge_in <= proximity_in
+        inside = (x >= welds[0]) & (x <= welds[-1])
+    known = ~np.isnan(x) & ~np.isnan(length) & (inside | near)
+    return _tri(known, near)
 
 
 def near_foreign_crossing(pos_ft, crossing_pos_ft, proximity_ft) -> np.ndarray:
-    """|x - crossing| <= ``proximity_ft`` for any foreign crossing (log distances, ft). None when the
-    setting is null or the position is unknown; False (known) when the setting is set and there are no
-    crossings."""
+    """|x - crossing| <= ``proximity_ft`` for any foreign crossing (log distances, ft).
+
+    None when the setting is null, the position is unknown, or there is no crossings table
+    (``crossing_pos_ft`` None: whether crossings exist is unknown). A crossings table with no rows gives
+    False (known: there are none). ValueError for a blank crossing position (``reference_positions``)."""
     x = _floats(pos_ft)
-    if proximity_ft is None:
+    c = None if crossing_pos_ft is None else reference_positions(crossing_pos_ft, "foreign crossings table")
+    if proximity_ft is None or c is None:
         return np.full(len(x), None, dtype=object)
-    c = _floats(crossing_pos_ft)
-    c = np.sort(c[~np.isnan(c)])
     if c.size == 0:
         return _tri(~np.isnan(x), np.zeros(len(x), dtype=bool))
-    k = np.clip(np.searchsorted(c, np.nan_to_num(x)), 1, max(c.size - 1, 1))
-    gap = np.minimum(np.abs(x - c[k - 1]), np.abs(x - c[np.minimum(k, c.size - 1)]))
     with np.errstate(invalid="ignore"):
-        return _tri(~np.isnan(x), gap <= proximity_ft)
+        return _tri(~np.isnan(x), _nearest_gap(x, c) <= proximity_ft)
 
 
 def general_corrosion(length_in, width_in, min_dim_in) -> np.ndarray:
@@ -261,8 +279,10 @@ def feature_variables(match_table: pd.DataFrame, remaining_life: pd.DataFrame, c
     Rows: match types ``CURRENT_SIDE_MATCH_TYPES`` with ``curr_feature_type`` metal_loss, dent or gouge,
     in table order (a cluster row is metal loss with the envelope's dimensions). Values:
 
-    - ``feature_type``, ``clock_min``, ``length_in``, ``width_in``, ``depth_pct_reported``: the match
-      table's current side. ``top_of_pipe``: ``top_of_pipe``.
+    - ``feature_type``, ``clock_min`` (rounded to the minute), ``length_in``, ``width_in``,
+      ``depth_pct_reported``: the match table's current side. ``top_of_pipe`` and the seam overlap use the
+      same rounded ``clock_min``. A current-side row with a blank feature type is a ValueError.
+    - Reference points: a blank girth-weld or crossing position is a ValueError (``reference_positions``).
     - ``od_in``: the pipe table at ``curr_log_dist_ft`` (``reference.lookup``, ``alignment.anchor_tol_ft``;
       a position outside it is a ValueError, a blank OD is None).
     - Metal loss, from ``remaining_life`` (M6) by match_id: ``p_fail`` = burst_psig, ``p_safe`` =
@@ -275,7 +295,7 @@ def feature_variables(match_table: pd.DataFrame, remaining_life: pd.DataFrame, c
     - Dents only: ``dent_depth_in``, ``dent_depth_pct_od`` = dent_depth_in / od_in x 100,
       ``dent_metal_loss``. None for metal loss and gouges, as are the pressures for dents and gouges.
     - ``seam_interaction``, ``near_girth_weld`` (current-run girth welds of ``curr_std``),
-      ``near_foreign_crossing`` (``crossings`` may be None: no crossings), ``general_corrosion``,
+      ``near_foreign_crossing`` (``crossings`` None: unknown; no rows: False), ``general_corrosion``,
       ``widespread_circumferential``: the helpers of the same names, with the ``classification`` settings.
     - ``could_affect_hca``: the segment's flag (``segments``: start_ft, end_ft, segment_id,
       could_affect_hca); outside every segment it is True (HCA rules, the conservative choice) and the
@@ -293,8 +313,13 @@ def feature_variables(match_table: pd.DataFrame, remaining_life: pd.DataFrame, c
         _require_columns(crossings, ("log_dist_ft",), "foreign crossings table")
     check_segments(segments)
     cfg = settings.classification
-    keep = match_table.match_type.isin(CURRENT_SIDE_MATCH_TYPES) & match_table.curr_feature_type.isin(ANOMALY_TYPES)
-    rows = match_table[keep.to_numpy(bool)].reset_index(drop=True)
+    current = match_table.match_type.isin(CURRENT_SIDE_MATCH_TYPES).to_numpy(bool)
+    blank = current & match_table.curr_feature_type.isna().to_numpy(bool)
+    if blank.any():
+        raise ValueError(f"match {match_table.match_id[blank].iloc[0]!r} has a current-run side but no "
+                         f"curr_feature_type")
+    keep = current & match_table.curr_feature_type.isin(ANOMALY_TYPES).to_numpy(bool)
+    rows = match_table[keep].reset_index(drop=True)
     rl = remaining_life.reset_index(drop=True)
     n = len(rows)
 
@@ -303,7 +328,8 @@ def feature_variables(match_table: pd.DataFrame, remaining_life: pd.DataFrame, c
     pos = _floats(rows.curr_log_dist_ft)
     od = (lookup(pipe, pos, "od_in", settings.alignment.anchor_tol_ft, what=PIPE_WHAT, allow_nan=True)
           if n else np.zeros(0))
-    length, width, clock = _floats(rows.curr_length_in), _floats(rows.curr_width_in), rows.curr_clock_min
+    length, width = _floats(rows.curr_length_in), _floats(rows.curr_width_in)
+    clock = np.round(_floats(rows.curr_clock_min))  # the reported clock_min; every clock rule uses it
     depth = _floats(rows.curr_depth_pct)
 
     j = _rl_rows(rows, rl, is_ml)
@@ -323,8 +349,10 @@ def feature_variables(match_table: pd.DataFrame, remaining_life: pd.DataFrame, c
     dml = dent_metal_loss(rows.curr_dent_metal_loss, depth)
     dml[~is_dent] = None
 
-    welds = curr_std.log_dist_ft[curr_std.feature_type.astype(str) == FeatureType.girth_weld.value]
-    cross = crossings.log_dist_ft if crossings is not None else []
+    welds = reference_positions(
+        curr_std.log_dist_ft[curr_std.feature_type.astype(str) == FeatureType.girth_weld.value],
+        "current-run girth welds")
+    cross = None if crossings is None else reference_positions(crossings.log_dist_ft, "foreign crossings table")
 
     seg_id = assign_segment(segments, pos)
     hca = _segment_hca(segments)
@@ -339,7 +367,7 @@ def feature_variables(match_table: pd.DataFrame, remaining_life: pd.DataFrame, c
         "match_id": obj(rows.match_id), "curr_feature_id": obj(rows.curr_feature_id), "segment_id": obj(seg_id),
         "feature_type": obj(ftype),
         "could_affect_hca": obj(True if s is None else hca[s] for s in seg_id),
-        "od_in": od, "wt_in": wt, "clock_min": pd.array(_floats(clock).round(), dtype="Int64"),
+        "od_in": od, "wt_in": wt, "clock_min": pd.array(clock, dtype="Int64"),
         "top_of_pipe": obj(top_of_pipe(clock)),
         "depth_pct_reported": depth, "depth_pct_assessed": depth_assessed, "length_in": length, "width_in": width,
         "p_fail": _take(rl.burst_psig, j), "p_safe": _take(rl.safe_psig, j), "mop_local": _take(rl.mop_psig, j),

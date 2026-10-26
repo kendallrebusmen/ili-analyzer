@@ -308,12 +308,16 @@ def test_proximity_unknown_when_setting_null_and_exact_when_set(settings):
     assert one(run(rows, settings=s_just), "M1")["near_girth_weld"] is False
     fc = {m: one(v, m)["near_foreign_crossing"] for m in v.match_id}
     assert fc["C1"] is True and fc["C2"] is False and fc["M1"] is False
-    # no crossings file: known False when the setting is set, unknown when it is null
-    assert run(rows, settings=s, crossings=None).near_foreign_crossing.map(lambda x: x is False).all()
+    # no crossings file: unknown (set or not); a crossings table with no rows: known False when set
+    assert run(rows, settings=s, crossings=None).near_foreign_crossing.isna().all()
     assert run(rows, settings=settings, crossings=None).near_foreign_crossing.isna().all()
+    no_rows = pd.DataFrame({"log_dist_ft": pd.Series([], dtype=float)})
+    assert run(rows, settings=s, crossings=no_rows).near_foreign_crossing.map(lambda x: x is False).all()
+    assert run(rows, settings=settings, crossings=no_rows).near_foreign_crossing.isna().all()
     # the helpers directly
     assert list(near_girth_weld(np.array([10.0]), np.array([2.0]), np.array([]), 6.0)) == [None]
     assert list(near_foreign_crossing(np.array([10.0]), np.array([]), 5.0)) == [False]
+    assert list(near_foreign_crossing(np.array([10.0]), None, 5.0)) == [None]
     assert list(near_foreign_crossing(np.array([10.0]), np.array([15.0, 100.0]), 5.0)) == [True]
 
 
@@ -420,3 +424,51 @@ def test_bad_flag_text_is_error(settings):
         run([mrow("M1", seam_interaction="yes")], settings=settings)
     assert list(seam_interaction(pd.Series(["True", "false", ""], dtype=object), pd.array([None] * 3, dtype="Int64"),
                                  None, None)) == [True, None, None]
+
+
+def test_blank_reference_positions_are_errors(settings):
+    s = with_cls(settings, crossing_proximity_ft=50.0, girth_weld_proximity_in=6.0)
+    blank_crossing = pd.DataFrame({"log_dist_ft": [2000.0, NAN], "description": ["a", "b"]})
+    for cfg in (s, settings):  # an incomplete reference table is an error even while the setting is null
+        with pytest.raises(ValueError, match="foreign crossings table: row 1 has a blank log_dist_ft"):
+            run([mrow("M1")], settings=cfg, crossings=blank_crossing)
+        blank_weld = pd.DataFrame({"feature_type": ["girth_weld"] * 3, "log_dist_ft": [1000.0, NAN, 1040.0]})
+        with pytest.raises(ValueError, match="current-run girth welds: row 1 has a blank log_dist_ft"):
+            run([mrow("M1")], settings=cfg, curr_std=blank_weld)
+    with pytest.raises(ValueError, match="foreign crossings table"):
+        near_foreign_crossing(np.array([10.0]), np.array([NAN]), 5.0)
+    with pytest.raises(ValueError, match="girth welds"):
+        near_girth_weld(np.array([10.0]), np.array([2.0]), np.array([NAN]), None)
+
+
+def test_near_girth_weld_outside_weld_span(settings):
+    welds = pd.DataFrame({"feature_type": ["girth_weld"] * 3, "log_dist_ft": [100.0, 140.0, 1000.0]})
+    rows = [
+        mrow("U1", pos=99.8, length_in=2.0),    # before the first weld, edge 1.4 in: True
+        mrow("U2", pos=90.0, length_in=2.0),    # before the first weld, 119 in: unknown (a weld may lie before)
+        mrow("U3", pos=100.0, length_in=2.0),   # on the first weld: inside the span
+        mrow("U4", pos=120.0, length_in=2.0),   # inside, 239 in: False
+        mrow("U5", pos=1000.3, length_in=2.0),  # after the last weld, edge 2.6 in: True
+        mrow("U6", pos=1100.0, length_in=2.0),  # after the last weld, far: unknown
+        mrow("U7", pos=1000.3, length_in=NAN),  # length unknown
+    ]
+    v = run(rows, settings=with_cls(settings, girth_weld_proximity_in=6.0), curr_std=welds)
+    got = {m: one(v, m)["near_girth_weld"] for m in v.match_id}
+    assert got == {"U1": True, "U2": None, "U3": True, "U4": False, "U5": True, "U6": None, "U7": None}
+
+
+def test_top_of_pipe_uses_the_reported_rounded_clock(settings):
+    t = table([mrow("R1", "dent"), mrow("R2", "dent"), mrow("R3", "dent")])
+    t["curr_clock_min"] = pd.Series([240.4, 479.6, 240.6])
+    v = feature_variables(t, RL_EMPTY, CURR_STD, PIPE, SEGS, CROSSINGS, settings)
+    got = [(d["clock_min"], d["top_of_pipe"]) for d in variable_dicts(v)]
+    assert got == [(240, True), (480, True), (241, False)]
+    s = with_cls(settings, seam_clock_min=0.0, seam_clock_tol_min=240.0)
+    assert [d["seam_interaction"] for d in variable_dicts(
+        feature_variables(t, RL_EMPTY, CURR_STD, PIPE, SEGS, CROSSINGS, s))] == [True, True, False]  # 240/480/241
+
+
+def test_blank_feature_type_on_current_side_is_error(settings):
+    with pytest.raises(ValueError, match="'U1'.*curr_feature_type"):
+        run([mrow("M0"), mrow("U1", None, depth_pct=90.0)], settings=settings)
+    assert len(run([mrow("M0"), missing_row("M2")], settings=settings)) == 1  # a missing row has no current side
