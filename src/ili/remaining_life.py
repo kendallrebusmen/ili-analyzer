@@ -21,19 +21,32 @@ criterion is met is the single crossing τ* = inf{τ : margin(τ) <= 0}. It is f
 ``_first_crossing``). Times: 0 when met today, inf when not met by the horizon, NaN when the
 margin cannot be evaluated. RL = min over the criteria (spec 6.7).
 
+``compute_remaining_life`` assembles the per-feature table from M5 ``growth.csv`` rows and the reference
+tables: strength at τ = 0, the criterion times and RL, the repair-by date, the next assessment date of the
+feature's segment, the dig flag, review reasons appended to M5's, and per-segment reinspection intervals.
+Every uncertain case is resolved on the conservative side and flagged (see the function docstrings).
+
 DRAFT – for review by qualified personnel.
 """
 
 from __future__ import annotations
 
+import calendar
 import math
+from dataclasses import dataclass
+from datetime import date, datetime, timedelta
 from typing import Callable
 
 import numpy as np
+import pandas as pd
 from scipy.optimize import brentq
 
 from ili.config import Settings
-from ili.strength import WALL_LOSS_LIMIT, burst_pressure, failure_stress, safe_pressure
+from ili.growth import REASON_SEP, REVIEW_REASONS
+from ili.match import DAYS_PER_YEAR, MILS_PER_IN
+from ili.reference import _require_columns, assign_segment, check_segments, lookup
+from ili.strength import (WALL_LOSS_LIMIT, assessed_depth_in, assessed_length_in, burst_pressure,
+                          exceeds_wall_loss_limit, failure_stress, safe_pressure)
 
 CRITERIA = ("tau_80", "tau_burst", "tau_safe")  # spec 6.7; also the tie-break order for RL
 BEYOND_HORIZON = "beyond_horizon"  # rl_governing when no criterion is met within horizon_yr
@@ -162,3 +175,328 @@ def remaining_life(times: dict[str, float], settings: Settings) -> tuple[float, 
     if governing is None:
         return float(settings.remaining_life.horizon_yr), BEYOND_HORIZON
     return float(times[governing]), governing
+
+
+# --- assembled remaining-life table -------------------------------------------------------------------
+
+MONTHS_PER_YEAR = 12
+# Why a row needs review, appended in this order after M5's ``review_reasons``: no RL could be evaluated
+# (NaN, so no dig decision was made); assessed d/t >= 0.80 (spec 6.6); outside every segment, so the
+# next assessment is the HCA default (the conservative choice) rather than the segment's own date.
+RL_REVIEW_REASONS = ("rl_not_evaluated", "exceeds_80pct", "no_segment")
+NEXT_ASSESSMENT_SOURCES = ("planned", "capped", "default_hca", "default_non_hca", "default_no_segment")
+RL_GOVERNING = (*CRITERIA, BEYOND_HORIZON)
+
+GROWTH_INPUT_COLUMNS = (
+    "match_id", "curr_feature_id", "curr_log_dist_ft", "wt_in", "d_curr_pct", "length_in", "governing_mpy",
+    "length_rate_ipy", "needs_review", "review_reasons",
+)
+RL_SEGMENT_COLUMNS = ("start_ft", "end_ft", "segment_id", "could_affect_hca")
+NEXT_INSPECTION_COLUMNS = ("segment_id", "planned_next_assessment_date")
+PIPE_WHAT, MOP_WHAT = "pipe properties table", "MOP profile table"
+
+RL_FEATURE_COLUMNS = [
+    "match_id", "curr_feature_id", "curr_log_dist_ft", "segment_id", "could_affect_hca",
+    "od_in", "wt_in", "smys_psi", "mop_psig", "d_reported_pct", "d_assessed_in", "assessed_dt", "exceeds_80pct",
+    "length_in", "length_assessed_in",
+    "method", "z", "folias_m", "flow_stress_psi", "failure_stress_psi", "burst_psig", "safe_psig",
+    "g_inyr", "gl_inyr", "tau_80_yr", "tau_burst_yr", "tau_safe_yr", "rl_yr", "rl_governing", "rl_factor",
+    "rl_factored_yr", "repair_by_date",
+    "next_assessment_date", "next_assessment_source", "years_to_next_assessment", "dig_required_by_remaining_life",
+    "needs_review", "review_reasons",
+]
+INTERVAL_COLUMNS = [
+    "segment_id", "could_affect_hca", "n_features", "n_rl_not_evaluated", "min_rl_factored_yr",
+    "regulatory_max_yr", "recommended_interval_yr", "governing_match_id",
+]
+
+
+@dataclass
+class RLResult:
+    """One row per growth feature, one interval row per segment, and a JSON-ready summary."""
+
+    features: pd.DataFrame
+    intervals: pd.DataFrame
+    summary: dict
+
+
+def add_months(day: date, months) -> date:
+    """``day`` plus a whole number of calendar months; a day past the target month's end is moved back to
+    that month's last day (earlier, the conservative side). ValueError for a fractional number of months."""
+    m = float(months)
+    if not m.is_integer():
+        raise ValueError(f"{months} is not a whole number of months")
+    k = day.month - 1 + int(m)
+    year, month = day.year + k // MONTHS_PER_YEAR, k % MONTHS_PER_YEAR + 1
+    return date(year, month, min(day.day, calendar.monthrange(year, month)[1]))
+
+
+def _as_date(value, what: str) -> date | None:
+    """A ``datetime.date`` from a date, datetime/Timestamp or ISO string; None for a blank. ValueError
+    naming ``what`` for anything else."""
+    if value is None or (not isinstance(value, str) and pd.isna(value)):  # NaT is a datetime: test first
+        return None
+    if isinstance(value, datetime):  # includes pd.Timestamp
+        return value.date()
+    if isinstance(value, date):
+        return value
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        try:
+            return date.fromisoformat(text)
+        except ValueError:
+            try:
+                return datetime.fromisoformat(text).date()
+            except ValueError:
+                pass
+    raise ValueError(f"{what}: {value!r} is not an ISO date")
+
+
+def _as_bool(value, what: str) -> bool:
+    """True/False from a bool or a ``True``/``False`` string (any case); ValueError naming ``what`` otherwise."""
+    if isinstance(value, (bool, np.bool_)):
+        return bool(value)
+    if isinstance(value, str) and value.strip().lower() in ("true", "false"):
+        return value.strip().lower() == "true"
+    raise ValueError(f"{what}: could_affect_hca must be True or False, got {value!r}")
+
+
+def _years_after(day: date, years, what: str) -> date:
+    """``day`` plus ``years`` calendar years (as whole months)."""
+    months = float(years) * MONTHS_PER_YEAR
+    if not months.is_integer():
+        raise ValueError(f"{what} of {years} years is not a whole number of months")
+    return add_months(day, months)
+
+
+def _planned_dates(next_inspection: pd.DataFrame) -> dict[str, date]:
+    """segment_id -> planned date from ``next_inspection.csv``; a blank date is left out (the default is used).
+    ValueError for a repeated segment id or an unparseable date, naming the segment."""
+    _require_columns(next_inspection, NEXT_INSPECTION_COLUMNS, "next inspection table")
+    ids = next_inspection.segment_id.astype(str)
+    dup = ids[ids.duplicated()]
+    if not dup.empty:
+        raise ValueError(f"next inspection table repeats segment_id {dup.iloc[0]!r}")
+    planned = {}
+    for sid, value in zip(ids, next_inspection.planned_next_assessment_date):
+        when = _as_date(value, f"next inspection date for segment {sid!r}")
+        if when is not None:
+            planned[sid] = when
+    return planned
+
+
+def next_assessment(could_affect_hca: bool | None, planned: date | None, run_date: date, settings: Settings,
+                    segment_id: str | None = None) -> tuple[date, str]:
+    """(date, source) of a segment's next assessment (spec 6.7, ``remaining_life`` settings).
+
+    - ``planned``: the segment's date in ``next_inspection.csv``.
+    - ``capped``: an HCA planned date later than run date + ``hca_max_interval_months``, cut to that limit.
+    - ``default_hca`` / ``default_non_hca``: no planned date; run date + ``default_next_assessment_yr``
+      calendar years, the HCA default also capped at the months limit.
+    - ``default_no_segment`` (``could_affect_hca`` None, outside every segment): the capped HCA default.
+
+    ValueError for a planned date before the run date (a data error), naming the segment.
+    """
+    rl = settings.remaining_life
+    hca_cap = add_months(run_date, rl.hca_max_interval_months)
+    hca_default = min(_years_after(run_date, rl.default_next_assessment_yr.hca, "the HCA default"), hca_cap)
+    if could_affect_hca is None:
+        return hca_default, "default_no_segment"
+    if planned is not None:
+        if planned < run_date:
+            raise ValueError(f"segment {segment_id!r}: planned next assessment {planned.isoformat()} is before "
+                             f"the current run date {run_date.isoformat()}")
+        if could_affect_hca and planned > hca_cap:
+            return hca_cap, "capped"
+        return planned, "planned"
+    if could_affect_hca:
+        return hca_default, "default_hca"
+    return _years_after(run_date, rl.default_next_assessment_yr.non_hca, "the non-HCA default"), "default_non_hca"
+
+
+def repair_by(run_date: date, rl_factored_yr: float) -> date | None:
+    """run date + RL x rl_factor x 365.25 days, rounded DOWN to whole days (never a day late); None for NaN."""
+    if not math.isfinite(rl_factored_yr):
+        return None
+    return run_date + timedelta(days=math.floor(rl_factored_yr * DAYS_PER_YEAR))
+
+
+def append_reasons(m5_reasons, m5_needs_review, m6_flags: dict[str, np.ndarray]) -> tuple[np.ndarray, np.ndarray]:
+    """M5's ``;``-joined reasons with the M6 reasons that apply appended in ``m6_flags`` order, a name
+    already present not repeated (None when there are none); ``needs_review`` = M5's flag or any reason."""
+    n = len(m5_needs_review)
+    reasons = np.full(n, None, dtype=object)
+    needs = np.zeros(n, dtype=bool)
+    for k in range(n):
+        old = m5_reasons[k]
+        hit = [r for r in old.split(REASON_SEP) if r] if isinstance(old, str) else []
+        hit += [r for r, flag in m6_flags.items() if flag[k] and r not in hit]
+        reasons[k] = REASON_SEP.join(hit) if hit else None
+        flag = m5_needs_review[k]
+        needs[k] = bool(hit) or (flag is not None and not pd.isna(flag) and bool(flag))
+    return needs, reasons
+
+
+def _segment_hca(segments: pd.DataFrame) -> dict[str, bool]:
+    return {str(sid): _as_bool(v, f"segment {str(sid)!r}")
+            for sid, v in zip(segments.segment_id, segments.could_affect_hca)}
+
+
+def reinspection_intervals(features: pd.DataFrame, segments: pd.DataFrame, settings: Settings) -> pd.DataFrame:
+    """One row per segment, in table order (spec 6.7). ``min_rl_factored_yr``: the minimum finite RL x
+    rl_factor of its features (NaN-RL features are left out of the min and counted in ``n_rl_not_evaluated``);
+    ``regulatory_max_yr``: hca_max_interval_months / 12 (HCA) or default_next_assessment_yr.non_hca;
+    ``recommended_interval_yr`` = min of the two, the regulatory max when no feature has a finite RL;
+    ``governing_match_id``: the feature attaining the min (first in table order), None without one."""
+    rl = settings.remaining_life
+    hca = _segment_hca(segments)
+    out = []
+    for sid in segments.segment_id.astype(str):
+        in_seg = features[features.segment_id == sid]
+        vals = in_seg.rl_factored_yr.to_numpy(float)
+        finite = np.isfinite(vals)
+        reg_max = (rl.hca_max_interval_months / MONTHS_PER_YEAR if hca[sid]
+                   else float(rl.default_next_assessment_yr.non_hca))
+        if finite.any():
+            k = int(np.flatnonzero(vals == vals[finite].min())[0])
+            min_rl, gov = float(vals[k]), str(in_seg.match_id.iloc[k])
+        else:
+            min_rl, gov = math.nan, None
+        out.append({
+            "segment_id": sid, "could_affect_hca": hca[sid], "n_features": len(in_seg),
+            "n_rl_not_evaluated": int((~finite).sum()), "min_rl_factored_yr": min_rl,
+            "regulatory_max_yr": float(reg_max),
+            "recommended_interval_yr": float(min(min_rl, reg_max)) if gov is not None else float(reg_max),
+            "governing_match_id": gov,
+        })
+    table = pd.DataFrame(out, columns=INTERVAL_COLUMNS)
+    # object columns keep None (pandas would infer a string dtype with NaN for a missing id)
+    table["segment_id"] = pd.Series([r["segment_id"] for r in out], dtype=object)
+    table["governing_match_id"] = pd.Series([r["governing_match_id"] for r in out], dtype=object)
+    return table
+
+
+def _finite_min(values: np.ndarray) -> float | None:
+    """The minimum finite value as a float, None when there is none (JSON-ready)."""
+    v = values[np.isfinite(values)]
+    return float(v.min()) if len(v) else None
+
+
+def _summary(f: pd.DataFrame, run_date: date, settings: Settings, prev_run_id, curr_run_id) -> dict:
+    reasons = [r.split(REASON_SEP) if isinstance(r, str) else [] for r in f.review_reasons]
+    return {
+        "prev_run_id": prev_run_id, "curr_run_id": curr_run_id, "curr_run_date": run_date.isoformat(),
+        "method": settings.strength.method, "rl_factor": float(settings.remaining_life.rl_factor),
+        "horizon_yr": float(settings.remaining_life.horizon_yr),
+        "n_features": len(f),
+        "counts_by_rl_governing": {g: int((f.rl_governing == g).sum()) for g in RL_GOVERNING},
+        "n_rl_not_evaluated": int(f.rl_yr.isna().sum()),
+        "n_exceeds_80pct": int(f.exceeds_80pct.sum()),
+        "n_dig_required": int(f.dig_required_by_remaining_life.sum()),
+        "n_needs_review": int(f.needs_review.sum()),
+        "counts_by_review_reason": {r: sum(r in x for x in reasons) for r in (*REVIEW_REASONS, *RL_REVIEW_REASONS)},
+        "min_rl_yr": _finite_min(f.rl_yr.to_numpy(float)),
+        "min_rl_factored_yr": _finite_min(f.rl_factored_yr.to_numpy(float)),
+        "counts_by_next_assessment_source": {s: int((f.next_assessment_source == s).sum())
+                                             for s in NEXT_ASSESSMENT_SOURCES},
+    }
+
+
+def compute_remaining_life(growth: pd.DataFrame, curr_run_date, pipe: pd.DataFrame, mop: pd.DataFrame,
+                           segments: pd.DataFrame, next_inspection: pd.DataFrame, settings: Settings, *,
+                           prev_run_id: str | None = None, curr_run_id: str | None = None) -> RLResult:
+    """Remaining life of every M5 growth row (spec 6.6-6.7), in the same order, with per-segment intervals.
+
+    - Reference values at ``curr_log_dist_ft`` (``alignment.anchor_tol_ft``): od_in and smys_psi from
+      ``pipe``, mop_psig from ``mop``. A position outside a table is a ValueError; a NaN value there is
+      kept, so that row's RL is NaN and flagged ``rl_not_evaluated`` (never a guessed value).
+    - Wall = growth ``wt_in``; assessed depth and length by ``strength.depth_basis`` / ``length_basis``.
+      Strength columns are at τ = 0; ``exceeds_80pct`` is the unclipped assessed d/t >= 0.80.
+    - g = governing_mpy / 1000 in/yr, gL = length_rate_ipy; ``time_to_criteria`` and ``remaining_life``.
+      rl_factored = RL x rl_factor; ``repair_by_date`` from ``repair_by``.
+    - Segment (``segments``: start_ft, end_ft, segment_id, could_affect_hca) by ``assign_segment``; the
+      next assessment by ``next_assessment``; years to it = days / 365.25.
+    - ``dig_required_by_remaining_life`` = rl_factored < years to next assessment; False for a NaN RL,
+      which is flagged ``rl_not_evaluated`` instead.
+    - ``review_reasons``: M5's, then ``RL_REVIEW_REASONS`` that apply (``append_reasons``).
+    """
+    _require_columns(growth, GROWTH_INPUT_COLUMNS, "growth table")
+    _require_columns(segments, RL_SEGMENT_COLUMNS, "segments table")
+    check_segments(segments)
+    run_date = _as_date(curr_run_date, "current run date")
+    if run_date is None:
+        raise ValueError("the current run date is missing")
+    rl_cfg, method = settings.remaining_life, settings.strength.method
+    g_in = growth.reset_index(drop=True)
+    n = len(g_in)
+    pos = g_in.curr_log_dist_ft.to_numpy(float)
+    tol = settings.alignment.anchor_tol_ft
+    if n:
+        od = lookup(pipe, pos, "od_in", tol, what=PIPE_WHAT, allow_nan=True)
+        smys = lookup(pipe, pos, "smys_psi", tol, what=PIPE_WHAT, allow_nan=True)
+        mop_psig = lookup(mop, pos, "mop_psig", tol, what=MOP_WHAT, allow_nan=True)
+    else:
+        od = smys = mop_psig = np.zeros(0)
+    wt = g_in.wt_in.to_numpy(float)
+    d_pct = g_in.d_curr_pct.to_numpy(float)
+    length = g_in.length_in.to_numpy(float)
+    d_as = np.asarray(assessed_depth_in(d_pct, wt, settings), dtype=float)
+    l_as = np.asarray(assessed_length_in(length, settings), dtype=float)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        dt_ratio = d_as / wt
+        exceeds = np.asarray(exceeds_wall_loss_limit(d_as, wt), dtype=bool)
+    z, folias, flow, s_f = (np.asarray(a, dtype=float) for a in failure_stress(method, od, wt, d_as, l_as, smys))
+    p_f = np.asarray(burst_pressure(s_f, wt, od), dtype=float)
+    p_safe = np.asarray(safe_pressure(p_f, settings), dtype=float)
+    g_inyr = g_in.governing_mpy.to_numpy(float) / MILS_PER_IN
+    gl_inyr = g_in.length_rate_ipy.to_numpy(float)
+
+    taus = {c: np.full(n, math.nan) for c in CRITERIA}
+    rl_yr = np.full(n, math.nan)
+    rl_gov = np.full(n, None, dtype=object)
+    for k in range(n):
+        times = time_to_criteria(d_as[k], l_as[k], g_inyr[k], gl_inyr[k], od[k], wt[k], smys[k], mop_psig[k],
+                                 settings)
+        for c in CRITERIA:
+            taus[c][k] = times[c]
+        rl_yr[k], rl_gov[k] = remaining_life(times, settings)
+    rl_factored = rl_yr * rl_cfg.rl_factor
+
+    seg_id = assign_segment(segments, pos)
+    hca = _segment_hca(segments)
+    planned = _planned_dates(next_inspection)
+    per_seg = {sid: next_assessment(hca[sid], planned.get(sid), run_date, settings, sid) for sid in hca}
+    outside = next_assessment(None, None, run_date, settings)
+    nxt = [outside if s is None else per_seg[s] for s in seg_id]
+    years_next = np.array([(d - run_date).days / DAYS_PER_YEAR for d, _ in nxt], dtype=float)
+    dig = np.isfinite(rl_factored) & (rl_factored < years_next)  # NaN RL: no dig claim, flagged instead
+
+    m6_flags = {"rl_not_evaluated": np.isnan(rl_yr), "exceeds_80pct": exceeds,
+                "no_segment": np.array([s is None for s in seg_id], dtype=bool)}
+    needs_review, reasons = append_reasons(list(g_in.review_reasons), list(g_in.needs_review), m6_flags)
+
+    def obj(values) -> pd.Series:
+        return pd.Series(list(values), dtype=object)
+
+    f = pd.DataFrame({
+        "match_id": obj(g_in.match_id), "curr_feature_id": obj(g_in.curr_feature_id),
+        "curr_log_dist_ft": pos, "segment_id": obj(seg_id),
+        "could_affect_hca": obj(None if s is None else hca[s] for s in seg_id),
+        "od_in": od, "wt_in": wt, "smys_psi": smys, "mop_psig": mop_psig,
+        "d_reported_pct": d_pct, "d_assessed_in": d_as, "assessed_dt": dt_ratio, "exceeds_80pct": exceeds,
+        "length_in": length, "length_assessed_in": l_as,
+        "method": obj([method] * n), "z": z, "folias_m": folias, "flow_stress_psi": flow,
+        "failure_stress_psi": s_f, "burst_psig": p_f, "safe_psig": p_safe,
+        "g_inyr": g_inyr, "gl_inyr": gl_inyr,
+        "tau_80_yr": taus["tau_80"], "tau_burst_yr": taus["tau_burst"], "tau_safe_yr": taus["tau_safe"],
+        "rl_yr": rl_yr, "rl_governing": obj(rl_gov),
+        "rl_factor": np.full(n, float(rl_cfg.rl_factor)), "rl_factored_yr": rl_factored,
+        "repair_by_date": obj(repair_by(run_date, x) for x in rl_factored),
+        "next_assessment_date": obj(d for d, _ in nxt), "next_assessment_source": obj(s for _, s in nxt),
+        "years_to_next_assessment": years_next, "dig_required_by_remaining_life": dig,
+        "needs_review": needs_review, "review_reasons": obj(reasons),
+    })[RL_FEATURE_COLUMNS]
+    intervals = reinspection_intervals(f, segments, settings)
+    return RLResult(f, intervals, _summary(f, run_date, settings, prev_run_id, curr_run_id))

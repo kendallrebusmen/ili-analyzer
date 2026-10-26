@@ -370,6 +370,26 @@ def write_growth(result: GrowthResult, out_dir: Path) -> dict[str, Path]:
     return paths
 
 
+_GROWTH_TEXT = ("match_id", "match_type", "prev_feature_id", "curr_feature_id", "segment_id", "history_class",
+                "confidence", "governing_method", "review_reasons")
+_GROWTH_FLAGS = ("needs_review", "implausible", "match_needs_review")
+
+
+def load_growth_table(path: Path) -> pd.DataFrame:
+    """Read a ``growth.csv`` back with its types (as ``match.load_match_table``): ids and labels stay text
+    (empty is None), flags are True/False/None, the rest float."""
+    header = pd.read_csv(path, nrows=0).columns
+    text = [c for c in _GROWTH_TEXT if c in header]
+    flags = [c for c in _GROWTH_FLAGS if c in header]
+    df = pd.read_csv(path, dtype={c: str for c in text + flags}, keep_default_na=False,
+                     na_values={c: [""] for c in header if c not in text + flags})
+    for c in text:
+        df[c] = df[c].astype(object).where(df[c] != "", None)
+    for c in flags:
+        df[c] = df[c].map({"True": True, "False": False}).astype(object).where(df[c] != "", None)
+    return df
+
+
 def _run_year(std: pd.DataFrame) -> int:
     return std.run_date.dropna().iloc[0].year
 
