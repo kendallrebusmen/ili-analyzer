@@ -41,9 +41,10 @@ def assessed_depth_in(depth_pct, wt_in, settings: Settings):
     """Assessed depth in inches (spec 6.6, ``strength.depth_basis``).
 
     ``reported``: depth_pct. ``reported_plus_tolerance``: depth_pct + tool.depth_tolerance_pct_wt
-    (% of wall), capped at 100 % of wall. Converted to inches = pct / 100 * wt_in.
+    (% of wall), capped at 100 % of wall. Converted to inches = pct / 100 * wt_in. A negative reported
+    depth (a data error) is clipped to 0 first, so the tolerance is never partly cancelled by it.
     """
-    pct = np.asarray(depth_pct, dtype=float)
+    pct = np.maximum(np.asarray(depth_pct, dtype=float), 0.0)  # NaN stays NaN
     if settings.strength.depth_basis == "reported_plus_tolerance":
         pct = np.minimum(pct + settings.tool.depth_tolerance_pct_wt, PCT_PER_FRACTION)
     return pct / PCT_PER_FRACTION * np.asarray(wt_in, dtype=float)

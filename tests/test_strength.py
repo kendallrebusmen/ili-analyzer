@@ -125,6 +125,18 @@ def test_assessed_depth_and_length_basis():
     assert np.isnan(assessed_depth_in(np.nan, 0.25, s_tol))
 
 
+def test_assessed_depth_clips_negative_reported_depth():
+    s = load_settings()
+    s_rep = s.model_copy(update={"strength": s.strength.model_copy(update={"depth_basis": "reported"})})
+    s_tol = s.model_copy(update={"strength": s.strength.model_copy(update={"depth_basis": "reported_plus_tolerance"})})
+    tol = s.tool.depth_tolerance_pct_wt
+    assert assessed_depth_in(-5.0, 0.25, s_rep) == 0.0
+    # the tolerance is added to 0, not to the negative depth
+    assert assessed_depth_in(-5.0, 0.25, s_tol) == pytest.approx(tol / 100 * 0.25)
+    out = assessed_depth_in(np.array([-5.0, np.nan, 30.0]), 0.25, s_rep)
+    assert out[0] == 0.0 and np.isnan(out[1]) and out[2] == pytest.approx(0.075)
+
+
 def test_z_param():
     assert z_param(4.0, 12.75, 0.25) == pytest.approx(16 / (12.75 * 0.25))
 
