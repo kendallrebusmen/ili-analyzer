@@ -251,6 +251,8 @@ def score_matching(match_table: pd.DataFrame, truth: pd.DataFrame) -> dict:
 # features. PLACEHOLDER target.
 MIN_GROWTH_CONSERVATISM = 0.90
 _GROWTH_HISTORY_CLASSES = ("matched", "new", "no_history")
+_GROWTH_TRUTH_CLASSES = ("matched_1to1", "matched_cluster", "new")
+_GROWTH_FEATURE_TYPE = "metal_loss"
 
 
 def _true_growth_by_id(truth: pd.DataFrame) -> dict[str, float]:
@@ -277,10 +279,17 @@ def score_growth(features: pd.DataFrame, truth: pd.DataFrame) -> dict:
     ``raw`` scores ``raw_mpy`` on ``matched`` history rows; ``governing`` scores ``governing_mpy`` on
     every row that has one. ``conservatism_rate`` is the share of all rows with governing >= true, so
     a row without a governing rate (``n_no_governing``) counts as not conservative; it is also given
-    per history class. ``non_conservative`` lists the largest shortfalls. A current id absent from
-    the truth, one whose truth rows have no growth, or missing columns are a ``ValueError``.
+    per history class. ``non_conservative`` lists the largest shortfalls.
+
+    The table must score every current feature exactly once, so dropping or repeating rows cannot move
+    the rate: ``n_truth_not_scored`` counts the truth's current-run metal_loss ids (``curr_status``
+    reported or reported_in_cluster, ``truth_class`` matched_1to1, matched_cluster or new) in no row,
+    and ``n_duplicated`` the current ids in more than one row or twice in one cell. ``passes`` needs the
+    conservatism target and both counts 0. A current id absent from the truth, one whose truth rows
+    have no growth, or missing columns are a ``ValueError``.
     """
-    for df, cols, what in ((truth, ("curr_feature_id", "growth_mpy"), "truth (expected ground_truth.csv)"),
+    for df, cols, what in ((truth, ("feature_type", "curr_feature_id", "curr_status", "truth_class",
+                                    "growth_mpy"), "truth (expected ground_truth.csv)"),
                            (features, ("match_type", "curr_feature_id", "history_class", "raw_mpy",
                                        "governing_mpy"), "growth features")):
         missing = sorted(set(cols) - set(df.columns))
@@ -289,8 +298,11 @@ def score_growth(features: pd.DataFrame, truth: pd.DataFrame) -> dict:
 
     by_id = _true_growth_by_id(truth)
     true = np.empty(len(features))
+    seen: dict[str, int] = {}
     for k, cell in enumerate(features.curr_feature_id):
         ids = _ids(cell)
+        for fid in ids:
+            seen[fid] = seen.get(fid, 0) + 1
         if not ids:
             raise ValueError(f"growth feature row {k} has no current feature id")
         for fid in ids:
@@ -301,6 +313,11 @@ def score_growth(features: pd.DataFrame, truth: pd.DataFrame) -> dict:
         if not rates:
             raise ValueError(f"growth feature row {k} ({cell}) has no true growth_mpy in the truth")
         true[k] = max(rates)
+
+    expected = truth[(truth.feature_type == _GROWTH_FEATURE_TYPE) & truth.curr_status.isin(_REPORTED_STATUSES)
+                     & truth.truth_class.isin(_GROWTH_TRUTH_CLASSES) & truth.curr_feature_id.notna()]
+    not_scored = sorted({str(i) for i in expected.curr_feature_id} - set(seen))
+    duplicated = sorted(fid for fid, n in seen.items() if n > 1)
 
     cls = features.history_class.to_numpy(object)
     raw = features.raw_mpy.to_numpy(float)
@@ -329,7 +346,11 @@ def score_growth(features: pd.DataFrame, truth: pd.DataFrame) -> dict:
         "n_no_governing": int((~has_gov).sum()),
         "n_non_conservative": int(len(short)),
         "non_conservative": listed,
-        "passes": bool(rate is not None and rate >= MIN_GROWTH_CONSERVATISM),
+        "n_truth_not_scored": len(not_scored),
+        "truth_not_scored": not_scored[:MAX_LISTED],
+        "n_duplicated": len(duplicated),
+        "duplicated": duplicated[:MAX_LISTED],
+        "passes": bool(rate is not None and rate >= MIN_GROWTH_CONSERVATISM and not not_scored and not duplicated),
     }
 
 

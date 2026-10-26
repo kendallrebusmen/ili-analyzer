@@ -51,6 +51,7 @@ def _assert_reports_errors(score: dict, features: pd.DataFrame):
         assert m["rmse_mpy"] >= abs(m["bias_mpy"])
     assert score["raw"]["n"] == int((features.history_class == "matched").sum())
     assert score["governing"]["n"] + score["n_no_governing"] == len(features)
+    assert (score["n_truth_not_scored"], score["n_duplicated"]) == (0, 0), score
     json.dumps(score)  # write_metrics dumps it
 
 
@@ -82,11 +83,22 @@ def _features(rows):
     return pd.DataFrame(rows, columns=["match_type", "curr_feature_id", "history_class", "raw_mpy", "governing_mpy"])
 
 
+def _truth(rows):
+    return pd.DataFrame(rows, columns=["feature_type", "curr_feature_id", "curr_status", "truth_class", "growth_mpy"])
+
+
 # A vendor cluster report B-2 holds two true pits; B-3 is a single pit in the same matched cluster row.
-TRUTH = pd.DataFrame({
-    "curr_feature_id": ["B-1", "B-2", "B-2", "B-3", "B-4", "B-9"],
-    "growth_mpy": [4.0, 2.0, 6.0, 1.0, 1.0, 0.5],
-})
+# The dent B-9, the pit missing from the current run and the unreported pit need no growth row.
+TRUTH = _truth([
+    ("metal_loss", "B-1", "reported", "matched_1to1", 4.0),
+    ("metal_loss", "B-2", "reported_in_cluster", "matched_cluster", 2.0),
+    ("metal_loss", "B-2", "reported_in_cluster", "matched_cluster", 6.0),
+    ("metal_loss", "B-3", "reported", "matched_cluster", 1.0),
+    ("metal_loss", "B-4", "reported", "new", 1.0),
+    ("dent", "B-9", "reported", "matched_1to1", NAN),
+    ("metal_loss", None, "below_threshold", "missing", 0.5),
+    ("metal_loss", None, "below_threshold", "not_reported", 0.2),
+])
 HAND = _features([
     ("matched_1to1", "B-1", "matched", 3.0, 5.0),        # true 4: raw -1, gov +1, conservative
     ("matched_cluster", "B-2;B-3", "matched", 8.0, 5.5),  # true max(2, 6, 1) = 6: raw +2, gov -0.5, not
@@ -106,6 +118,7 @@ def test_score_growth_hand_built():
         "no_history": {"rate": None, "n": 0},
     }
     assert s["n_features"] == 3 and s["n_no_governing"] == 0
+    assert (s["n_truth_not_scored"], s["n_duplicated"]) == (0, 0)
     assert s["passes"] is False
     assert s["non_conservative"] == [{"curr_feature_id": "B-2;B-3", "history_class": "matched",
                                       "governing_mpy": 5.5, "true_mpy": 6.0}]
@@ -136,11 +149,35 @@ def test_no_governing_rate_counts_as_not_conservative():
 
 
 def test_passes_at_the_target():
-    rows = [("matched_1to1", "B-1", "matched", 4.0, 4.0)] * 9 + [("matched_1to1", "B-1", "matched", 4.0, 3.0)]
-    s = score_growth(_features(rows), TRUTH)
+    truth = _truth([("metal_loss", f"B-{k}", "reported", "matched_1to1", 4.0) for k in range(10)])
+    rows = [("matched_1to1", f"B-{k}", "matched", 4.0, 4.0 if k < 9 else 3.0) for k in range(10)]
+    s = score_growth(_features(rows), truth)
     assert s["conservatism_rate"] == pytest.approx(0.9) and s["passes"] is True
-    rows[0] = ("matched_1to1", "B-1", "matched", 4.0, 3.9)
-    assert score_growth(_features(rows), TRUTH)["passes"] is False
+    rows[0] = ("matched_1to1", "B-0", "matched", 4.0, 3.9)
+    assert score_growth(_features(rows), truth)["passes"] is False
+
+
+# HAND with the cluster row's governing rate at its true 6 mpy: every row conservative, so it passes.
+GOOD = HAND.assign(governing_mpy=[5.0, 6.0, 3.0])
+
+
+def test_dropped_row_fails():
+    assert score_growth(GOOD, TRUTH)["passes"] is True
+    s = score_growth(GOOD.drop(index=1), TRUTH)  # the hard cluster row goes; the rest stay conservative
+    assert s["conservatism_rate"] == 1.0
+    assert (s["n_truth_not_scored"], s["truth_not_scored"], s["n_duplicated"]) == (2, ["B-2", "B-3"], 0)
+    assert s["passes"] is False
+
+
+def test_duplicated_row_fails():
+    s = score_growth(pd.concat([GOOD, GOOD.iloc[[0]]], ignore_index=True), TRUTH)
+    assert s["conservatism_rate"] == 1.0
+    assert (s["n_truth_not_scored"], s["n_duplicated"], s["duplicated"]) == (0, 1, ["B-1"])
+    assert s["passes"] is False
+    twice = GOOD.assign(curr_feature_id=["B-1", "B-2;B-3;B-2", "B-4"])  # repeated inside one cell
+    s = score_growth(twice, TRUTH)
+    assert (s["n_truth_not_scored"], s["n_duplicated"], s["duplicated"]) == (0, 1, ["B-2"])
+    assert s["passes"] is False
 
 
 def test_score_growth_unknown_id_is_value_error():
@@ -148,14 +185,15 @@ def test_score_growth_unknown_id_is_value_error():
     bad.loc[1, "curr_feature_id"] = "B-2;Z-999999"
     with pytest.raises(ValueError, match="Z-999999"):
         score_growth(bad, TRUTH)
-    with pytest.raises(ValueError, match="growth_mpy"):
-        score_growth(HAND, TRUTH.drop(columns="growth_mpy"))
+    for col in ("growth_mpy", "curr_status", "truth_class", "feature_type"):
+        with pytest.raises(ValueError, match=col):
+            score_growth(HAND, TRUTH.drop(columns=col))
     with pytest.raises(ValueError, match="governing_mpy"):
         score_growth(HAND.drop(columns="governing_mpy"), TRUTH)
 
 
 def test_ids_compare_as_strings():
-    truth = pd.DataFrame({"curr_feature_id": ["007"], "growth_mpy": [2.0]})
+    truth = _truth([("metal_loss", "007", "reported", "new", 2.0)])
     f = _features([("new", "007", "new", NAN, 2.5)])
     assert score_growth(f, truth)["conservatism_rate"] == 1.0
     with pytest.raises(ValueError, match="'7'"):
