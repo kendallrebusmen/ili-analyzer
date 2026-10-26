@@ -58,7 +58,7 @@ def test_missing_section_rejected(tmp_path):
 
 def test_shipped_criteria_load():
     c = load_repair_criteria()
-    assert [r.id for r in c.rules] == ["IMM-1", "IMM-2", "D180-4"]
+    assert [r.id for r in c.rules][:3] == ["IMM-1", "IMM-2", "IMM-3"]
     assert c.rules[0].feature_types == [FeatureType.metal_loss]
     assert "VERIFY" in c.version
 

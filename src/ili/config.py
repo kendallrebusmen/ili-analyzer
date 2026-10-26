@@ -11,9 +11,11 @@ from pathlib import Path
 from typing import Literal
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from ili.rules import compile_condition
 from ili.schema import FeatureType
+from ili.vocabulary import VARIABLES
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_SETTINGS = PROJECT_ROOT / "config" / "settings.yaml"
@@ -116,6 +118,12 @@ class ClassificationCfg(_Strict):
     criteria_file: str
     girth_weld_proximity_in: float | None
     crossing_proximity_ft: float | None
+    seam_clock_min: float | None
+    seam_clock_tol_min: float | None
+    general_corrosion_min_dim_in: float | None
+    widespread_circ_min_width_frac: float | None
+    due_days: dict[Literal["60_day", "180_day"], int]
+    discovery_max_days: int
 
 
 class CpOverlayCfg(_Strict):
@@ -146,6 +154,12 @@ class Rule(_Strict):
     requires_review: bool
 
 
+REQUIRED_HCA_IDS = (
+    "IMM-1", "IMM-2", "IMM-3", "IMM-4", "IMM-5", "D60-1", "D60-2",
+    "D180-1", "D180-2", "D180-3", "D180-4", "D180-5", "D180-6", "D180-7", "D180-8", "D180-9",
+)
+
+
 class RepairCriteria(_Strict):
     version: str
     rules: list[Rule]
@@ -158,6 +172,20 @@ class RepairCriteria(_Strict):
         if dupes:
             raise ValueError(f"duplicate rule ids: {', '.join(dupes)}")
         return rules
+
+    @model_validator(mode="after")
+    def _conditions_and_required_ids(self) -> "RepairCriteria":
+        names = set(VARIABLES)
+        for r in self.rules:
+            try:
+                compile_condition(r.condition, names)
+            except ValueError as exc:
+                raise ValueError(f"rule {r.id}: invalid condition: {exc}") from exc
+        present = {r.id for r in self.rules}
+        missing = [i for i in REQUIRED_HCA_IDS if i not in present]
+        if missing:
+            raise ValueError(f"missing required 195.452(h)(4) rule ids: {', '.join(missing)}")
+        return self
 
 
 def _read_yaml(path: Path) -> dict:

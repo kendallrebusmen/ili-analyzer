@@ -66,6 +66,12 @@ classification:
   criteria_file: config/repair_criteria.yaml
   girth_weld_proximity_in: null     # PLACEHOLDER
   crossing_proximity_ft: null       # PLACEHOLDER
+  seam_clock_min: null              # PLACEHOLDER - longitudinal seam position on the clock face (minutes, 0-719)
+  seam_clock_tol_min: null          # PLACEHOLDER - half-width of the seam overlap window (clock minutes)
+  general_corrosion_min_dim_in: null  # PLACEHOLDER - length and width both at least this (in) means general corrosion
+  widespread_circ_min_width_frac: null  # PLACEHOLDER - width / (pi * OD) at least this means widespread circumferential
+  due_days: {60_day: 60, 180_day: 180}  # 195.452(h)(4)(ii)/(iii) repair timelines from discovery (regulatory)
+  discovery_max_days: 180           # 195.452(h)(2): discovery no later than this after the assessment (regulatory)
 
 cp_overlay:
   cp_join_distance_ft: 500          # PLACEHOLDER
