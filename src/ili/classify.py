@@ -20,17 +20,26 @@ DRAFT – for review by qualified personnel.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import argparse
+import hashlib
+import json
+import sys
+from dataclasses import dataclass, replace
 from datetime import date, timedelta
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
-from ili.config import RepairCriteria, Settings
+from ili.align_welds import DRAFT_LABEL, comparison_dir
+from ili.config import (DEFAULT_CRITERIA, DEFAULT_SETTINGS, PROJECT_ROOT, RepairCriteria, Settings, load_repair_criteria,
+                        load_settings)
 from ili.growth import PCT_PER_FRACTION, REASON_SEP
-from ili.match import clock_diff_min
+from ili.ingest import load_standardized
+from ili.match import clock_diff_min, load_match_table
 from ili.reference import _require_columns, assign_segment, check_segments, lookup
-from ili.remaining_life import PIPE_WHAT, RL_SEGMENT_COLUMNS, _as_date, _segment_hca
+from ili.remaining_life import (PIPE_WHAT, RL_SEGMENT_COLUMNS, _as_date, _run_ids, _segment_hca,
+                                load_remaining_life_table)
 from ili.rules import _kleene_and, _kleene_or, _normalize, compile_condition
 from ili.schema import ANOMALY_TYPES, FeatureType
 from ili.strength import assessed_depth_in
@@ -604,3 +613,100 @@ def _classification_summary(table: pd.DataFrame, criteria: RepairCriteria, crite
         "discovery_max_days": int(cfg.discovery_max_days),
         "due_days": {k: int(v) for k, v in cfg.due_days.items()},
     }
+
+
+# ---------------------------------------------------------------------------
+# Output and CLI
+# ---------------------------------------------------------------------------
+
+OUTPUT_FILES = ("classification.csv", "classification_summary.json")
+TOP_REASONS = 8
+BANNER_RULE = "!" * 78
+
+
+def write_classification(result: ClassificationResult, out_dir: Path) -> dict[str, Path]:
+    """Write the two outputs into ``comparison_dir`` (created); the summary JSON carries the DRAFT label.
+    The summary needs ``prev_run_id`` and ``curr_run_id`` (``main`` adds them). The JSON text is built
+    before anything is written."""
+    s = result.summary
+    folder = comparison_dir(out_dir, s["prev_run_id"], s["curr_run_id"])
+    text = json.dumps({"label": DRAFT_LABEL, **s}, indent=2, allow_nan=False)
+    folder.mkdir(parents=True, exist_ok=True)
+    paths = {name: folder / name for name in OUTPUT_FILES}
+    result.table.to_csv(paths["classification.csv"], index=False, lineterminator="\n")
+    paths["classification_summary.json"].write_text(text, encoding="utf-8")
+    return paths
+
+
+def _parser() -> argparse.ArgumentParser:
+    ap = argparse.ArgumentParser(prog="python -m ili.classify",
+                                 description="Repair classification, 195.452(h)(4). " + DRAFT_LABEL)
+    ap.add_argument("--curr", type=Path, required=True, help="standardized CSV of the current run (run date)")
+    ap.add_argument("--matches", type=Path, required=True, help="match_table.csv from ili.match")
+    ap.add_argument("--remaining-life", type=Path, required=True, help="remaining_life.csv from ili.remaining_life")
+    ap.add_argument("--pipe", type=Path, required=True, help="pipe_properties.csv")
+    ap.add_argument("--segments", type=Path, required=True, help="hca_segments.csv")
+    ap.add_argument("--crossings", type=Path, default=None, help="foreign_crossings.csv (optional)")
+    ap.add_argument("--criteria", type=Path, default=DEFAULT_CRITERIA, help="repair criteria YAML")
+    ap.add_argument("--discovery-date", default=None, help="discovery date, YYYY-MM-DD (default: latest permissible)")
+    ap.add_argument("--settings", type=Path, default=DEFAULT_SETTINGS, help="settings YAML")
+    ap.add_argument("--out", type=Path, default=PROJECT_ROOT / "outputs", help="output directory")
+    return ap
+
+
+def _print_report(result: ClassificationResult, paths: dict[str, Path]) -> None:
+    s, t = result.summary, result.table
+    print(DRAFT_LABEL)
+    if s["discovery_warning"]:
+        print(BANNER_RULE)
+        print(f"!!! WARNING: {s['discovery_warning']}")
+        print(BANNER_RULE)
+    print(f"{s['prev_run_id']} vs {s['curr_run_id']}: {s['n_features']} features, criteria {s['criteria_version']}, "
+          f"discovery date {s['discovery_date']} ({s['discovery_date_source']})")
+    print("by category: " + ", ".join(f"{k} {v}" for k, v in s["counts_by_category"].items()))
+    immediate = t[t.governing_category == "immediate"]
+    print(f"immediate ({len(immediate)}):")
+    for r in immediate.itertuples(index=False):
+        print(f"  {r.match_id}  {r.curr_feature_id}  {r.governing_rule}  {r.action_note}")
+    counts = _count_ids(t.review_reasons, sorted({x for c in t.review_reasons if isinstance(c, str)
+                                                  for x in c.split(REASON_SEP)}))
+    top = sorted(counts.items(), key=lambda kv: -kv[1])[:TOP_REASONS]
+    print(f"requires review: {s['n_requires_review']} (" + ", ".join(f"{k} {v}" for k, v in top) + ")")
+    print(f"overdue at discovery: {s['n_overdue_at_discovery']}")
+    print(f"wrote {paths['classification.csv'].parent}")
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = _parser().parse_args(argv)
+    try:
+        # every input is read before anything is written, so a bad input leaves no partial outputs
+        settings = load_settings(args.settings)
+        criteria = load_repair_criteria(args.criteria)
+        digest = hashlib.sha256(Path(args.criteria).read_bytes()).hexdigest()
+        curr = load_standardized(args.curr)
+        matches = load_match_table(args.matches)
+        remaining = load_remaining_life_table(args.remaining_life)
+        pipe = pd.read_csv(args.pipe)
+        segments = pd.read_csv(args.segments, dtype={"segment_id": str})
+        crossings = pd.read_csv(args.crossings) if args.crossings is not None else None
+        if crossings is None and settings.classification.crossing_proximity_ft is not None:
+            print("warning: classification.crossing_proximity_ft is set but no --crossings file was given; "
+                  "near_foreign_crossing will be unknown for every feature", file=sys.stderr)
+        prev_id, curr_id = _run_ids(args.remaining_life, curr)
+        run_dates = curr.run_date.dropna()
+        if run_dates.empty:
+            raise ValueError(f"{args.curr}: the current run has no run date")
+        assessed = run_dates.iloc[0]
+        variables = feature_variables(matches, remaining, curr, pipe, segments, crossings, settings)
+        result = classify(variables, criteria, settings, assessed, args.discovery_date, criteria_sha256=digest)
+        result = replace(result, summary={"prev_run_id": prev_id, "curr_run_id": curr_id, **result.summary})
+        paths = write_classification(result, args.out)
+    except (ValueError, OSError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    _print_report(result, paths)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

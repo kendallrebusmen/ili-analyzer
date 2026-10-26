@@ -286,3 +286,30 @@ Interpretations of `docs/SPEC.md` and choices the spec leaves open. Newest at th
 - **Observation for the integrity engineer.** The high dig count is a property of the synthetic data and PLACEHOLDER settings, not a code defect.
   - It is driven mainly by M5's conservative governing rates (≥ ~7.6 mpy, median ~9.6 mpy on a 0.25 in wall) with `rl_factor` 0.5 and next assessments 5–7 years out.
   - MOP 1 440 psig (70.6 % SMYS) puts P_safe < MOP at τ = 0 for 32 % of features in that zone (8.7 % in the 1 200 psig zone), which drives the 0.0 intervals.
+
+## M7: repair classification (2026-10-26)
+
+- **Expression language.** Conditions are parsed with `ast.parse(mode="eval")` and interpreted from a whitelist: and/or/not, + − × ÷, comparisons (chains, and `in` against constant lists), vocabulary names, constants. Never eval/exec/compile. Length ≤ 500 chars, depth ≤ 32. Type errors are config errors.
+  - Three-valued (Kleene) logic: unknown (None) inputs give unknown unless the rest decides. An unknown rule never triggers and never clears: it is listed in `rules_not_evaluable` and sets `requires_review`.
+- **Vocabulary.** 24 names: feature_type, could_affect_hca, od_in, wt_in, clock_min, top_of_pipe, depth_pct_reported, depth_pct_assessed, length_in, width_in, p_fail, p_safe, mop_local, dent_depth_in, dent_depth_pct_od, dent_metal_loss, seam_interaction, near_girth_weld, near_foreign_crossing, general_corrosion, widespread_circumferential, dig_required_by_remaining_life, manual_immediate, field_crack_confirmed.
+  - Sources: the M4 match table (current side), M6 `remaining_life` (pressures, dig flag, repair-by), the current run (run date), and the pipe, segments and crossings tables.
+- **Rule set.** The 16 HCA rules of spec §6.8, thresholds in the YAML. Strict operators as worded.
+  - "Smaller than NPS 12" = OD < 12.75 in. Top of pipe = clock ≥ 480 or ≤ 240 (spec).
+  - Dent "indication of metal loss, cracking or a stress riser" = vendor flag OR a reported metal-loss depth on the dent.
+  - D180-1 "affects curvature at a weld" is approximated as near a girth weld or seam interaction (review required).
+  - Non-HCA: NH- mirrors of every HCA rule, all `requires_review`, PLACEHOLDER pending the IMP (spec §10.7). Every non-HCA feature carries `nh_placeholder`.
+- **Assessed values.** Metal-loss and gouge depth = reported + tool depth tolerance (capped 100 %), the same basis as M6. Dent depth as reported (no dent tolerance in the spec).
+- **PLACEHOLDER settings** (null → unknown, never guessed): `girth_weld_proximity_in`, `crossing_proximity_ft`, `seam_clock_min` / `seam_clock_tol_min`, `general_corrosion_min_dim_in`, `widespread_circ_min_width_frac`.
+  - With `seam_clock_min` null, seam interaction is unknown unless the vendor flagged it, so D180-8 is not evaluable for most metal-loss features. Intended until the seam position is configured.
+  - Blank crossing or weld positions are errors. A feature outside the weld span is near a weld only if within range of the nearest known one, else unknown. A missing crossings file with the proximity set → unknown (the CLI warns).
+- **Category priority** immediate > 60_day > 180_day > imp_scheduled > evaluate. `imp_scheduled` when M6 flags a dig; `evaluate` otherwise ((h)(4)(iv)).
+  - Unknown HCA status uses the HCA rules (`hca_assumed`). An unknown dig flag on metal loss → `evaluate` with REMAINING_LIFE not evaluable. Dents and gouges have no remaining life (not applicable).
+- **Discovery and due dates.** Discovery is entered per run (`--discovery-date`). Missing → assessment + 180 days with a banner warning (195.452(h)(2)). Before the assessment or more than 180 days after → error.
+  - Due date = the earlier of the regulatory date (immediate: discovery; 60/180-day: discovery + 60/180 calendar days) and the feature's M6 repair-by date. `due_date_basis` records which.
+  - `imp_scheduled` uses the repair-by date; `evaluate` has none. A due date before discovery → `overdue_at_discovery`.
+- **Manual flags** (IMM-5, D180-7) are False until the M9 review UI supplies them.
+- **Results (default 20-mile dataset, discovery date not entered: 2026-12-12).**
+  - 555 features. By category: immediate 14, 60_day 4, 180_day 119, imp_scheduled 354, evaluate 64. The 14 immediate: 7 HCA (IMM-1 ×5, IMM-2, IMM-4) and 7 non-HCA (NH-IMM-1 ×5, NH-IMM-3 ×2).
+  - 553 require review: rule_not_evaluable 543, nh_placeholder 285, overdue_at_discovery 144, rule_review 76, match_review 34, exceeds_80pct 10.
+  - 144 overdue at discovery. Due-date basis: regulatory 20, remaining_life 471 (64 `evaluate` rows have no due date).
+- **Observation for the integrity engineer.** On the synthetic stress case nearly every feature requires review. This is driven by the null PLACEHOLDER settings (seam position especially), the non-HCA placeholder rule set, and upstream M4–M6 flags. Many are overdue at the default discovery date because the synthetic remaining lives are short (see M6). Configuring the PLACEHOLDERs and entering the discovery date clears most of it.
