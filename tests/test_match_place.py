@@ -83,6 +83,8 @@ def test_place_assigns_rows_and_flags_unmatched_rows():
     p = place(prev, wm, "prev", pmap)
     assert p.wm_row.tolist() == [2, -1]  # the removed row is a prev-side span
     assert (p.pos_prev_ft == p.log_dist_ft).all()
+    assert p.span_start_ft.iloc[0] == 140.0 and p.span_end_ft.iloc[0] == 170.0 and np.isnan(p.span_start_ft.iloc[1])
+    assert out.span_start_ft.tolist()[1:2] == [100.0] and out.span_end_ft.tolist()[1:2] == [140.0]
 
 
 def test_load_weld_map_keeps_string_ids(synth, tmp_path):
