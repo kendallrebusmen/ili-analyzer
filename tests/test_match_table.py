@@ -14,7 +14,7 @@ S = load_settings()
 
 COLUMNS = (
     ["match_id", "match_type", "score", "confidence", "review_status", "needs_review", "missing_hint",
-     "n_prev", "n_curr", "prev_feature_id", "curr_feature_id"]
+     "n_prev", "n_curr", "absorbed", "prev_feature_id", "curr_feature_id"]
     + [f"{s}_{c}" for s in ("prev", "curr") for c in (
         "feature_type", "log_dist_ft", "wm_row", "us_gw_id", "dist_from_us_gw_ft", "wt_nom_in", "depth_pct",
         "dent_depth_in", "length_in", "width_in", "clock_min", "surface", "seam_interaction", "dent_metal_loss",
@@ -86,7 +86,9 @@ def test_columns_and_draft_fields(run):
     assert (t.missing_hint.notna() == (t.match_type == "missing")).all()
     assert t.implausible[unmatched].isna().all() and t.score[unmatched].isna().all()
     assert t.implausible[~unmatched].map(lambda v: isinstance(v, (bool, np.bool_))).all()
-    assert (t.needs_review == ((t.confidence == "low") | (t.missing_hint == "unexplained"))).all()
+    assert (t.needs_review == ((t.confidence == "low") | (t.missing_hint == "unexplained") | t.absorbed)).all()
+    assert t.absorbed.dtype == bool and not t.absorbed[t.match_type != "matched_cluster"].any()
+    assert (t.confidence[t.absorbed] != "high").all() and summary["n_absorbed"] == int(t.absorbed.sum())
     assert all(isinstance(v, (bool, np.bool_)) for v in t.needs_review)
     assert summary["n_needs_review"] == int(t.needs_review.sum())
     assert summary["counts_by_match_type"] == t.match_type.value_counts().reindex(TYPES, fill_value=0).to_dict()
@@ -321,3 +323,20 @@ def test_degenerate_tables_keep_columns_and_dtypes(keep_prev, keep_curr, counts)
     assert sum(s["counts_by_confidence"].values()) == counts["matched_1to1"] + counts["matched_cluster"]
     assert s["n_needs_review"] == int(t.needs_review.sum())
     assert (s["n_prev_anomalies"], s["n_curr_anomalies"]) == (len(keep_prev), len(keep_curr))
+
+
+def test_absorbed_cluster_row_is_capped_at_medium_and_reviewed():
+    """Two curr pits 2.4 in apart (separate interaction groups) both inside a prev vendor report's
+    4 in box: the report absorbs the second one. Score 0 would be high; absorbed caps it at medium."""
+    wm = _wm(("1:1", 0.0, 1000.0, 0.0, 1000.0))
+    wm["in_repair"] = False
+    prev = _frame([("valve", 10.0, "PV"), ("metal_loss", 100.0, "V", 40.0, 100, 4.0, "C1")], date(2021, 6, 15))
+    curr = _frame([("valve", 10.0, "CV"), ("metal_loss", 100.0 - 0.1, "a", 38.0, 100, 0.3),
+                   ("metal_loss", 100.0 + 0.1, "b", 41.0, 100, 0.3)], date(2026, 6, 15))
+    pipe = pd.DataFrame({"start_ft": [0.0], "end_ft": [2000.0], "od_in": [12.75]})
+    res = match_anomalies(prev, curr, wm, S, pipe)
+    row = res.match_table.iloc[0]
+    assert len(res.match_table) == 1 and row.match_type == "matched_cluster" and row.curr_feature_id == "a;b"
+    assert row.score == pytest.approx(0.0) and bool(row.absorbed) is True
+    assert row.confidence == "medium" and bool(row.needs_review) is True
+    assert res.summary["n_absorbed"] == 1 and res.summary["n_needs_review"] == 1

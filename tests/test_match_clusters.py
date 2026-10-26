@@ -204,6 +204,7 @@ def test_vendor_cluster_absorbs_pit_groups_the_interaction_rule_splits():
     assert p == [0] and c == [0, 1]
     assert m.depth_change_pct == pytest.approx(2.0)  # merged max depth 40, not the first group's 20
     assert m.axial_diff_in == 0 and m.score == pytest.approx(0.0)
+    assert m.absorbed is True and not bool(m.implausible)  # the 20 % pit alone vs 38 % is no "drop"
 
 
 def test_vendor_cluster_absorption_respects_axial_tolerance():
@@ -222,7 +223,8 @@ def test_leftover_pit_joins_the_lowest_score_vendor_cluster():
     curr = _frame("curr", [50.0, 50 + 6 * IN, 50 + 10 * IN], clock=[100, 100, 100])
     out = match_clusters(prev, curr, 5.0, S)
     assert [(p, c) for p, c, _ in out] == [([0], [0]), ([1], [1, 2])]
-    assert out[1][2].axial_diff_in == 0
+    assert out[1][2].axial_diff_in == pytest.approx(2.85)  # the absorbed pit's gap to report B's box
+    assert out[0][2].absorbed is False and out[1][2].absorbed is True
 
 
 def test_absorption_needs_the_vendor_report_on_the_opposite_side():
@@ -235,3 +237,49 @@ def test_absorption_needs_the_vendor_report_on_the_opposite_side():
     opposite = match_clusters(_frame("prev", [50.0, 50 + 0.6 * IN], clock=[100, 100], vendor=["V", None]),
                               curr, 5.0, S)
     assert [(p, c) for p, c, _ in opposite] == [([0, 1], [0, 1, 2])]
+
+
+def test_prev_pit_groups_absorbed_into_curr_vendor_report():
+    """Side 0: the vendor report is in the current run and the leftover groups are previous-run pits."""
+    curr = _frame("curr", [50.0], clock=[100], length=4.0, width=3.0, depth=45.0, vendor=["V"])
+    prev = _frame("prev", [50 - 1.2 * IN, 50 + 1.2 * IN], clock=[100, 100], depth=[25.0, 35.0])
+    assert len(set(interaction_groups(prev, S))) == 2
+    out = match_clusters(prev, curr, 5.0, S)
+    assert len(out) == 1
+    p, c, m = out[0]
+    assert p == [0, 1] and c == [0]
+    assert m.absorbed is True and m.depth_change_pct == pytest.approx(10.0) and m.score == pytest.approx(0.0)
+
+
+def _gap_score(axial_in, clock_min=0.0):
+    w, mt = S.matching.weights, S.matching
+    a, c = axial_in / mt.axial_tol_in, clock_min / mt.clock_tol_min
+    return np.sqrt((w.axial * a * a + w.circ * c * c) / (w.axial + w.circ))
+
+
+def test_absorbed_score_is_the_max_over_absorbed_groups():
+    """Vendor box +-1 in. The pit at 50 ft pairs with it (gap 0); pits at -3 in and +4 in are their own
+    groups, absorbed with box gaps 1.85 and 2.85 in. The match takes the worst: 2.85 in."""
+    prev = _vendor()
+    curr = _frame("curr", [50 - 3 * IN, 50.0, 50 + 4 * IN], clock=[100, 100, 100])
+    assert len(set(interaction_groups(curr, S))) == 3
+    out = match_clusters(prev, curr, 5.0, S)
+    assert len(out) == 1
+    p, c, m = out[0]
+    assert p == [0] and c == [0, 1, 2]
+    assert m.axial_diff_in == pytest.approx(2.85) and m.clock_diff_min == 0
+    assert m.score == pytest.approx(_gap_score(2.85)) and m.absorbed is True
+
+
+def test_absorbed_far_pit_is_scored_by_its_own_gap():
+    """A pit 4.15 in beyond a 2 in vendor box and 26.5 min off it is absorbed, but the match is no
+    longer scored 0: its score is that pit's own gap, and the merged depths decide plausibility."""
+    prev = _frame("prev", [50.0], clock=[100], length=2.0, width=1.0, depth=40.0, vendor=["V"])
+    curr = _frame("curr", [50.0, 50.02, 50.45], clock=[100, 102, 140], length=0.5, width=0.5,
+                  depth=[40.0, 40.0, 12.0])
+    out = match_clusters(prev, curr, 5.0, S)
+    assert len(out) == 1 and out[0][1] == [0, 1, 2]
+    m = out[0][2]
+    circ_min = (40 * np.pi * OD / 720 - 0.75) * MIN_PER_IN
+    assert m.axial_diff_in == pytest.approx(0.45 * 12 - 1.25) and m.clock_diff_min == pytest.approx(circ_min)
+    assert m.score == pytest.approx(_gap_score(0.45 * 12 - 1.25, circ_min)) and not bool(m.implausible)

@@ -370,8 +370,10 @@ def _absorb(pairs: list, pe: pd.DataFrame, ce: pd.DataFrame, dt_yr: float, setti
 
     ``pairs`` holds (prev group, curr group) labels. A leftover group of one run joins the match
     whose opposite group holds a vendor cluster report and passes the box rule against it, the
-    lowest-score match winning (ties: the earlier match). Returns [prev labels, curr labels] per match."""
-    out = [[[a], [b]] for a, b in pairs]
+    lowest-score match winning (ties: the earlier match). Returns [prev labels, curr labels,
+    absorbed metrics] per match: one ``_metrics`` row per absorbed group, scored by its box gap to
+    the host's original (pre-absorption) opposite group."""
+    out = [[[a], [b], []] for a, b in pairs]
     for side, own, opp in ((0, pe, ce), (1, ce, pe)):
         used = {pair[side] for pair in pairs}
         left = [g for g in range(len(own)) if g not in used]
@@ -387,6 +389,7 @@ def _absorb(pairs: list, pe: pd.DataFrame, ce: pd.DataFrame, dt_yr: float, setti
             best = int(np.argmin(score[row]))  # first minimum: the earlier match on ties
             if np.isfinite(score[row, best]):
                 out[hosts[best]][side].append(g)
+                out[hosts[best]][2].append(m.iloc[row * len(hosts) + best])
     return out
 
 
@@ -401,9 +404,14 @@ def match_clusters(prev: pd.DataFrame, curr: pd.DataFrame, dt_yr: float, setting
     the gaps and the envelopes' max depths, then assigned one-to-one. A vendor report asserts that
     one envelope holds its pits, which tool noise can scatter beyond the interaction rule, so each
     group left unassigned then joins the match whose opposite group holds a vendor report and
-    passes the box rule against it (lowest score wins; ties go to the earlier match); a match that
-    absorbed groups has its metrics recomputed from the merged envelopes. Returns (prev rows, curr
-    rows, metrics) per match, rows being positional member indices in log order."""
+    passes the box rule against it (lowest score wins; ties go to the earlier match). A match that
+    absorbed groups keeps the worst evidence: depth_change_pct and implausible come from the merged
+    envelopes' max depths (one member pit's depth says nothing against a whole envelope), and the
+    score is the largest over the group pair and each absorbed group (its box gap to the host's
+    original opposite group) of the ``_metrics`` score with that merged implausible flag; the axial
+    and clock gaps shown are the largest of those components. Returns (prev rows, curr rows,
+    metrics) per match, rows being positional member indices in log order; the metrics carry
+    ``absorbed`` (the match absorbed at least one group)."""
     pk, ck = (np.flatnonzero((f.feature_type == "metal_loss").to_numpy()) for f in (prev, curr))
     if not len(pk) or not len(ck):
         return []
@@ -428,15 +436,24 @@ def match_clusters(prev: pd.DataFrame, curr: pd.DataFrame, dt_yr: float, setting
     pairs = [(int(a), int(b)) for a, b in zip(chosen.prev_i, chosen.curr_i)]
     merged = _absorb(pairs, pe, ce, dt_yr, settings)
     found = []
-    for (_, row), (gp, gc) in zip(chosen.iterrows(), merged):
-        if len(gp) == 1 and len(gc) == 1:
-            found.append((pm[gp[0]], cm[gc[0]], row[cols]))
+    for (_, row), (gp, gc, extra) in zip(chosen.iterrows(), merged):
+        if not extra:
+            found.append((pm[gp[0]], cm[gc[0]], pd.Series({**row[cols].to_dict(), "absorbed": False})))
             continue
         rows_p, rows_c = (_log_order(f, [i for g in gs for i in members[g]])
                           for f, gs, members in ((prev, gp, pm), (curr, gc, cm)))
         env_p = pd.DataFrame([envelope(prev.iloc[rows_p])])
         env_c = pd.DataFrame([envelope(curr.iloc[rows_c])])
-        found.append((rows_p, rows_c, _envelope_pairs(env_p, env_c, dt_yr, settings)[1].iloc[0][cols]))
+        final = _envelope_pairs(env_p, env_c, dt_yr, settings)[1].iloc[0]
+        parts = pd.DataFrame([row[cols], *(e[cols] for e in extra)])
+        gap_score = _num(parts.score) - mt.weights.depth_change * parts.implausible.astype(bool).to_numpy()
+        clock = _num(parts.clock_diff_min)
+        found.append((rows_p, rows_c, pd.Series({
+            "axial_diff_in": float(_num(parts.axial_diff_in).max()),
+            "clock_diff_min": float(np.nan if np.isnan(clock).all() else np.nanmax(clock)),
+            "depth_change_pct": final.depth_change_pct, "implausible": bool(final.implausible),
+            "score": float(gap_score.max() + mt.weights.depth_change * bool(final.implausible)), "absorbed": True,
+        })))
     return found
 
 
@@ -464,7 +481,7 @@ REVIEW_PENDING = "pending"
 _SIDE_EXTRA = ("pos_prev_ft", "feature_id", "n")
 TABLE_COLUMNS = (
     ["match_id", "match_type", "score", "confidence", "review_status", "needs_review", "missing_hint",
-     "n_prev", "n_curr", "prev_feature_id", "curr_feature_id"]
+     "n_prev", "n_curr", "absorbed", "prev_feature_id", "curr_feature_id"]
     + [f"{s}_{c}" for s in ("prev", "curr") for c in SIDE_FIELDS]
     + ["curr_pos_in_prev_ft"] + METRIC_COLS[:-1]
 )
@@ -562,6 +579,7 @@ def _part(match_type: str, prev: pd.DataFrame, curr: pd.DataFrame, metrics: pd.D
     m = metrics.reset_index(drop=True) if metrics is not None else pd.DataFrame(index=range(n), columns=METRIC_COLS)
     for c in METRIC_COLS:
         out[c] = m[c].to_numpy()
+    out["absorbed"] = m["absorbed"].to_numpy(bool) if "absorbed" in m.columns else np.zeros(n, bool)
     return out
 
 
@@ -610,10 +628,14 @@ def _finish(table: pd.DataFrame, settings: Settings) -> pd.DataFrame:
     table["match_type"] = table.match_type.astype("str")
     matched = table.match_type.isin(("matched_1to1", "matched_cluster")).to_numpy()
     table["score"] = _num(table.score)
-    table["confidence"] = pd.Series(np.where(matched, _confidence(np.nan_to_num(table.score), settings), None),
-                                    dtype=object)
+    absorbed = table.absorbed.astype(bool).to_numpy()
+    conf = _confidence(np.nan_to_num(table.score), settings)
+    conf = np.where(absorbed & (conf == CONFIDENCES[0]), CONFIDENCES[1], conf)  # absorbed: at best medium
+    table["absorbed"] = absorbed
+    table["confidence"] = pd.Series(np.where(matched, conf, None), dtype=object)
     table["review_status"] = pd.Series([REVIEW_PENDING] * len(table), dtype="str")
-    table["needs_review"] = ((table.confidence == CONFIDENCES[2]) | (table.missing_hint == HINTS[2])).astype(bool)
+    table["needs_review"] = ((table.confidence == CONFIDENCES[2]) | (table.missing_hint == HINTS[2])
+                             | table.absorbed).astype(bool)
     for s in ("prev", "curr"):
         for c in _FLOAT_FIELDS:
             table[f"{s}_{c}"] = _num(table[f"{s}_{c}"])
@@ -644,6 +666,7 @@ def _summary(prev_std, curr_std, dt: float, table: pd.DataFrame, n_prev: int, n_
         "counts_by_match_type": counts("match_type", MATCH_TYPES),
         "counts_by_confidence": counts("confidence", CONFIDENCES),
         "counts_by_hint": counts("missing_hint", HINTS),
+        "n_absorbed": int(table.absorbed.sum()),
         "n_needs_review": int(table.needs_review.sum()),
     }
 
