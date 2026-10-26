@@ -32,13 +32,22 @@ def test_lookup_nearest_row_and_errors():
     nan = t.assign(v=[10.0, np.nan])
     with pytest.raises(ValueError):
         lookup(nan, [150.0], "v", 5.0)
+    assert lookup(nan, [25.0, 10.0], "v", 5.0).tolist() == [10.0, 10.0]  # NaN row unused: fine
 
 
 def test_lookup_od_unchanged():
     pipe = pd.DataFrame({"start_ft": [0.0, 100.0], "end_ft": [50.0, 200.0], "od_in": [12.75, 16.0]})
     assert lookup_od([10.0, 100.0, 60.0], pipe, 15.0).tolist() == [12.75, 16.0, 12.75]
-    with pytest.raises(ValueError, match="outside the pipe properties"):
+    with pytest.raises(ValueError) as e:
         lookup_od([300.0], pipe, 15.0)
+    assert str(e.value) == "position 300.000 ft is outside the pipe properties table by more than 15.0 ft"
+    with pytest.raises(ValueError) as e:
+        lookup_od([1.0], pipe.iloc[0:0], 15.0)
+    assert str(e.value) == "the pipe properties table has no rows"
+    with pytest.raises(ValueError) as e:
+        lookup_od([1.0], pipe.assign(od_in=[np.nan, 16.0]), 15.0)
+    assert str(e.value) == "pipe properties row starting at 0.000 ft has no od_in"
+    assert lookup_od([150.0], pipe.assign(od_in=[np.nan, 16.0]), 15.0).tolist() == [16.0]
 
 
 def test_fixed_length_segments():
@@ -87,3 +96,19 @@ def test_load_match_table_roundtrip(tmp_path):
     assert t.implausible[~unmatched].map(lambda v: isinstance(v, bool)).all()
     assert t.missing_hint[t.match_type != "missing"].map(lambda v: v is None).all()
     np.testing.assert_allclose(t.curr_depth_pct.to_numpy(float), src.curr_depth_pct.to_numpy(float), equal_nan=True)
+    # integer columns: Int64 dtype and the same values, <NA> where the source is blank
+    for c in ("n_prev", "n_curr", "prev_wm_row", "curr_wm_row", "prev_clock_min", "curr_clock_min"):
+        assert str(t[c].dtype) == "Int64", c
+        assert t[c].isna().tolist() == src[c].isna().tolist(), c
+        assert t[c].dropna().astype(int).tolist() == src[c].dropna().astype(int).tolist(), c
+    assert t.curr_clock_min.isna().any() and t.prev_wm_row.isna().any()
+    # text columns: equal, None (not NaN or "") where blank
+    for c in ("prev_feature_type", "curr_feature_type", "prev_surface", "curr_surface",
+              "prev_vendor_cluster_id", "curr_vendor_cluster_id", "match_type", "confidence", "review_status"):
+        assert t[c].tolist() == [None if pd.isna(v) else v for v in src[c]], c
+        assert all(v is None or isinstance(v, str) for v in t[c]), c
+    # seam / dent flags: True/False/None, same as the source
+    for c in ("prev_seam_interaction", "curr_seam_interaction", "prev_dent_metal_loss", "curr_dent_metal_loss"):
+        assert all(v is None or isinstance(v, bool) for v in t[c]), c
+        assert t[c].tolist() == [None if pd.isna(v) else bool(v) for v in src[c]], c
+    assert t.curr_seam_interaction.map(lambda v: v is None).any() and t.curr_seam_interaction.map(lambda v: v is not None).any()

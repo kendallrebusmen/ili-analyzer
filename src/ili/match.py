@@ -555,7 +555,7 @@ def _require_columns(df: pd.DataFrame, cols: tuple, what: str) -> None:
 
 def lookup_od(pos_ft, pipe: pd.DataFrame, tol_ft: float) -> np.ndarray:
     """Outside diameter (in) at each current-run position; see ``reference.lookup`` for the rule."""
-    return lookup(pipe, pos_ft, "od_in", tol_ft, what="pipe properties")
+    return lookup(pipe, pos_ft, "od_in", tol_ft, what="pipe properties table")
 
 
 def _with_od(placed: pd.DataFrame, pipe: pd.DataFrame, tol_ft: float) -> pd.DataFrame:
