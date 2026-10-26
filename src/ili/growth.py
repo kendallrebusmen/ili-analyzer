@@ -386,6 +386,9 @@ def load_growth_table(path: Path) -> pd.DataFrame:
     for c in text:
         df[c] = df[c].astype(object).where(df[c] != "", None)
     for c in flags:
+        bad = df[c][~df[c].isin(["True", "False", ""])]
+        if not bad.empty:
+            raise ValueError(f"{path}: column {c} has {bad.iloc[0]!r}; expected True, False or blank")
         df[c] = df[c].map({"True": True, "False": False}).astype(object).where(df[c] != "", None)
     return df
 

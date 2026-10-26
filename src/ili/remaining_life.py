@@ -131,20 +131,30 @@ def _first_crossing(margin: Callable[[float], float], grid: np.ndarray, m_grid: 
 def time_to_criteria(d0, L0, g, gL, D, t, smys, mop, settings: Settings) -> dict[str, float]:
     """Years until each of ``CRITERIA`` is met for one feature (scalar inputs, units as ``criterion_margins``).
 
-    0.0 when met at τ = 0; inf when not met by ``remaining_life.horizon_yr``; NaN when that
-    criterion's margin is not finite anywhere on the grid (a NaN input, e.g. a NaN rate, length,
-    MOP or pipe value) or D, t <= 0. Otherwise the first crossing from ``_first_crossing``, which
-    is never later than the true crossing. The grid is evaluated in one vectorised call;
-    ``brentq`` runs only on each criterion's first crossing interval.
+    - 0.0 when met at τ = 0. The τ = 0 margin is evaluated without g and gL (growth only acts for
+      τ > 0), so a criterion failing today is 0 even when the rate is NaN; it is NaN only when that
+      criterion's own τ = 0 inputs are (e.g. tau_burst with a NaN MOP, while tau_80 needs only d0, t).
+    - Otherwise NaN when the margin is not finite anywhere on the grid (a NaN rate, length, MOP or
+      pipe value), inf when not met by ``remaining_life.horizon_yr``, else the first crossing from
+      ``_first_crossing``, which is never later than the true crossing.
+    - All NaN for D <= 0 or t <= 0 (invalid geometry).
+
+    The grid is evaluated in one vectorised call; ``brentq`` runs only on each criterion's first
+    crossing interval.
     """
-    if not (float(D) > 0 and float(t) > 0):
+    if float(D) <= 0 or float(t) <= 0:
         return {c: math.nan for c in CRITERIA}
+    today = criterion_margins(0.0, d0, L0, 0.0, 0.0, D, t, smys, mop, settings)
     grid = time_grid(settings)
     m_grid = criterion_margins(grid, d0, L0, g, gL, D, t, smys, mop, settings)
     times: dict[str, float] = {}
     for name in CRITERIA:
+        m0 = float(today[name])
+        if m0 <= 0:  # False for NaN
+            times[name] = 0.0
+            continue
         m = m_grid[name]
-        if not np.isfinite(m).all():
+        if math.isnan(m0) or not np.isfinite(m).all():
             times[name] = math.nan
             continue
 
@@ -158,7 +168,9 @@ def time_to_criteria(d0, L0, g, gL, D, t, smys, mop, settings: Settings) -> dict
 def remaining_life(times: dict[str, float], settings: Settings) -> tuple[float, str | None]:
     """(rl_yr, rl_governing) from ``time_to_criteria`` output (spec 6.7: RL = min of the times).
 
-    - Any NaN (or negative) criterion: (NaN, None) - an RL is never claimed when a criterion
+    - Any criterion exactly 0 (failing today): (0.0, the first such in ``CRITERIA`` order), even if
+      another criterion is NaN - a missing input can never hide a failure today.
+    - Else any NaN (or negative) criterion: (NaN, None) - an RL is never claimed when a criterion
       cannot be evaluated, even if another criterion is finite.
     - All inf: (``remaining_life.horizon_yr``, ``"beyond_horizon"``).
     - Else the minimum finite time and its criterion; ties go to the ``CRITERIA`` order.
@@ -166,6 +178,9 @@ def remaining_life(times: dict[str, float], settings: Settings) -> tuple[float, 
     ``settings`` supplies ``horizon_yr`` for the all-inf case.
     """
     values = [float(times[c]) for c in CRITERIA]
+    for name, value in zip(CRITERIA, values):
+        if value == 0:
+            return 0.0, name
     if any(math.isnan(v) or v < 0 for v in values):
         return math.nan, None
     governing = None
@@ -297,7 +312,7 @@ def next_assessment(could_affect_hca: bool | None, planned: date | None, run_dat
       calendar years, the HCA default also capped at the months limit.
     - ``default_no_segment`` (``could_affect_hca`` None, outside every segment): the capped HCA default.
 
-    ValueError for a planned date before the run date (a data error), naming the segment.
+    ValueError for a planned date on or before the run date (a data error), naming the segment.
     """
     rl = settings.remaining_life
     hca_cap = add_months(run_date, rl.hca_max_interval_months)
@@ -305,9 +320,9 @@ def next_assessment(could_affect_hca: bool | None, planned: date | None, run_dat
     if could_affect_hca is None:
         return hca_default, "default_no_segment"
     if planned is not None:
-        if planned < run_date:
-            raise ValueError(f"segment {segment_id!r}: planned next assessment {planned.isoformat()} is before "
-                             f"the current run date {run_date.isoformat()}")
+        if planned <= run_date:
+            raise ValueError(f"segment {segment_id!r}: planned next assessment {planned.isoformat()} is not "
+                             f"after the current run date {run_date.isoformat()}")
         if could_affect_hca and planned > hca_cap:
             return hca_cap, "capped"
         return planned, "planned"
@@ -325,7 +340,8 @@ def repair_by(run_date: date, rl_factored_yr: float) -> date | None:
 
 def append_reasons(m5_reasons, m5_needs_review, m6_flags: dict[str, np.ndarray]) -> tuple[np.ndarray, np.ndarray]:
     """M5's ``;``-joined reasons with the M6 reasons that apply appended in ``m6_flags`` order, a name
-    already present not repeated (None when there are none); ``needs_review`` = M5's flag or any reason."""
+    already present not repeated (None when there are none); ``needs_review`` = M5's flag or any reason.
+    An unknown M5 flag (None/NaN) counts as True: review is never dropped for missing information."""
     n = len(m5_needs_review)
     reasons = np.full(n, None, dtype=object)
     needs = np.zeros(n, dtype=bool)
@@ -335,7 +351,7 @@ def append_reasons(m5_reasons, m5_needs_review, m6_flags: dict[str, np.ndarray])
         hit += [r for r, flag in m6_flags.items() if flag[k] and r not in hit]
         reasons[k] = REASON_SEP.join(hit) if hit else None
         flag = m5_needs_review[k]
-        needs[k] = bool(hit) or (flag is not None and not pd.isna(flag) and bool(flag))
+        needs[k] = bool(hit) or flag is None or pd.isna(flag) or bool(flag)
     return needs, reasons
 
 
@@ -474,6 +490,9 @@ def compute_remaining_life(growth: pd.DataFrame, curr_run_date, pipe: pd.DataFra
     seg_id = assign_segment(segments, pos)
     hca = _segment_hca(segments)
     planned = _planned_dates(next_inspection)
+    unknown = sorted(set(next_inspection.segment_id.astype(str)) - set(hca))  # blank dates included
+    if unknown:
+        raise ValueError(f"next inspection table names segment(s) {unknown} that are not in the segments table")
     per_seg = {sid: next_assessment(hca[sid], planned.get(sid), run_date, settings, sid) for sid in hca}
     outside = next_assessment(None, None, run_date, settings)
     nxt = [outside if s is None else per_seg[s] for s in seg_id]

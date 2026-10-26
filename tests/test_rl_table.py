@@ -133,10 +133,17 @@ def test_planned_non_hca_not_capped_and_hca_at_limit_kept(settings):
     assert (f.loc["F4", "next_assessment_date"], f.loc["F4", "next_assessment_source"]) == (date(2031, 11, 15), "planned")
 
 
-def test_planned_date_before_run_is_error(settings):
-    nxt = pd.DataFrame({"segment_id": ["SEG-04"], "planned_next_assessment_date": ["2026-03-14"]})
+@pytest.mark.parametrize("when", ["2026-03-14", "2026-03-15"])
+def test_planned_date_not_after_run_is_error(settings, when):
+    nxt = pd.DataFrame({"segment_id": ["SEG-04"], "planned_next_assessment_date": [when]})
     with pytest.raises(ValueError, match="SEG-04"):
         _run([_g("F4", 3500.0)], settings, nxt=nxt)
+
+
+def test_next_inspection_unknown_segment_is_error(settings):
+    nxt = pd.DataFrame({"segment_id": ["SEG-01", "SEG-99"], "planned_next_assessment_date": ["2029-01-01"] * 2})
+    with pytest.raises(ValueError, match="SEG-99"):
+        _run([_g("F1", 500.0)], settings, nxt=nxt)
 
 
 def test_bad_next_inspection_tables(settings):
@@ -195,6 +202,36 @@ def test_repair_by_rounds_down_and_beyond_horizon(settings, fake_rl):
     f = _by_id(res)
     assert f.loc["Z", "repair_by_date"] == RUN and f.loc["Z", "dig_required_by_remaining_life"]
     assert f.loc["D", "repair_by_date"] == RUN  # never a day late
+    fake_rl.update({7.0: INF})  # no criterion within the horizon
+    h = _by_id(_run([_g("H", 2500.0, gov=7.0)], settings)).loc["H"]
+    assert (h.rl_yr, h.rl_governing, h.rl_factored_yr) == (30.0, "beyond_horizon", 15.0)
+    assert h.repair_by_date == RUN + timedelta(days=math.floor(15.0 * YR)) == RUN + timedelta(days=5478)
+    assert not h.dig_required_by_remaining_life and h.review_reasons is None
+
+
+def test_failing_today_with_nan_growth_digs_now(settings):
+    # 60 % reported + 10 = 70 % of 0.25 in, L 4: P_F 1397, P_safe 1006 < MOP 1200 < P_F.
+    mop = pd.DataFrame({"start_ft": [0.0], "end_ft": [10_000.0], "mop_psig": [1200.0]})
+    rows = [_g("S", 2500.0, d_curr=60.0, length=4.0, gov=NAN, needs_review=True, reasons="no_governing")]
+    f = compute_remaining_life(pd.DataFrame(rows), RUN, PIPE, mop, SEGS, NEXT, settings).features.iloc[0]
+    assert f.safe_psig < 1200.0 < f.burst_psig
+    assert math.isnan(f.tau_80_yr) and math.isnan(f.tau_burst_yr) and f.tau_safe_yr == 0.0
+    assert (f.rl_yr, f.rl_governing, f.rl_factored_yr) == (0.0, "tau_safe", 0.0)
+    assert f.dig_required_by_remaining_life and f.repair_by_date == RUN
+    assert f.review_reasons == "no_governing" and f.needs_review
+
+
+@pytest.mark.parametrize("column", ["od_in", "smys_psi"])
+def test_nan_pipe_values(settings, column):
+    pipe = PIPE.assign(**{column: [NAN]})
+    rows = [_g("OK", 500.0, d_curr=30.0), _g("DEEP", 600.0, d_curr=75.0)]  # 40 % and 85 % assessed
+    f = _by_id(compute_remaining_life(pd.DataFrame(rows), RUN, pipe, MOP, SEGS, NEXT, settings))
+    assert math.isnan(f.loc["OK", "rl_yr"]) and f.loc["OK", "review_reasons"] == "rl_not_evaluated"
+    assert not f.loc["OK", "dig_required_by_remaining_life"]
+    deep = f.loc["DEEP"]  # tau_80 does not depend on OD or SMYS and is met today
+    assert (deep.rl_yr, deep.rl_governing) == (0.0, "tau_80")
+    assert deep.dig_required_by_remaining_life and deep.repair_by_date == RUN
+    assert deep.review_reasons == "exceeds_80pct"
 
 
 def test_strength_columns_at_tau0_reference_case(settings):
@@ -245,15 +282,19 @@ def test_requires_columns(settings):
 # --- review reasons ----------------------------------------------------------------------------------
 
 
-def test_reasons_appended_to_m5(settings):
+def test_reasons_appended_to_m5(settings, fake_rl):
+    # The real solver gives RL 0 to any feature at >= 80 % (tau_80 met today), so the fake solver
+    # supplies a NaN RL alongside exceeds_80pct to check all three M6 reasons on one row.
+    fake_rl.update({1.0: NAN, 2.0: NAN, 5.0: 8.0})
     rows = [
         # M5 reasons kept first; then rl_not_evaluated, exceeds_80pct, no_segment in that order.
-        _g("A", 5000.0, d_curr=75.0, gov=NAN, needs_review=True, reasons="no_governing;match_review"),
+        _g("A", 5000.0, d_curr=75.0, gov=1.0, needs_review=True, reasons="no_governing;match_review"),
         # an M6 name already present is not repeated
-        _g("B", 500.0, d_curr=75.0, gov=NAN, needs_review=True, reasons="exceeds_80pct"),
+        _g("B", 500.0, d_curr=75.0, gov=2.0, needs_review=True, reasons="exceeds_80pct"),
         _g("C", 500.0),  # nothing
         _g("D", 600.0, needs_review=True, reasons=None),  # M5 needs_review carried
         _g("E", 700.0, needs_review=False, reasons="below_min_rate"),  # a reason means review
+        _g("N", 800.0, needs_review=None), _g("Q", 900.0, needs_review=NAN),  # unknown M5 flag: review
     ]
     f = _by_id(_run(rows, settings))
     assert f.loc["A", "review_reasons"] == "no_governing;match_review;rl_not_evaluated;exceeds_80pct;no_segment"
@@ -262,6 +303,7 @@ def test_reasons_appended_to_m5(settings):
     assert f.loc["D", "review_reasons"] is None and f.loc["D", "needs_review"]
     assert f.loc["E", "review_reasons"] == "below_min_rate" and f.loc["E", "needs_review"]
     assert f.loc["A", "needs_review"] and f.loc["B", "needs_review"]
+    assert f.loc["N", "needs_review"] and f.loc["Q", "needs_review"] and f.loc["N", "review_reasons"] is None
 
 
 # --- intervals ---------------------------------------------------------------------------------------
@@ -365,6 +407,16 @@ def test_growth_table_roundtrip(synth_pipeline, tmp_path):
     assert back.curr_feature_id.str.startswith("B-").all()
     for c in ("wt_in", "d_curr_pct", "governing_mpy", "length_in", "length_rate_ipy", "curr_log_dist_ft"):
         np.testing.assert_allclose(back[c].to_numpy(float), g.features[c].to_numpy(float), rtol=1e-12, equal_nan=True)
+
+
+def test_growth_table_bad_flag_text(synth_pipeline, tmp_path):
+    _, _, g = synth_pipeline
+    path = tmp_path / "growth.csv"
+    bad = g.features.astype({"needs_review": object})
+    bad.loc[3, "needs_review"] = "yes"
+    bad.to_csv(path, index=False)
+    with pytest.raises(ValueError, match="needs_review.*'yes'"):
+        growth.load_growth_table(path)
 
 
 def test_every_feature_has_rl_and_governing(synth_pipeline, tmp_path):

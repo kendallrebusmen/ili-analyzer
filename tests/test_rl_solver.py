@@ -190,3 +190,54 @@ def test_brentq_failure_falls_back_to_interval_start(monkeypatch):
     # which is before the crossing (conservative), never the END, which is after it.
     assert times["tau_80"] == pytest.approx(20.0, abs=1e-9)
     assert times["tau_80"] < 20.02
+
+
+# --- a criterion met today is met regardless of missing growth or other inputs --------------------------
+
+
+@pytest.mark.parametrize("field", ["g", "gL"])
+def test_met_today_is_zero_despite_nan_growth(field):
+    s = _settings()
+    deep = dict(d0=0.85 * T, L0=1.0, g=0.001, gL=0.0, mop=500.0)
+    deep[field] = math.nan
+    times = _ttc(**deep, settings=s)
+    assert times["tau_80"] == 0.0
+    assert remaining_life(times, s) == (0.0, "tau_80")
+    # Reference case at MOP 1300: P_safe 1275.4 < 1300 < P_F 1771.5. tau_burst needs both rates (NaN);
+    # tau_80 needs only g (NaN for a NaN g; with g 0.001 it is 75 yr away, beyond the horizon);
+    # tau_safe is met today.
+    ref = dict(d0=0.125, L0=4.0, g=0.001, gL=0.0, mop=1300.0)
+    ref[field] = math.nan
+    times = _ttc(**ref, settings=s)
+    assert times["tau_safe"] == 0.0 and math.isnan(times["tau_burst"])
+    assert math.isnan(times["tau_80"]) if field == "g" else times["tau_80"] == math.inf
+    assert remaining_life(times, s) == (0.0, "tau_safe")
+
+
+def test_nan_mop_with_deep_feature_is_zero():
+    s = _settings()
+    times = _ttc(d0=0.80 * T, L0=1.0, g=0.005, gL=0.0, mop=math.nan, settings=s)
+    assert times["tau_80"] == 0.0
+    assert math.isnan(times["tau_burst"]) and math.isnan(times["tau_safe"])
+    assert remaining_life(times, s) == (0.0, "tau_80")
+
+
+@pytest.mark.parametrize("field", ["D", "smys"])
+def test_nan_pipe_value_keeps_tau80(field):
+    s = _settings()
+    deep = dict(d0=0.85 * T, L0=1.0, g=0.001, gL=0.0, mop=500.0, **{field: math.nan})
+    times = _ttc(**deep, settings=s)
+    assert times["tau_80"] == 0.0 and math.isnan(times["tau_burst"]) and math.isnan(times["tau_safe"])
+    assert remaining_life(times, s) == (0.0, "tau_80")
+    healthy = dict(d0=0.10, L0=1.0, g=0.005, gL=0.0, mop=500.0, **{field: math.nan})
+    times = _ttc(**healthy, settings=s)
+    assert times["tau_80"] == pytest.approx(20.0, abs=1e-4)
+    assert remaining_life(times, s)[1] is None
+
+
+def test_remaining_life_zero_beats_nan():
+    s = _settings()
+    assert remaining_life({"tau_80": math.nan, "tau_burst": 0.0, "tau_safe": 0.0}, s) == (0.0, "tau_burst")
+    assert remaining_life({"tau_80": math.nan, "tau_burst": math.nan, "tau_safe": 0.0}, s) == (0.0, "tau_safe")
+    rl, gov = remaining_life({"tau_80": math.nan, "tau_burst": 5.0, "tau_safe": math.inf}, s)
+    assert math.isnan(rl) and gov is None
