@@ -379,3 +379,234 @@ def match_clusters(prev: pd.DataFrame, curr: pd.DataFrame, dt_yr: float, setting
     chosen = assign_one_to_one(cands.reset_index(drop=True))
     cols = ["axial_diff_in", "clock_diff_min", "depth_change_pct", "implausible", "score"]
     return [(pm[int(row.prev_i)], cm[int(row.curr_i)], row[cols]) for _, row in chosen.iterrows()]
+
+
+# --- Whole-run matching and the match table ---------------------------------------------------
+
+SIDE_FIELDS = (
+    "feature_type", "log_dist_ft", "wm_row", "us_gw_id", "dist_from_us_gw_ft", "wt_nom_in", "depth_pct",
+    "dent_depth_in", "length_in", "width_in", "clock_min", "surface", "seam_interaction", "dent_metal_loss",
+    "vendor_cluster_id",
+)
+_FLOAT_FIELDS = ("log_dist_ft", "dist_from_us_gw_ft", "wt_nom_in", "depth_pct", "dent_depth_in", "length_in", "width_in")
+_INT_FIELDS = ("wm_row", "clock_min")
+_OBJECT_FIELDS = ("feature_type", "us_gw_id", "surface", "seam_interaction", "dent_metal_loss", "vendor_cluster_id")
+METRIC_COLS = ["axial_diff_in", "clock_diff_min", "depth_change_pct", "implausible", "score"]
+MATCH_TYPES = ("matched_1to1", "matched_cluster", "missing", "new")
+CONFIDENCES = ("high", "medium", "low")
+HINTS = ("in_repaired_section", "near_threshold", "unexplained")
+REVIEW_PENDING = "pending"
+_SIDE_EXTRA = ("pos_prev_ft", "feature_id", "n")
+TABLE_COLUMNS = (
+    ["match_id", "match_type", "score", "confidence", "review_status", "needs_review", "missing_hint",
+     "n_prev", "n_curr", "prev_feature_id", "curr_feature_id"]
+    + [f"{s}_{c}" for s in ("prev", "curr") for c in SIDE_FIELDS]
+    + ["curr_pos_in_prev_ft"] + METRIC_COLS[:-1]
+)
+
+
+class MatchResult:
+    """The match table (one row per match or unmatched feature) and its summary dict."""
+
+    def __init__(self, match_table: pd.DataFrame, summary: dict):
+        self.match_table, self.summary = match_table, summary
+
+
+def _require_columns(df: pd.DataFrame, cols: tuple, what: str) -> None:
+    missing = [c for c in cols if c not in df.columns]
+    if missing:
+        raise ValueError(f"{what} is missing required column(s) {missing}")
+
+
+def lookup_od(pos_ft, pipe: pd.DataFrame, tol_ft: float) -> np.ndarray:
+    """Outside diameter (in) at each current-run position: the covering pipe row, else the nearest
+    one within ``tol_ft`` of the table; ValueError naming the first position that is not covered."""
+    _require_columns(pipe, ("start_ft", "end_ft", "od_in"), "pipe properties")
+    pipe = pipe.sort_values("start_ft", kind="stable")
+    start, end, od = (pipe[c].to_numpy(float) for c in ("start_ft", "end_ft", "od_in"))
+    x = np.asarray(pos_ft, dtype=float)
+    k = np.clip(np.searchsorted(start, x, side="right") - 1, 0, len(start) - 1)
+    alt = np.minimum(k + 1, len(start) - 1)  # in a gap between rows the next row may be nearer
+    d_k, d_alt = (np.maximum(np.maximum(start[j] - x, x - end[j]), 0.0) for j in (k, alt))
+    use_alt = d_alt < d_k
+    near, row = np.where(use_alt, d_alt, d_k), np.where(use_alt, alt, k)
+    bad = ~(near <= tol_ft)
+    if bad.any():
+        raise ValueError(f"position {x[bad][0]:.3f} ft is outside the pipe properties table by more than {tol_ft} ft")
+    return od[row]
+
+
+def _with_od(placed: pd.DataFrame, pipe: pd.DataFrame, tol_ft: float) -> pd.DataFrame:
+    return placed.assign(od_in=lookup_od(placed.pos_curr_ft.to_numpy(float), pipe, tol_ft))
+
+
+def _feature_side(f: pd.DataFrame) -> pd.DataFrame:
+    """Side frame of single features, one row each (their own values)."""
+    return f[[*SIDE_FIELDS, "pos_prev_ft", "feature_id"]].reset_index(drop=True).assign(n=1)
+
+
+def _any_flag(values: pd.Series):
+    v = values.astype(object)
+    return None if v.isna().all() else bool(v.fillna(False).astype(bool).any())
+
+
+def _cluster_side_row(members: pd.DataFrame, run: str) -> dict:
+    """One side of a cluster match: the members' envelope, ids joined (members are in log order)."""
+    env = envelope(members)
+    first = members.iloc[0]
+    vendor = members.vendor_cluster_id.dropna()
+    clock = np.nan if np.isnan(env["clock_min"]) else round(env["clock_min"]) % CLOCK_MINUTES
+    return {
+        "feature_type": "metal_loss", "log_dist_ft": env[f"pos_{run}_ft"], "wm_row": first.wm_row,
+        "us_gw_id": first.us_gw_id, "dist_from_us_gw_ft": first.dist_from_us_gw_ft, "wt_nom_in": env["wt_nom_in"],
+        "depth_pct": env["depth_pct"], "dent_depth_in": np.nan, "length_in": env["length_in"],
+        "width_in": env["width_in"], "clock_min": clock, "surface": env["surface"],
+        "seam_interaction": _any_flag(members.seam_interaction), "dent_metal_loss": _any_flag(members.dent_metal_loss),
+        "vendor_cluster_id": vendor.iloc[0] if len(vendor) else None,
+        "pos_prev_ft": env["pos_prev_ft"], "feature_id": ";".join(members.feature_id.astype(str)), "n": len(members),
+    }
+
+
+def _blank_side(n: int) -> pd.DataFrame:
+    return pd.DataFrame(index=range(n), columns=[*SIDE_FIELDS, *_SIDE_EXTRA], dtype=object).assign(n=0)
+
+
+def _part(match_type: str, prev: pd.DataFrame, curr: pd.DataFrame, metrics: pd.DataFrame | None = None) -> pd.DataFrame:
+    """Rows of one match type from aligned side frames (one row per match) and their metrics."""
+    n = len(prev)
+    out = pd.DataFrame({"match_type": [match_type] * n, "n_prev": prev.n.to_numpy(), "n_curr": curr.n.to_numpy(),
+                        "prev_feature_id": prev.feature_id.to_numpy(), "curr_feature_id": curr.feature_id.to_numpy()})
+    for s, side in (("prev", prev), ("curr", curr)):
+        for c in SIDE_FIELDS:
+            out[f"{s}_{c}"] = side[c].to_numpy()
+    out["prev_pos_prev_ft"] = prev.pos_prev_ft.to_numpy()
+    out["curr_pos_in_prev_ft"] = curr.pos_prev_ft.to_numpy()
+    m = metrics.reset_index(drop=True) if metrics is not None else pd.DataFrame(index=range(n), columns=METRIC_COLS)
+    for c in METRIC_COLS:
+        out[c] = m[c].to_numpy()
+    return out
+
+
+def _cluster_part(prev: pd.DataFrame, curr: pd.DataFrame, found: list) -> pd.DataFrame:
+    rows = [(_cluster_side_row(prev.iloc[p], "prev"), _cluster_side_row(curr.iloc[c], "curr")) for p, c, _ in found]
+    sides = [pd.DataFrame([r[k] for r in rows]) for k in (0, 1)]
+    return _part("matched_cluster", *sides, pd.DataFrame([m for _, _, m in found]))
+
+
+def _repair_flags(prev: pd.DataFrame, wm: pd.DataFrame, repairs) -> np.ndarray:
+    """Prev features whose row was removed in a repair, or whose current-run position is in a repairs span."""
+    in_repair = wm.get("in_repair", pd.Series(False, index=wm.index)).fillna(False).astype(bool).to_numpy()
+    removed = (wm.match_type == "removed").to_numpy() & in_repair
+    row = prev.wm_row.to_numpy()
+    flag = (row >= 0) & removed[np.maximum(row, 0)]
+    if repairs is not None and len(repairs):
+        x = prev.pos_curr_ft.to_numpy(float)[:, None]
+        flag |= ((x >= repairs.start_ft.to_numpy(float)) & (x <= repairs.end_ft.to_numpy(float))).any(axis=1)
+    return flag
+
+
+def missing_hints(prev: pd.DataFrame, wm: pd.DataFrame, repairs, settings: Settings) -> np.ndarray:
+    """Hint per prev feature: repaired section, else near the reporting threshold, else unexplained."""
+    tool = settings.tool
+    with np.errstate(invalid="ignore"):  # a missing depth is never near the threshold
+        near = _num(prev.depth_pct) < tool.reporting_threshold_pct_wt + tool.depth_tolerance_pct_wt
+    return np.select([_repair_flags(prev, wm, repairs), near], [HINTS[0], HINTS[1]], HINTS[2]).astype(object)
+
+
+def _confidence(score: np.ndarray, settings: Settings) -> np.ndarray:
+    bands = settings.matching.confidence_bands
+    return np.select([score <= bands.high, score <= bands.medium], [CONFIDENCES[0], CONFIDENCES[1]], CONFIDENCES[2])
+
+
+def _none_for_na(s: pd.Series) -> pd.Series:
+    return s.astype(object).where(s.notna(), None)
+
+
+def _finish(table: pd.DataFrame, settings: Settings) -> pd.DataFrame:
+    """Sort by prev-frame position, number the rows, fill confidence/review fields and fix dtypes."""
+    pp, cp = _num(table.pop("prev_pos_prev_ft")), _num(table.curr_pos_in_prev_ft)
+    key = pd.DataFrame({"pos": np.where(np.isnan(pp), cp, pp), "p": table.prev_feature_id.fillna(""),
+                        "c": table.curr_feature_id.fillna("")})
+    table = table.iloc[key.sort_values(["pos", "p", "c"], kind="stable").index].reset_index(drop=True)
+    table["match_id"] = [f"M{i + 1:05d}" for i in range(len(table))]
+    matched = table.match_type.isin(("matched_1to1", "matched_cluster")).to_numpy()
+    table["score"] = _num(table.score)
+    table["confidence"] = pd.Series(np.where(matched, _confidence(np.nan_to_num(table.score), settings), None),
+                                    dtype=object)
+    table["review_status"] = REVIEW_PENDING
+    table["needs_review"] = ((table.confidence == CONFIDENCES[2]) | (table.missing_hint == HINTS[2])).astype(bool)
+    for s in ("prev", "curr"):
+        for c in _FLOAT_FIELDS:
+            table[f"{s}_{c}"] = _num(table[f"{s}_{c}"])
+        for c in _INT_FIELDS:
+            table[f"{s}_{c}"] = pd.array(_num(table[f"{s}_{c}"]).round(), dtype="Int64")
+        for c in _OBJECT_FIELDS:
+            table[f"{s}_{c}"] = _none_for_na(table[f"{s}_{c}"])
+    for c in ("axial_diff_in", "clock_diff_min", "depth_change_pct", "curr_pos_in_prev_ft"):
+        table[c] = _num(table[c])
+    for c in ("prev_feature_id", "curr_feature_id", "implausible", "missing_hint"):
+        table[c] = _none_for_na(table[c])
+    table["n_prev"], table["n_curr"] = table.n_prev.astype(int), table.n_curr.astype(int)
+    return table[TABLE_COLUMNS]
+
+
+def _run_id(std: pd.DataFrame):
+    ids = std.run_id.dropna()
+    return str(ids.iloc[0]) if len(ids) else None
+
+
+def _summary(prev_std, curr_std, dt: float, table: pd.DataFrame, n_prev: int, n_curr: int) -> dict:
+    def counts(col, keys):
+        got = table[col].value_counts()
+        return {k: int(got.get(k, 0)) for k in keys}
+    return {
+        "prev_run_id": _run_id(prev_std), "curr_run_id": _run_id(curr_std),
+        "delta_t_years": dt, "n_prev_anomalies": n_prev, "n_curr_anomalies": n_curr,
+        "counts_by_match_type": counts("match_type", MATCH_TYPES),
+        "counts_by_confidence": counts("confidence", CONFIDENCES),
+        "counts_by_hint": counts("missing_hint", HINTS),
+        "n_needs_review": int(table.needs_review.sum()),
+    }
+
+
+def _unmatched_part(f: pd.DataFrame, keep: np.ndarray, run: str, hints=None) -> pd.DataFrame:
+    side, blank = _feature_side(f.iloc[keep]), _blank_side(len(keep))
+    part = _part("missing", side, blank) if run == "prev" else _part("new", blank, side)
+    part["missing_hint"] = hints[keep] if hints is not None else None
+    return part
+
+
+def _unused(n: int, used) -> np.ndarray:
+    mask = np.ones(n, bool)
+    mask[used] = False
+    return mask
+
+
+def match_anomalies(prev_std, curr_std, weld_map, settings: Settings, pipe, repairs=None) -> MatchResult:
+    """Match the anomalies of two runs: 1:1 pairs, then many-to-one clusters, then missing and new.
+
+    Every anomaly of each run lands in exactly one row of the match table."""
+    if repairs is not None:
+        _require_columns(repairs, ("start_ft", "end_ft"), "repairs")
+    tol = settings.alignment.anchor_tol_ft
+    pmap = PositionMap.from_weld_map(weld_map)
+    prev = _with_od(place(prev_std, weld_map, "prev", pmap), pipe, tol)
+    curr = _with_od(place(curr_std, weld_map, "curr", pmap), pipe, tol)
+    dt = delta_t_years(prev_std, curr_std)
+    chosen = assign_one_to_one(candidates(prev, curr, dt, settings))
+    used_p, used_c = chosen.prev_i.to_numpy(int), chosen.curr_i.to_numpy(int)
+    parts = [_part("matched_1to1", _feature_side(prev.iloc[used_p]), _feature_side(curr.iloc[used_c]), chosen[METRIC_COLS])]
+    left_p, left_c = _unused(len(prev), used_p), _unused(len(curr), used_c)
+    pk, ck = (np.flatnonzero(m & f.in_matched_row.to_numpy(bool)) for m, f in ((left_p, prev), (left_c, curr)))
+    found = match_clusters(prev.iloc[pk].reset_index(drop=True), curr.iloc[ck].reset_index(drop=True), dt, settings)
+    found = [(pk[p], ck[c], m) for p, c, m in found]
+    if found:
+        parts.append(_cluster_part(prev, curr, found))
+        left_p[np.concatenate([p for p, _, _ in found])] = False
+        left_c[np.concatenate([c for _, c, _ in found])] = False
+    hints = missing_hints(prev, weld_map, repairs, settings)
+    parts.append(_unmatched_part(prev, np.flatnonzero(left_p), "prev", hints))
+    parts.append(_unmatched_part(curr, np.flatnonzero(left_c), "curr"))
+    table = _finish(pd.concat([p for p in parts if len(p)], ignore_index=True), settings)
+    return MatchResult(table, _summary(prev_std, curr_std, dt, table, len(prev), len(curr)))
+
