@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 from ili.schema import ANOMALY_TYPES
@@ -243,6 +244,118 @@ def score_matching(match_table: pd.DataFrame, truth: pd.DataFrame) -> dict:
         "confusion": confusion,
         "passes": bool(precision >= MIN_MATCH_PRECISION and recall >= MIN_MATCH_RECALL
                        and not any(counts.values()) and true_links),
+    }
+
+
+# Spec section 6.5, M5 acceptance: the governing rate is >= the true rate for at least this share of
+# features. PLACEHOLDER target.
+MIN_GROWTH_CONSERVATISM = 0.90
+_GROWTH_HISTORY_CLASSES = ("matched", "new", "no_history")
+_GROWTH_TRUTH_CLASSES = ("matched_1to1", "matched_cluster", "new")
+_GROWTH_FEATURE_TYPE = "metal_loss"
+
+
+def _true_growth_by_id(truth: pd.DataFrame) -> dict[str, float]:
+    """{current feature id: max growth_mpy of the true features it reports} (NaN rates ignored)."""
+    reported = truth[truth.curr_feature_id.notna()]
+    rates = pd.to_numeric(reported.growth_mpy, errors="raise").astype(float)
+    return {str(k): float(v) for k, v in rates.groupby(reported.curr_feature_id.astype(str)).max().items()}
+
+
+def _errors(est: np.ndarray, true: np.ndarray) -> dict:
+    """Bias (mean est - true) and RMSE in mpy; None for no rows."""
+    err = est - true
+    return {"bias_mpy": float(np.mean(err)) if len(err) else None,
+            "rmse_mpy": float(np.sqrt(np.mean(err ** 2))) if len(err) else None,
+            "n": int(len(err))}
+
+
+def score_growth(features: pd.DataFrame, truth: pd.DataFrame) -> dict:
+    """Estimated versus true growth of a growth table against ``ground_truth.csv`` (spec 6.5).
+
+    A row's true rate is the max ``growth_mpy`` over the truth rows whose ``curr_feature_id`` is one
+    of the row's ``;``-split current ids: one id for 1:1 and new rows, and for a cluster row (or a
+    vendor cluster report holding several true pits) the fastest pit, which governs the envelope.
+    ``raw`` scores ``raw_mpy`` on ``matched`` history rows; ``governing`` scores ``governing_mpy`` on
+    every row that has one. ``conservatism_rate`` is the share of all rows with governing >= true, so
+    a row without a governing rate (``n_no_governing``) counts as not conservative; it is also given
+    per history class. ``non_conservative`` lists the largest shortfalls.
+
+    The table must score every current feature exactly once, so dropping or repeating rows cannot move
+    the rate: ``n_truth_not_scored`` counts the truth's current-run metal_loss ids (``curr_status``
+    reported or reported_in_cluster, ``truth_class`` matched_1to1, matched_cluster or new) in no row,
+    and ``n_duplicated`` the current ids in more than one row or twice in one cell. ``passes`` needs the
+    conservatism target and both counts 0. A current id absent from the truth, one whose truth rows
+    have no growth, a ``history_class`` outside matched/new/no_history, or missing columns are a
+    ``ValueError``.
+    """
+    for df, cols, what in ((truth, ("feature_type", "curr_feature_id", "curr_status", "truth_class",
+                                    "growth_mpy"), "truth (expected ground_truth.csv)"),
+                           (features, ("match_type", "curr_feature_id", "history_class", "raw_mpy",
+                                       "governing_mpy"), "growth features")):
+        missing = sorted(set(cols) - set(df.columns))
+        if missing:
+            raise ValueError(f"{what} is missing columns {missing}")
+
+    unknown = sorted({str(c) for c in features.history_class} - set(_GROWTH_HISTORY_CLASSES))
+    if unknown:  # an unknown class would silently drop rows from the raw score
+        raise ValueError(f"growth features have history_class {unknown}; expected one of "
+                         f"{list(_GROWTH_HISTORY_CLASSES)}")
+    by_id = _true_growth_by_id(truth)
+    true = np.empty(len(features))
+    seen: dict[str, int] = {}
+    for k, cell in enumerate(features.curr_feature_id):
+        ids = _ids(cell)
+        for fid in ids:
+            seen[fid] = seen.get(fid, 0) + 1
+        if not ids:
+            raise ValueError(f"growth feature row {k} has no current feature id")
+        for fid in ids:
+            if fid not in by_id:
+                raise ValueError(f"growth feature row {k} names current feature {fid!r}, which is not in the "
+                                 f"truth; is it from another dataset?")
+        rates = [by_id[fid] for fid in ids if not np.isnan(by_id[fid])]
+        if not rates:
+            raise ValueError(f"growth feature row {k} ({cell}) has no true growth_mpy in the truth")
+        true[k] = max(rates)
+
+    expected = truth[(truth.feature_type == _GROWTH_FEATURE_TYPE) & truth.curr_status.isin(_REPORTED_STATUSES)
+                     & truth.truth_class.isin(_GROWTH_TRUTH_CLASSES) & truth.curr_feature_id.notna()]
+    not_scored = sorted({str(i) for i in expected.curr_feature_id} - set(seen))
+    duplicated = sorted(fid for fid, n in seen.items() if n > 1)
+
+    cls = features.history_class.to_numpy(object)
+    raw = features.raw_mpy.to_numpy(float)
+    gov = features.governing_mpy.to_numpy(float)
+    has_gov = ~np.isnan(gov)
+    matched = (cls == "matched") & ~np.isnan(raw)
+    ok = has_gov & (gov >= true)  # NaN governing is not conservative
+    by_class = {}
+    for c in _GROWTH_HISTORY_CLASSES:
+        rows = cls == c
+        n = int(rows.sum())
+        by_class[c] = {"rate": float(ok[rows].mean()) if n else None, "n": n}
+    rate = float(ok.mean()) if len(ok) else None
+
+    short = np.where(~ok)[0]
+    short = short[np.argsort(-np.nan_to_num(true[short] - gov[short], nan=np.inf), kind="stable")]
+    listed = [{"curr_feature_id": str(features.curr_feature_id.iloc[k]), "history_class": str(cls[k]),
+               "governing_mpy": None if np.isnan(gov[k]) else float(gov[k]), "true_mpy": float(true[k])}
+              for k in short[:MAX_LISTED]]
+    return {
+        "n_features": int(len(features)),
+        "raw": _errors(raw[matched], true[matched]),
+        "governing": _errors(gov[has_gov], true[has_gov]),
+        "conservatism_rate": rate,
+        "conservatism_by_class": by_class,
+        "n_no_governing": int((~has_gov).sum()),
+        "n_non_conservative": int(len(short)),
+        "non_conservative": listed,
+        "n_truth_not_scored": len(not_scored),
+        "truth_not_scored": not_scored[:MAX_LISTED],
+        "n_duplicated": len(duplicated),
+        "duplicated": duplicated[:MAX_LISTED],
+        "passes": bool(rate is not None and rate >= MIN_GROWTH_CONSERVATISM and not not_scored and not duplicated),
     }
 
 

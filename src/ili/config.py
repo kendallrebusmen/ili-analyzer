@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Literal
 
 import yaml
-from pydantic import BaseModel, ConfigDict, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from ili.schema import FeatureType
 
@@ -69,6 +69,16 @@ class MatchingCfg(_Strict):
     interaction_rule: InteractionRule
 
 
+GrowthMethod = Literal["raw", "tolerance_adjusted", "segment_percentile", "new_feature", "full_life", "default_rate"]
+
+
+class GoverningRule(_Strict):
+    # At least one method per class: an empty list would leave every row of the class without a rate.
+    matched: list[GrowthMethod] = Field(min_length=1)
+    new: list[GrowthMethod] = Field(min_length=1)
+    no_history: list[GrowthMethod] = Field(min_length=1)
+
+
 class GrowthCfg(_Strict):
     k_sigma: float
     min_rate_mpy: float
@@ -78,6 +88,8 @@ class GrowthCfg(_Strict):
     default_rate_mpy: float | None
     length_growth: Literal["none", "proportional", "fixed_rate"]
     length_rate_ipy: float
+    governing: GoverningRule
+    diagnostic_bin_mpy: float
 
 
 class StrengthCfg(_Strict):

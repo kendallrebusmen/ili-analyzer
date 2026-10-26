@@ -79,3 +79,23 @@ def test_bad_category_rejected(tmp_path):
     path.write_text(yaml.safe_dump(raw), encoding="utf-8")
     with pytest.raises(ValidationError):
         load_repair_criteria(path)
+
+
+def test_growth_governing_rule_loads():
+    g = load_settings().growth
+    assert g.governing.matched == ["segment_percentile", "tolerance_adjusted"]
+    assert g.governing.new == ["new_feature", "segment_percentile"]
+    assert g.governing.no_history == ["full_life", "default_rate"]
+    assert g.diagnostic_bin_mpy == 1.0
+
+
+def test_growth_governing_rejects_unknown_method(tmp_path):
+    path = _write_settings(tmp_path, lambda r: r["growth"]["governing"].update(matched=["segment_percentile", "median"]))
+    with pytest.raises(ValueError):
+        load_settings(path)
+
+
+def test_growth_governing_rejects_empty_list(tmp_path):
+    path = _write_settings(tmp_path, lambda r: r["growth"]["governing"].update(new=[]))
+    with pytest.raises(ValueError, match="new"):
+        load_settings(path)
