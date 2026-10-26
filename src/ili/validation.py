@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from ili.match import ANOMALY_TYPES
+from ili.schema import ANOMALY_TYPES
 
 MAX_LISTED = 20
 

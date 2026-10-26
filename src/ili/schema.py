@@ -63,3 +63,6 @@ STANDARD_COLUMNS: list[str] = list(StandardFeature.model_fields)
 
 # Fixed features that split the line into alignment sections (spec 6.3).
 ANCHOR_TYPES = {FeatureType.valve, FeatureType.tee, FeatureType.fitting}
+
+# Anomaly feature types that are matched between runs (spec 6.4).
+ANOMALY_TYPES = ("metal_loss", "dent", "gouge")

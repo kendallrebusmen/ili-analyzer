@@ -9,6 +9,11 @@ DRAFT – for review by qualified personnel.
 
 from __future__ import annotations
 
+import argparse
+import json
+import sys
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 
@@ -16,10 +21,13 @@ from scipy.optimize import linear_sum_assignment
 from scipy.sparse import coo_matrix
 from scipy.sparse.csgraph import connected_components
 
-from ili.config import Settings, ToolCfg
+from ili.align_welds import DRAFT_LABEL, comparison_dir, load_weld_map
+from ili.config import DEFAULT_SETTINGS, PROJECT_ROOT, Settings, ToolCfg, load_settings
+from ili.ingest import load_standardized
+from ili.schema import ANOMALY_TYPES
 from ili.units import CLOCK_MINUTES, wrap_clock_min
+from ili.validation import score_matching, write_metrics
 
-ANOMALY_TYPES = ("metal_loss", "dent", "gouge")
 _MATCHED = ("1:1", "2:1", "1:2")
 DAYS_PER_YEAR = 365.25
 NONCANDIDATE_COST = 1e9  # cost of a non-candidate cell in the assignment; pairs chosen at it are dropped
@@ -666,3 +674,68 @@ def match_anomalies(prev_std, curr_std, weld_map, settings: Settings, pipe, repa
     table = _finish(pd.concat([p for p in parts if len(p)], ignore_index=True), settings)
     return MatchResult(table, _summary(prev_std, curr_std, dt, table, len(prev), len(curr)))
 
+
+
+# ---------------------------------------------------------------------------
+# Output and CLI
+# ---------------------------------------------------------------------------
+
+
+def write_matches(result: MatchResult, out_dir: Path) -> dict[str, Path]:
+    s = result.summary
+    folder = comparison_dir(out_dir, s["prev_run_id"], s["curr_run_id"])
+    folder.mkdir(parents=True, exist_ok=True)
+    paths = {"match_table.csv": folder / "match_table.csv", "match_summary.json": folder / "match_summary.json"}
+    result.match_table.to_csv(paths["match_table.csv"], index=False, lineterminator="\n")
+    paths["match_summary.json"].write_text(json.dumps({"label": DRAFT_LABEL, **s}, indent=2), encoding="utf-8")
+    return paths
+
+
+def _parser() -> argparse.ArgumentParser:
+    ap = argparse.ArgumentParser(prog="python -m ili.match",
+                                 description="Match anomalies between two ILI runs. " + DRAFT_LABEL)
+    ap.add_argument("--prev", type=Path, required=True, help="standardized CSV of the previous run")
+    ap.add_argument("--curr", type=Path, required=True, help="standardized CSV of the current run")
+    ap.add_argument("--weld-map", type=Path, required=True, help="weld_map.csv from ili.align_welds")
+    ap.add_argument("--pipe", type=Path, required=True, help="pipe_properties.csv (current-run log distance)")
+    ap.add_argument("--repairs", type=Path, help="repairs_between_runs.csv (current-run log distance)")
+    ap.add_argument("--truth", type=Path, help="ground_truth.csv (synthetic data only) to score against")
+    ap.add_argument("--settings", type=Path, default=DEFAULT_SETTINGS, help="settings YAML")
+    ap.add_argument("--out", type=Path, default=PROJECT_ROOT / "outputs", help="output directory")
+    return ap
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = _parser().parse_args(argv)
+    try:
+        prev, curr = load_standardized(args.prev), load_standardized(args.curr)
+        weld_map = load_weld_map(args.weld_map)
+        pipe = pd.read_csv(args.pipe)
+        repairs = pd.read_csv(args.repairs) if args.repairs else None
+        result = match_anomalies(prev, curr, weld_map, load_settings(args.settings), pipe, repairs)
+        paths = write_matches(result, args.out)
+        score = None
+        if args.truth:
+            truth = pd.read_csv(args.truth, dtype={"prev_feature_id": str, "curr_feature_id": str})
+            score = score_matching(result.match_table, truth)
+            write_metrics("anomaly_matching", score, Path(args.out) / "validation_metrics.json")
+    except (ValueError, OSError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    s = result.summary
+    print(DRAFT_LABEL)
+    print(f"{s['prev_run_id']} vs {s['curr_run_id']}: {s['n_prev_anomalies']} / {s['n_curr_anomalies']} anomalies, "
+          f"delta t {s['delta_t_years']:.2f} years")
+    print("matches: " + ", ".join(f"{k} {v}" for k, v in s["counts_by_match_type"].items()))
+    print("confidence: " + ", ".join(f"{k} {v}" for k, v in s["counts_by_confidence"].items()))
+    print(f"needs review: {s['n_needs_review']}")
+    if score is not None:
+        print(f"precision {score['precision']:.4f}, recall {score['recall']:.4f} vs ground truth "
+              f"({score['n_correct_links']}/{score['n_true_links']} links, "
+              f"{len(score['false_links'])} false, passes: {score['passes']})")
+    print(f"wrote {paths['match_table.csv'].parent}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

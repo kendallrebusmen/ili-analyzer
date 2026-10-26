@@ -154,3 +154,25 @@ Interpretations of `docs/SPEC.md` and choices the spec leaves open. Newest at th
   - Joint accuracy = joints in exactly reproduced groups ÷ all joints. A group is reproduced only if each of its joints appears in exactly one weld-map row, so duplicated, contradictory, or missing rows count against it. A weld-map id that is not a joint of its run, or a run weld missing from the truth file, is a `ValueError` (CLI exit 2). *(Final-review fix: the first scorer accepted a map with every row duplicated.)*
   - Default dataset: 1.0000, with 6 missed-weld groups and the replacement all correct.
 - **New settings keys** (beyond spec §7.1): `missed_weld_penalty`, `gap_penalty_repair`, `anchor_tol_ft`, `band_joints`, and `alignment.confidence_bands`. All are tuning values set on synthetic data.
+
+## M4: anomaly matching (2026-10-26)
+
+- **Global position map.** Piecewise linear through the ends of every matched weld-map row (equals per-joint length-ratio scaling, spec §6.4 step 1). Features are placed by log distance, never `us_gw_id`.
+- **Candidates.** Same weld-map row, or adjacent matched rows when both features are within `near_weld_ft` of the shared weld (each feature's distance to its own span end facing the other row).
+- **Score.** sqrt((w_axial·a² + w_circ·c²)/(w_axial + w_circ)) + w_depth_change·implausible, with a = axial diff / `axial_tol_in` and c = clock diff / `clock_tol_min`. A missing clock drops the circ term and its weight.
+- **Implausibility tolerance.** A two-run difference at the tool's certainty is √2 × `depth_tolerance_pct_wt` = 14.1 % wall.
+  - A drop beyond it, or (Δd − 14.1 %)·wt·1000/Δt above `max_plausible_growth_mpy`, is implausible.
+  - At 80 % certainty roughly 10 % of genuine matches carry the flag (confidence drops one band). This affects the review queue, not precision/recall.
+- **Assignment.** `linear_sum_assignment` per connected component of the candidate graph (equivalent to per joint, and handles near-weld pairs).
+- **Vendor cluster reports** (`vendor_cluster_id` set) are excluded from the 1:1 pass, so one pit cannot take the report. They are matched in the cluster pass.
+- **Metal loss only.** Interaction grouping and cluster matching apply to metal_loss (spec §10.6 frames the interaction rule as clustering metal loss).
+- **Cluster pass.** Groups come from the interaction rule (edge gaps ≤ `axial_spacing_in` / `circ_spacing_in`, same surface). Group pairs need at least one multi side (≥ 2 members or a vendor report). Box gaps are scored with the same formula.
+  - After the group assignment, a vendor cluster report absorbs every leftover opposite-run metal-loss group within tolerance of its envelope.
+  - Tool noise of ~1–2 in / ±25 min splits individually reported pits beyond the 1 in interaction spacing. The vendor asserts one envelope holds them. `interaction_rule` is the IMP criterion and was not widened.
+- **OD for the interaction rule** comes from `pipe_properties` at the feature's current-run position. Up to `anchor_tol_ft` outside the table uses the nearest row; beyond that is an error.
+- **Missing hints**, in order: `in_repaired_section` (removed row in a repair, or position inside a repairs span), `near_threshold` (depth < reporting threshold + depth tolerance), `unexplained`.
+- **Confidence** comes from score bands for matches only. `needs_review` = low confidence or unexplained missing; `review_status` starts `pending`. A deep feature that is `new` is not flagged in M4.
+- **Scoring** (`validation.score_matching`): precision/recall over (prev id, curr id) links. A cluster counts every prev × curr pairing. Confusion is per run and truth class. Acceptance additionally requires every truth `matched_cluster` id predicted `matched_cluster`.
+- **Results.** Default 20-mile dataset: precision 1.000, recall 0.990 (511/516 links, no false links). Seeds 1–5 at 5 miles: precision 1.000, recall 0.994–0.998.
+  - The remaining misses are true 1:1 pairs whose clocks differ by 47–74 min, just over `clock_tol_min` = 45 (PLACEHOLDER). Left for engineer sign-off, not tuned.
+  - No settings changed in M4.
