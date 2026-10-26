@@ -200,9 +200,11 @@ def test_non_hca_uses_nh_rules_and_requires_review(settings, criteria):
     assert (nd["governing_category"], nd["governing_rule"], nd["triggered_rules"]) == ("immediate", "NH-IMM-3",
                                                                                        "NH-IMM-3")
     for r in (n, nd):
-        assert r["requires_review"] is True and r["review_reasons"] == "rule_review"
+        assert r["requires_review"] is True and r["review_reasons"] == "rule_review;nh_placeholder"
         assert r["due_date"] == DISCOVERED and r["action_note"] == IMMEDIATE_ACTION_NOTE
+    # no rule fired: still reviewed, because the NH rule set is a PLACEHOLDER pending IMP criteria
     assert nq["governing_category"] == "evaluate" and nq["triggered_rules"] is None
+    assert nq["requires_review"] is True and nq["review_reasons"] == "nh_placeholder"
     # no HCA rule id ever fires or is listed for a non-HCA feature
     assert res.summary["counts_by_rule"] == {"NH-IMM-1": 1, "NH-IMM-3": 1}
 
@@ -243,6 +245,9 @@ def test_due_dates(settings, criteria):
     due = {m: rec(res, m)["due_date"] for m in ("IM", "D60", "D180", "IMP", "EV")}
     assert due == {"IM": date(2026, 7, 1), "D60": date(2026, 8, 30), "D180": date(2026, 12, 28),
                    "IMP": REPAIR_BY, "EV": None}
+    basis = {m: rec(res, m)["due_date_basis"] for m in ("IM", "D60", "D180", "IMP", "EV")}
+    assert basis == {"IM": "regulatory", "D60": "regulatory", "D180": "regulatory", "IMP": "remaining_life",
+                     "EV": None}
     t = res.table
     assert set(t.discovery_date) == {date(2026, 7, 1)} and set(t.discovery_date_source) == {"entered"}
     s = res.summary
@@ -303,6 +308,48 @@ def test_timestamp_dates_are_accepted(settings, criteria):
     assert rec(res, "IM")["due_date"] == DISCOVERED and type(rec(res, "IM")["due_date"]) is date
 
 
+def test_due_date_is_the_earlier_of_regulatory_and_remaining_life(settings, criteria):
+    """The regulatory timeline is an outer limit; a known remaining-life repair-by date can only make it
+    sooner. A due date before the discovery date is overdue at discovery and requires review."""
+    reg180 = DISCOVERED + timedelta(days=180)  # 2026-12-28
+    rows = [base("EARLY", p_safe=990.0, repair_by_date=date(2026, 9, 1)),
+            base("LATE", p_safe=990.0, repair_by_date=date(2027, 3, 1)),
+            base("TIE", p_safe=990.0, repair_by_date=reg180),
+            base("NORB", p_safe=990.0, repair_by_date=None),
+            base("PAST", p_safe=990.0, repair_by_date=date(2026, 6, 20)),  # before discovery 2026-07-01
+            base("IMPAST", depth_pct_assessed=85.0, repair_by_date=date(2026, 6, 20)),
+            base("IMLATE", depth_pct_assessed=85.0, repair_by_date=date(2026, 7, 2)),
+            base("D60", "dent", clock_min=0, top_of_pipe=True, **dent_pct(4.0)),  # dents carry no repair-by
+            base("IMP", dig_required_by_remaining_life=True, repair_by_date=date(2026, 6, 20)),
+            base("EV", repair_by_date=date(2026, 6, 20))]  # evaluate: no due date, whatever M6 says
+    res = go(rows, settings, criteria)
+    got = {m: (rec(res, m)["governing_category"], rec(res, m)["due_date"], rec(res, m)["due_date_basis"],
+               rec(res, m)["review_reasons"]) for m in res.table.match_id}
+    assert got == {
+        "EARLY": ("180_day", date(2026, 9, 1), "remaining_life", None),
+        "LATE": ("180_day", reg180, "regulatory", None),
+        "TIE": ("180_day", reg180, "regulatory", None),
+        "NORB": ("180_day", reg180, "regulatory", None),
+        "PAST": ("180_day", date(2026, 6, 20), "remaining_life", "overdue_at_discovery"),
+        "IMPAST": ("immediate", date(2026, 6, 20), "remaining_life", "overdue_at_discovery"),
+        "IMLATE": ("immediate", DISCOVERED, "regulatory", None),
+        "D60": ("60_day", date(2026, 8, 30), "regulatory", None),
+        "IMP": ("imp_scheduled", date(2026, 6, 20), "remaining_life", "overdue_at_discovery"),
+        "EV": ("evaluate", None, None, None),
+    }
+    flagged = {m for m in res.table.match_id if rec(res, m)["requires_review"]}
+    assert flagged == {"PAST", "IMPAST", "IMP"}
+    s = res.summary
+    assert s["n_overdue_at_discovery"] == 3
+    assert s["counts_by_due_date_basis"] == {"regulatory": 5, "remaining_life": 4}
+    # due_date_unknown and overdue never coexist; the reason order after upstream is fixed
+    res = go([base("N", could_affect_hca=False, segment_id="SEG-02", depth_pct_assessed=85.0, p_fail=None,
+                   repair_by_date=date(2026, 6, 20), upstream_needs_review=True,
+                   upstream_review_reasons="match_review")], settings, criteria)
+    want = "match_review;rule_review;rule_not_evaluable;nh_placeholder;overdue_at_discovery"
+    assert rec(res, "N")["review_reasons"] == want
+
+
 # --- table and summary -------------------------------------------------------------------------------
 
 
@@ -312,7 +359,7 @@ def test_columns_order_and_summary(settings, criteria):
     assert list(res.table.columns) == CLASSIFICATION_COLUMNS == [
         *FEATURE_VARIABLE_COLUMNS, "rule_set", "triggered_rules", "rules_not_evaluable", "governing_category",
         "governing_rule", "requires_review", "review_reasons", "discovery_date", "discovery_date_source",
-        "due_date", "action_note"]
+        "due_date", "due_date_basis", "action_note"]
     assert list(res.table.match_id) == ["IM", "D60", "D180", "IMP", "EV", "NE"]
     s = res.summary
     assert s["criteria_version"] == criteria.version and s["criteria_sha256"] == "ab" * 32
@@ -322,6 +369,8 @@ def test_columns_order_and_summary(settings, criteria):
     assert s["counts_by_rule"] == {"IMM-1": 1, "D60-1": 1, "D180-2": 1, "D180-4": 1}
     assert s["n_not_evaluable_by_rule"] == {"D180-6": 1}
     assert s["n_requires_review"] == 1 and s["n_features"] == 6
+    assert s["n_overdue_at_discovery"] == 0
+    assert s["counts_by_due_date_basis"] == {"regulatory": 3, "remaining_life": 1}
     import json
     assert json.loads(json.dumps(s)) == s  # JSON-safe
 
@@ -366,7 +415,13 @@ def test_synthetic_severe_features_are_immediate(synth):
         row = t.loc[fid]
         assert row.governing_category == "immediate", fid
         assert row.governing_rule in ("IMM-1", "NH-IMM-1"), fid
-        assert row.action_note == IMMEDIATE_ACTION_NOTE and row.due_date == row.discovery_date
+        assert row.action_note == IMMEDIATE_ACTION_NOTE
+        rb = row.repair_by_date
+        if rb is not None and rb < row.discovery_date:
+            assert (row.due_date, row.due_date_basis) == (rb, "remaining_life"), fid
+            assert "overdue_at_discovery" in row.review_reasons.split(";") and row.requires_review
+        else:
+            assert (row.due_date, row.due_date_basis) == (row.discovery_date, "regulatory"), fid
 
     # Every dent: a hand classification from its reported current-run values (clock, depth, OD, flags).
     od = r.params.od_in

@@ -413,14 +413,18 @@ GOVERNING_REMAINING_LIFE, GOVERNING_EVALUATE = "REMAINING_LIFE", "EVALUATE"
 RULE_SET_HCA, RULE_SET_NON_HCA, RULE_SET_HCA_ASSUMED = "hca", "non_hca", "hca_assumed"
 # Review reasons classification adds after the upstream ones, in this order.
 REVIEW_RULE, REVIEW_NOT_EVALUABLE = "rule_review", "rule_not_evaluable"
-REVIEW_HCA_UNKNOWN, REVIEW_DUE_DATE = "hca_unknown", "due_date_unknown"
+REVIEW_HCA_UNKNOWN, REVIEW_NH_PLACEHOLDER = "hca_unknown", "nh_placeholder"
+REVIEW_DUE_DATE, REVIEW_OVERDUE = "due_date_unknown", "overdue_at_discovery"
 DISCOVERY_ENTERED, DISCOVERY_LATEST = "entered", "latest_permissible"
+# Why a due date is what it is: the category's regulatory timeline, or M6's remaining-life repair-by date.
+BASIS_REGULATORY, BASIS_REMAINING_LIFE = "regulatory", "remaining_life"
+DUE_DATE_BASES = (BASIS_REGULATORY, BASIS_REMAINING_LIFE)
 DISCOVERY_WARNING = ("Discovery date not entered: using the latest permissible date (assessment date + {days} "
                      "days) per 195.452(h)(2). Enter the actual discovery date.")
 CLASSIFICATION_COLUMNS = [
     *FEATURE_VARIABLE_COLUMNS, "rule_set", "triggered_rules", "rules_not_evaluable", "governing_category",
     "governing_rule", "requires_review", "review_reasons", "discovery_date", "discovery_date_source",
-    "due_date", "action_note",
+    "due_date", "due_date_basis", "action_note",
 ]
 
 
@@ -462,6 +466,25 @@ def _rule_set(could_affect_hca, upstream_reasons: list[str]) -> tuple[str, str, 
     return RULE_SET_NON_HCA, "non_hca", []
 
 
+def _due_date(category: str, discovered: date, due_days: dict, repair_by: date | None):
+    """(due_date, due_date_basis). The regulatory date of the category -- ``immediate``: the discovery
+    date; ``60_day`` / ``180_day``: discovery + ``due_days``; none for ``imp_scheduled`` and ``evaluate``
+    -- or M6's remaining-life ``repair_by`` when that is known and earlier: the regulation is an outer
+    limit and the engineering remaining life can only make it sooner (a tie is ``regulatory``).
+    ``imp_scheduled`` is ``repair_by`` (None when unknown); ``evaluate`` is None (basis None)."""
+    if category == "evaluate":
+        return None, None
+    if category == "immediate":
+        regulatory = discovered
+    elif category in ("60_day", "180_day"):
+        regulatory = discovered + timedelta(days=int(due_days[category]))
+    else:  # imp_scheduled
+        return repair_by, (BASIS_REMAINING_LIFE if repair_by is not None else None)
+    if repair_by is not None and repair_by < regulatory:
+        return repair_by, BASIS_REMAINING_LIFE
+    return regulatory, BASIS_REGULATORY
+
+
 def _join(items: list[str]):
     return REASON_SEP.join(items) if items else None
 
@@ -484,13 +507,17 @@ def classify(variables: pd.DataFrame, criteria: RepairCriteria, settings: Settin
       metal-loss feature with an unknown dig flag is never ``imp_scheduled`` by guess; ``REMAINING_LIFE``
       is listed as not evaluable.
     - **Review.** ``review_reasons``: the upstream reasons, then ``rule_review`` (a triggered rule has
-      ``requires_review``), ``rule_not_evaluable``, ``hca_unknown``, ``due_date_unknown``, without repeats
+      ``requires_review``), ``rule_not_evaluable``, ``hca_unknown``, ``nh_placeholder`` (every ``non_hca``
+      feature, rule fired or not: the NH set is a PLACEHOLDER pending IMP criteria), ``due_date_unknown``,
+      ``overdue_at_discovery`` (a due date before the discovery date, any category), without repeats
       (None when there are none). ``requires_review``: the upstream flag (unknown counts as True) or any
       reason.
-    - **Dates.** ``resolve_discovery_date`` (``classification.discovery_max_days``). ``due_date``:
-      ``immediate`` the discovery date; ``60_day`` / ``180_day`` discovery + ``classification.due_days``;
-      ``imp_scheduled`` M6's ``repair_by_date`` (None, flagged ``due_date_unknown``, when unknown);
-      ``evaluate`` None. ``action_note``: ``IMMEDIATE_ACTION_NOTE`` for ``immediate``, else None.
+    - **Dates.** ``resolve_discovery_date`` (``classification.discovery_max_days``). ``due_date`` and
+      ``due_date_basis`` (``_due_date``): the earlier of the category's regulatory date (``immediate`` the
+      discovery date; ``60_day`` / ``180_day`` discovery + ``classification.due_days``) and M6's known
+      ``repair_by_date``; ``imp_scheduled`` is ``repair_by_date`` (None, flagged ``due_date_unknown``,
+      when unknown); ``evaluate`` None. ``action_note``: ``IMMEDIATE_ACTION_NOTE`` for ``immediate``,
+      else None.
 
     ``criteria_sha256`` (the criteria file's hash, computed by the caller) is recorded in the summary.
     """
@@ -523,17 +550,13 @@ def classify(variables: pd.DataFrame, criteria: RepairCriteria, settings: Settin
         category = min([r.category for r in triggered] + [default[0]], key=rank.__getitem__)
         governing = next((r.id for r in triggered if r.category == category), default[1])
 
-        if category == "immediate":
-            due = discovered
-        elif category in ("60_day", "180_day"):
-            due = discovered + timedelta(days=int(cfg.due_days[category]))
-        elif category == "imp_scheduled":
-            due = _as_date(rows.repair_by_date.iloc[k], "repair_by_date")
-        else:
-            due = None
+        due, basis = _due_date(category, discovered, cfg.due_days,
+                               _as_date(rows.repair_by_date.iloc[k], "repair_by_date"))
         reasons += [REVIEW_RULE] * any(r.requires_review for r in triggered)
         reasons += [REVIEW_NOT_EVALUABLE] * bool(unknown) + extra
+        reasons += [REVIEW_NH_PLACEHOLDER] * (rule_set == RULE_SET_NON_HCA)
         reasons += [REVIEW_DUE_DATE] * (category == "imp_scheduled" and due is None)
+        reasons += [REVIEW_OVERDUE] * (due is not None and due < discovered)
         reasons = list(dict.fromkeys(reasons))
         upstream_flag = _flag(rows.upstream_needs_review.iloc[k], "upstream_needs_review")
         for col, value in (
@@ -541,7 +564,7 @@ def classify(variables: pd.DataFrame, criteria: RepairCriteria, settings: Settin
             ("rules_not_evaluable", _join(unknown)), ("governing_category", category),
             ("governing_rule", governing), ("requires_review", upstream_flag is not False or bool(reasons)),
             ("review_reasons", _join(reasons)), ("discovery_date", discovered),
-            ("discovery_date_source", source), ("due_date", due),
+            ("discovery_date_source", source), ("due_date", due), ("due_date_basis", basis),
             ("action_note", IMMEDIATE_ACTION_NOTE if category == "immediate" else None),
         ):
             out[col].append(value)
@@ -571,6 +594,8 @@ def _classification_summary(table: pd.DataFrame, criteria: RepairCriteria, crite
         "counts_by_category": {c: int((table.governing_category == c).sum()) for c in CATEGORY_PRIORITY},
         "counts_by_rule": _count_ids(table.triggered_rules, ids),
         "n_requires_review": int(table.requires_review.sum()),
+        "n_overdue_at_discovery": int(sum(d is not None and d < discovered for d in table.due_date)),
+        "counts_by_due_date_basis": {b: int((table.due_date_basis == b).sum()) for b in DUE_DATE_BASES},
         "n_not_evaluable_by_rule": _count_ids(table.rules_not_evaluable, [*ids, GOVERNING_REMAINING_LIFE]),
         "discovery_date": discovered.isoformat(),
         "discovery_date_source": source,
