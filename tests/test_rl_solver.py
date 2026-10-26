@@ -141,12 +141,33 @@ def test_nan_mop_leaves_tau80_but_not_rl():
     assert math.isnan(rl) and gov is None
 
 
-@pytest.mark.parametrize("field", ["D", "t"])
-def test_nonpositive_geometry_gives_nan(field):
-    kwargs = dict(d0=0.10, L0=2.0, g=0.005, gL=0.01, D=D, t=T, smys=SMYS, mop=500.0)
-    kwargs[field] = 0.0
+def test_nonpositive_wall_gives_nan():
+    kwargs = dict(d0=0.10, L0=2.0, g=0.005, gL=0.01, D=D, t=0.0, smys=SMYS, mop=500.0)
     times = time_to_criteria(**kwargs, settings=_settings())
     assert all(math.isnan(times[c]) for c in CRITERIA)
+
+
+@pytest.mark.parametrize("field,value", [("mop", 0.0), ("mop", -100.0), ("D", 0.0), ("D", -12.75),
+                                         ("smys", 0.0), ("smys", -52_000.0), ("L0", -3.0)])
+def test_unusable_reference_value_is_missing(field, value):
+    # An OD, SMYS or MOP <= 0 (or a negative length) is missing data: the pressure criteria are NaN, not
+    # silently never met (MOP 0 used to give all inf -> beyond_horizon, unflagged). tau_80 is kept.
+    s = _settings()
+    kwargs = dict(d0=0.10, L0=2.0, g=0.005, gL=0.5, D=D, t=T, smys=SMYS, mop=500.0)
+    kwargs[field] = value
+    times = time_to_criteria(**kwargs, settings=s)
+    assert times["tau_80"] == pytest.approx(20.0, abs=1e-4)
+    assert math.isnan(times["tau_burst"]) and math.isnan(times["tau_safe"])
+    rl, gov = remaining_life(times, s)
+    assert math.isnan(rl) and gov is None
+    m = criterion_margins(np.array([0.0, 5.0]), **kwargs, settings=s)
+    assert np.isnan(m["tau_burst"]).all() and np.isnan(m["tau_safe"]).all() and np.isfinite(m["tau_80"]).all()
+
+
+def test_zero_length_is_usable():
+    times = _ttc(d0=0.10, L0=0.0, g=0.005, gL=0.0, mop=500.0)
+    assert times["tau_80"] == pytest.approx(20.0, abs=1e-4)
+    assert not math.isnan(times["tau_burst"]) and not math.isnan(times["tau_safe"])
 
 
 def test_depth_through_wall_stays_finite():

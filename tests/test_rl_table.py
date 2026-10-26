@@ -271,6 +271,28 @@ def test_nan_reference_values_flag_not_crash(settings):
         assert not f.loc[mid, "dig_required_by_remaining_life"]
 
 
+@pytest.mark.parametrize("table,column", [("mop", "mop_psig"), ("pipe", "od_in"), ("pipe", "smys_psi")])
+def test_nonpositive_reference_value_is_missing(settings, table, column):
+    pipe, mop = PIPE, MOP
+    if table == "mop":
+        mop = MOP.assign(**{column: [0.0]})
+    else:
+        pipe = PIPE.assign(**{column: [0.0]})
+    f = compute_remaining_life(pd.DataFrame([_g("Z", 500.0)]), RUN, pipe, mop, SEGS, NEXT, settings).features.iloc[0]
+    assert f[column] == 0.0  # the input column keeps the value as read
+    assert math.isnan(f.tau_burst_yr) and math.isnan(f.tau_safe_yr) and math.isfinite(f.tau_80_yr)
+    assert math.isnan(f.rl_yr) and f.rl_governing is None
+    assert f.review_reasons == "rl_not_evaluated" and f.needs_review
+    if table == "pipe":  # no made-up strength from an OD or SMYS of 0
+        assert math.isnan(f.failure_stress_psi) and math.isnan(f.burst_psig) and math.isnan(f.safe_psig)
+
+
+def test_negative_length_is_missing(settings):
+    f = _run([_g("N", 500.0, length=-2.0)], settings).features.iloc[0]
+    assert f.length_in == -2.0 and math.isnan(f.z) and math.isnan(f.burst_psig)
+    assert math.isnan(f.rl_yr) and f.review_reasons == "rl_not_evaluated"
+
+
 def test_requires_columns(settings):
     with pytest.raises(ValueError, match="governing_mpy"):
         compute_remaining_life(pd.DataFrame([_g("A", 500.0)]).drop(columns="governing_mpy"), RUN, PIPE, MOP,

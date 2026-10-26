@@ -71,20 +71,38 @@ def projected_depth_length(tau, d0, L0, g, gL):
     return depth, length
 
 
+def usable_inputs(L0, D, smys, mop):
+    """(L0, D, SMYS, MOP) as float arrays with values that cannot be real replaced by NaN.
+
+    An OD, SMYS or MOP <= 0 is missing data, not a value: a zero MOP would make the pressure criteria
+    never met (silently optimistic). A negative length makes z = L^2 / (D t) fall and then rise as the
+    length grows, so the margins would not be monotone. Each becomes NaN, so the criteria that need it
+    are NaN (``rl_not_evaluated``) while ``tau_80``, which needs only depth and wall, is kept. A length
+    of exactly 0 is kept (z = 0).
+    """
+    def positive(x):
+        a = np.asarray(x, dtype=float)
+        return np.where(a > 0, a, np.nan)
+
+    length = np.asarray(L0, dtype=float)
+    return np.where(length >= 0, length, np.nan), positive(D), positive(smys), positive(mop)
+
+
 def criterion_margins(tau, d0, L0, g, gL, D, t, smys, mop, settings: Settings) -> dict[str, np.ndarray]:
     """Margin of each criterion at time(s) τ (years); > 0 not met, <= 0 met.
 
     ``tau_80``: 0.80 t - depth(τ) in inches. ``tau_burst``: P_F(τ) - MOP and ``tau_safe``:
     P_safe(τ) - MOP in psig, with P_F = 2 S_F t / D from the configured ``strength.method`` and
     P_safe = P_F x ``strength.design_factor``. D, t, d0, L0 in inches; g, gL in in/yr; SMYS psi;
-    MOP psig. Vectorised over τ; NaN inputs give NaN margins.
+    MOP psig. Vectorised over τ; NaN inputs give NaN margins, and so do the unusable values of
+    ``usable_inputs`` (OD, SMYS or MOP <= 0, negative L0) for the pressure margins.
     """
+    L0, D, smys, mop = usable_inputs(L0, D, smys, mop)
     depth, length = projected_depth_length(tau, d0, L0, g, gL)
     t_arr = np.asarray(t, dtype=float)
     _, _, _, s_f = failure_stress(settings.strength.method, D, t, depth, length, smys)
     p_f = burst_pressure(s_f, t, D)
     p_safe = safe_pressure(p_f, settings)
-    mop = np.asarray(mop, dtype=float)
     return {
         "tau_80": WALL_LOSS_LIMIT * t_arr - depth,
         "tau_burst": p_f - mop,
@@ -141,14 +159,15 @@ def time_to_criteria(d0, L0, g, gL, D, t, smys, mop, settings: Settings) -> dict
       τ > 0), so a criterion failing today is 0 even when the rate is NaN; it is NaN only when that
       criterion's own τ = 0 inputs are (e.g. tau_burst with a NaN MOP, while tau_80 needs only d0, t).
     - Otherwise NaN when the margin is not finite anywhere on the grid (a NaN rate, length, MOP or
-      pipe value), inf when not met by ``remaining_life.horizon_yr``, else the first crossing from
+      pipe value, or an unusable one per ``usable_inputs``: OD, SMYS or MOP <= 0, negative length),
+      inf when not met by ``remaining_life.horizon_yr``, else the first crossing from
       ``_first_crossing``, which is never later than the true crossing.
-    - All NaN for D <= 0 or t <= 0 (invalid geometry).
+    - All NaN for t <= 0 (invalid wall). OD <= 0 makes only the pressure criteria NaN.
 
     The grid is evaluated in one vectorised call; ``brentq`` runs only on each criterion's first
     crossing interval.
     """
-    if float(D) <= 0 or float(t) <= 0:
+    if float(t) <= 0:
         return {c: math.nan for c in CRITERIA}
     today = criterion_margins(0.0, d0, L0, 0.0, 0.0, D, t, smys, mop, settings)
     grid = time_grid(settings)
@@ -440,7 +459,8 @@ def compute_remaining_life(growth: pd.DataFrame, curr_run_date, pipe: pd.DataFra
 
     - Reference values at ``curr_log_dist_ft`` (``alignment.anchor_tol_ft``): od_in and smys_psi from
       ``pipe``, mop_psig from ``mop``. A position outside a table is a ValueError; a NaN value there is
-      kept, so that row's RL is NaN and flagged ``rl_not_evaluated`` (never a guessed value).
+      kept, so that row's RL is NaN and flagged ``rl_not_evaluated`` (never a guessed value). A value
+      <= 0 (or a negative length) is treated as NaN (``usable_inputs``) in every computed column.
     - Wall = growth ``wt_in``; assessed depth and length by ``strength.depth_basis`` / ``length_basis``.
       Strength columns are at τ = 0; ``exceeds_80pct`` is the unclipped assessed d/t >= 0.80.
     - g = governing_mpy / 1000 in/yr, gL = length_rate_ipy; ``time_to_criteria`` and ``remaining_life``.
@@ -476,8 +496,12 @@ def compute_remaining_life(growth: pd.DataFrame, curr_run_date, pipe: pd.DataFra
     with np.errstate(invalid="ignore", divide="ignore"):
         dt_ratio = d_as / wt
         exceeds = np.asarray(exceeds_wall_loss_limit(d_as, wt), dtype=bool)
-    z, folias, flow, s_f = (np.asarray(a, dtype=float) for a in failure_stress(method, od, wt, d_as, l_as, smys))
-    p_f = np.asarray(burst_pressure(s_f, wt, od), dtype=float)
+    # strength from usable values only (an OD/SMYS <= 0 or negative length gives NaN, not a made-up stress);
+    # the od_in, smys_psi, mop_psig and length columns keep the values as read
+    l_ok, od_ok, smys_ok, _ = usable_inputs(l_as, od, smys, mop_psig)
+    z, folias, flow, s_f = (np.asarray(a, dtype=float)
+                            for a in failure_stress(method, od_ok, wt, d_as, l_ok, smys_ok))
+    p_f = np.asarray(burst_pressure(s_f, wt, od_ok), dtype=float)
     p_safe = np.asarray(safe_pressure(p_f, settings), dtype=float)
     g_inyr = g_in.governing_mpy.to_numpy(float) / MILS_PER_IN
     gl_inyr = g_in.length_rate_ipy.to_numpy(float)
