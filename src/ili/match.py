@@ -247,7 +247,8 @@ def _surface(df: pd.DataFrame) -> np.ndarray:
 def interaction_groups(f: pd.DataFrame, settings: Settings) -> np.ndarray:
     """Group label per row: connected components of "interacts" within one run.
 
-    Two features interact when they share a surface (exactly; UNK only with UNK), their axial edge
+    Only metal_loss features interact (spec 10.6 clusters metal loss); every other row is its own
+    singleton group. Two features interact when they share a surface (exactly; UNK only with UNK), their axial edge
     gap |dpos| * 12 - (L1 + L2) / 2 is within ``axial_spacing_in`` and their circumferential edge
     gap arc(dclock) - (W1 + W2) / 2 is within ``circ_spacing_in``. A missing clock or OD leaves
     the circumferential test passing; missing sizes count as 0. Neighbours come from a window
@@ -271,8 +272,9 @@ def interaction_groups(f: pd.DataFrame, settings: Settings) -> np.ndarray:
     j = order[np.repeat(lo + 1, cnt) + np.arange(cnt.sum()) - np.repeat(np.cumsum(cnt) - cnt, cnt)]
     axial_gap = np.abs(pos[i] - pos[j]) / FT_PER_IN - (length[i] + length[j]) / 2
     circ_gap = _arc_in(clock_diff_min(clock[i], clock[j]), od[i]) - (width[i] + width[j]) / 2
+    ml = (f.feature_type == "metal_loss").to_numpy()
     with np.errstate(invalid="ignore"):
-        ok = (surf[i] == surf[j]) & (axial_gap <= rule.axial_spacing_in) & ~(circ_gap > rule.circ_spacing_in)
+        ok = ml[i] & ml[j] & (surf[i] == surf[j]) & (axial_gap <= rule.axial_spacing_in) & ~(circ_gap > rule.circ_spacing_in)
     graph = coo_matrix((np.ones(ok.sum()), (i[ok], j[ok])), shape=(n, n))
     return connected_components(graph, directed=False)[1]
 
@@ -284,7 +286,7 @@ def envelope(f: pd.DataFrame) -> dict:
     same way from the members' current-run positions). Circumferential: member clocks are unwrapped
     relative to the first member into (-360, 360], converted to arc inches (pi * OD), boxed, and the
     centre converted back to minutes and wrapped (as ``synth._cluster_envelope``); a missing clock
-    leaves ``clock_min`` missing and the width the widest member. Depth is the maximum; the surface
+    uses only the members that have one; with none (or no OD) ``clock_min`` is NaN and the width the widest member. Depth is the maximum; the surface
     is the first non-UNK member surface; ``wt_nom_in`` the first non-missing value."""
     half = np.nan_to_num(_num(f.length_in)) / 24  # ft
 
@@ -298,13 +300,15 @@ def envelope(f: pd.DataFrame) -> dict:
     width = np.nan_to_num(_num(f.width_in))
     clock, od = _num(f.clock_min), _num(f.od_in)
     od = od[~np.isnan(od)][0] if (~np.isnan(od)).any() else np.nan
-    if np.isnan(clock).any():
-        clock_min, width_in = pd.NA, width.max()
-    else:
-        rel = (clock - clock[0] + 360) % CLOCK_MINUTES - 360
+    has = ~np.isnan(clock)
+    if not has.any() or np.isnan(od):
+        clock_min, width_in = np.nan, width.max()
+    else:  # box of the members that report a clock; clockless members add axial extent only
+        c, w = clock[has], width[has]
+        rel = (c - c[0] + 360) % CLOCK_MINUTES - 360
         arc = _arc_in(rel, od)
-        lo, hi = (arc - width / 2).min(), (arc + width / 2).max()
-        clock_min = wrap_clock_min(clock[0] + (lo + hi) / 2 / (np.pi * od) * CLOCK_MINUTES)
+        lo, hi = (arc - w / 2).min(), (arc + w / 2).max()
+        clock_min = float(wrap_clock_min(c[0] + (lo + hi) / 2 / (np.pi * od) * CLOCK_MINUTES))
         width_in = hi - lo
     surf = [s for s in _surface(f) if s != "UNK"]
     wt = _num(f.wt_nom_in)
@@ -341,7 +345,7 @@ def _box_gaps(p: pd.DataFrame, q: pd.DataFrame, od: np.ndarray) -> tuple[np.ndar
 def match_clusters(prev: pd.DataFrame, curr: pd.DataFrame, dt_yr: float, settings: Settings):
     """Many-to-one matches between interaction groups of the features left after the 1:1 pass.
 
-    Inputs are placed frames already filtered to unmatched features in matched rows, with ``od_in``.
+    Only metal_loss rows take part (others are ignored). Inputs are placed frames already filtered to unmatched features in matched rows, with ``od_in``.
     Groups are formed per run; a group is multi with >= 2 members or a vendor cluster report. A
     group pair is a candidate when one side is multi, the surfaces are equal or either UNK, and the
     box gaps (axial in inches; circumferential converted to minutes with the current OD, else the
@@ -349,10 +353,12 @@ def match_clusters(prev: pd.DataFrame, curr: pd.DataFrame, dt_yr: float, setting
     and the envelopes' max depths, then assigned one-to-one. Returns (prev rows, curr rows, metrics)
     per match, rows being positional member indices in log order."""
     mt = settings.matching
-    if prev.empty or curr.empty:
+    pk, ck = (np.flatnonzero((f.feature_type == "metal_loss").to_numpy()) for f in (prev, curr))
+    if not len(pk) or not len(ck):
         return []
-    pe, pm = _group_table(prev, settings)
-    ce, cm = _group_table(curr, settings)
+    pe, pm = _group_table(prev.iloc[pk], settings)
+    ce, cm = _group_table(curr.iloc[ck], settings)
+    pm, cm = [pk[m].tolist() for m in pm], [ck[m].tolist() for m in cm]
     ps = np.argsort(ce.pos_prev_ft.to_numpy(float), kind="stable")
     cpos = ce.pos_prev_ft.to_numpy(float)[ps]
     reach = (mt.axial_tol_in + (pe.length_in.max() + ce.length_in.max()) / 2) * FT_PER_IN * (1 + 1e-9)

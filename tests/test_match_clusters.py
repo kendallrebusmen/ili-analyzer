@@ -74,3 +74,117 @@ def test_vendor_cluster_matches_single_surviving_pit():
 
 def test_single_vs_single_is_not_a_cluster():
     assert match_clusters(_frame("prev", [50.0]), _frame("curr", [50 + 3 / 12]), 5.0, S) == []
+
+
+IN = 1 / 12  # ft per inch
+CIRC_GAP_PER_MIN = lambda d_min, half_widths: d_min / MIN_PER_IN - half_widths  # noqa: E731
+
+
+def _vendor(pos=50.0, clock=100, length=2.0, width=2.0, depth=30.0, surface=None):
+    return _frame("prev", [pos], clock=[clock], length=length, width=width, depth=depth,
+                  vendor=["C1"], surface=None if surface is None else [surface])
+
+
+def test_axial_box_gap_accept_and_reject():
+    prev = _vendor()  # box +-1 in; the pit is 0.3 in long, so gap = offset - 1.15
+    inside = match_clusters(prev, _frame("curr", [50 + 7.05 * IN]), 5.0, S)
+    assert len(inside) == 1 and inside[0][2].axial_diff_in == pytest.approx(5.9)
+    assert match_clusters(prev, _frame("curr", [50 + 7.25 * IN]), 5.0, S) == []
+
+
+def test_circ_box_gap_converted_to_minutes():
+    prev = _vendor()  # half widths total 1.15 in
+    out = match_clusters(prev, _frame("curr", [50.0], clock=[130]), 5.0, S)
+    assert len(out) == 1
+    expect = (30 / MIN_PER_IN - 1.15) * MIN_PER_IN
+    assert out[0][2].clock_diff_min == pytest.approx(expect) and out[0][2].axial_diff_in == 0
+    assert len(match_clusters(prev, _frame("curr", [50.0], clock=[160]), 5.0, S)) == 1   # 39.3 min
+    assert match_clusters(prev, _frame("curr", [50.0], clock=[170]), 5.0, S) == []       # 49.3 min
+
+
+def test_circ_gap_uses_current_od():
+    prev = _vendor()
+    curr = _frame("curr", [50.0], clock=[130])
+    curr["od_in"] = 24.0
+    out = match_clusters(prev, curr, 5.0, S)
+    assert out[0][2].clock_diff_min == pytest.approx(30 - 1.15 * 720 / (np.pi * 24.0))
+
+
+def test_circ_separation_breaks_interaction_and_wraps_noon():
+    def n(clocks):
+        return len(set(interaction_groups(_frame("prev", [50.0, 50.0], clock=clocks), S)))
+    assert n([100, 120]) == 1 and n([100, 130]) == 2   # 20 min -> 0.77 in gap, 30 min -> 1.37 in
+    assert n([715, 5]) == 1
+
+
+def test_many_to_one_contention_lower_score_wins():
+    prev = _frame("prev", [50.0, 50 + 4 * IN], clock=[100, 100], length=2.0, width=2.0, vendor=["A", "B"])
+    out = match_clusters(prev, _frame("curr", [50.0]), 5.0, S)
+    assert len(out) == 1 and out[0][0] == [0] and out[0][1] == [0]
+
+
+def test_cluster_surface_compatibility():
+    def n(ps, cs):
+        return len(match_clusters(_vendor(surface=ps), _frame("curr", [50.0], surface=[cs]), 5.0, S))
+    assert n("EXT", "INT") == 0 and n("EXT", "UNK") == 1 and n("EXT", "EXT") == 1
+
+
+def test_implausible_on_envelope_max_depths():
+    curr = _frame("curr", [50.0, 50.0 + 0.6 * IN], depth=[20.0, 30.0], clock=[100, 100])
+    m = match_clusters(_vendor(depth=60.0), curr, 5.0, S)[0][2]
+    assert m.depth_change_pct == pytest.approx(-30.0) and bool(m.implausible)
+    assert m.score == pytest.approx(S.matching.weights.depth_change)
+    m = match_clusters(_vendor(depth=35.0), curr, 5.0, S)[0][2]
+    assert m.depth_change_pct == pytest.approx(-5.0) and not bool(m.implausible)
+
+
+def test_envelope_includes_vendor_member_box():
+    f = _frame("prev", [50.0, 50.0 + 2 * IN], length=[3.0, 0.3], width=[2.0, 0.3], vendor=["C1", None])
+    f["clock_min"] = pd.array([100, 100], dtype="Int64")
+    e = envelope(f)
+    assert e["length_in"] == pytest.approx(3.65) and e["width_in"] == pytest.approx(2.0)
+    assert e["clock_min"] == 100
+
+
+def test_envelope_clockless_member_keeps_others_clock():
+    f = _frame("prev", [50.0, 50.0], length=[2.0, 0.3], width=[2.0, 0.3], vendor=["C1", None])
+    f["clock_min"] = pd.array([100, None], dtype="Int64")
+    e = envelope(f)
+    assert e["clock_min"] == 100 and e["width_in"] == pytest.approx(2.0)
+    assert isinstance(e["clock_min"], float)
+
+
+def test_envelope_no_clock_or_no_od_is_nan():
+    f = _frame("prev", [50.0, 50.0], width=[2.0, 0.3])
+    f["clock_min"] = pd.array([None, None], dtype="Int64")
+    e = envelope(f)
+    assert np.isnan(e["clock_min"]) and e["width_in"] == 2.0
+    g = _frame("prev", [50.0, 50.0], width=[2.0, 0.3])
+    g["od_in"] = np.nan
+    e = envelope(g)
+    assert np.isnan(e["clock_min"]) and e["width_in"] == 2.0
+
+
+def test_nan_clock_and_od_interaction_and_matching():
+    f = _frame("prev", [50.0, 50.0])
+    f["clock_min"] = pd.array([100, None], dtype="Int64")
+    assert len(set(interaction_groups(f, S))) == 1
+    g = _frame("prev", [50.0, 50.0], clock=[100, 300])
+    g["od_in"] = np.nan
+    assert len(set(interaction_groups(g, S))) == 1
+    curr = _frame("curr", [50.0])
+    curr["clock_min"] = pd.array([None], dtype="Int64")
+    out = match_clusters(_vendor(), curr, 5.0, S)
+    assert len(out) == 1 and np.isnan(out[0][2].clock_diff_min)
+    curr["od_in"] = np.nan
+    assert len(match_clusters(_vendor(), curr, 5.0, S)) == 1
+
+
+def test_dent_beside_pits_does_not_join_group():
+    f = _frame("prev", [50.0, 50.0 + 0.5 * IN, 50.0 + 1.0 * IN])
+    f["feature_type"] = ["metal_loss", "dent", "metal_loss"]
+    g = interaction_groups(f, S)
+    assert g[0] == g[2] and g[1] != g[0]
+    curr = f.copy()
+    out = match_clusters(_vendor(), curr, 5.0, S)
+    assert len(out) == 1 and out[0][1] == [0, 2]
