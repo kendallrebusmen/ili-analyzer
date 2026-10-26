@@ -12,20 +12,26 @@ documents its rule, including where the result is decided from partial informati
 ``manual_immediate`` and ``field_crack_confirmed`` are manual and field entries that M9 will supply;
 until then they are False for every feature (no evaluator flag, no confirmed crack is on record).
 
+``classify`` then applies the repair-criteria rules to those records, picks each feature's governing
+category (``CATEGORY_PRIORITY``) and computes its due date from the discovery date (195.452(h)(2)).
+
 DRAFT – for review by qualified personnel.
 """
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+from datetime import date, timedelta
+
 import numpy as np
 import pandas as pd
 
-from ili.config import Settings
+from ili.config import RepairCriteria, Settings
 from ili.growth import PCT_PER_FRACTION, REASON_SEP
 from ili.match import clock_diff_min
 from ili.reference import _require_columns, assign_segment, check_segments, lookup
 from ili.remaining_life import PIPE_WHAT, RL_SEGMENT_COLUMNS, _as_date, _segment_hca
-from ili.rules import _kleene_and, _kleene_or, _normalize
+from ili.rules import _kleene_and, _kleene_or, _normalize, compile_condition
 from ili.schema import ANOMALY_TYPES, FeatureType
 from ili.strength import assessed_depth_in
 from ili.vocabulary import VARIABLES
@@ -393,3 +399,183 @@ def variable_dicts(variables: pd.DataFrame) -> list[dict]:
     cols = list(VARIABLE_COLUMNS)
     return [dict(zip(cols, (_normalize(v) for v in row)))
             for row in variables[cols].astype(object).itertuples(index=False, name=None)]
+
+
+# --- classification and due dates (spec 6.8) ------------------------------------------------------
+
+# Governing-category priority, most severe first. Every current anomaly gets at least ``evaluate``
+# ((h)(4)(iv)); a metal-loss feature M6 flags by remaining life gets ``imp_scheduled``.
+CATEGORY_PRIORITY = ("immediate", "60_day", "180_day", "imp_scheduled", "evaluate")
+# Spec 6.8: immediate conditions require a temporary pressure reduction or shutdown until repaired.
+IMMEDIATE_ACTION_NOTE = "Requires temporary pressure reduction or shutdown until repaired."
+# Pseudo-rule ids for the categories no criteria-file rule decides.
+GOVERNING_REMAINING_LIFE, GOVERNING_EVALUATE = "REMAINING_LIFE", "EVALUATE"
+RULE_SET_HCA, RULE_SET_NON_HCA, RULE_SET_HCA_ASSUMED = "hca", "non_hca", "hca_assumed"
+# Review reasons classification adds after the upstream ones, in this order.
+REVIEW_RULE, REVIEW_NOT_EVALUABLE = "rule_review", "rule_not_evaluable"
+REVIEW_HCA_UNKNOWN, REVIEW_DUE_DATE = "hca_unknown", "due_date_unknown"
+DISCOVERY_ENTERED, DISCOVERY_LATEST = "entered", "latest_permissible"
+DISCOVERY_WARNING = ("Discovery date not entered: using the latest permissible date (assessment date + {days} "
+                     "days) per 195.452(h)(2). Enter the actual discovery date.")
+CLASSIFICATION_COLUMNS = [
+    *FEATURE_VARIABLE_COLUMNS, "rule_set", "triggered_rules", "rules_not_evaluable", "governing_category",
+    "governing_rule", "requires_review", "review_reasons", "discovery_date", "discovery_date_source",
+    "due_date", "action_note",
+]
+
+
+@dataclass(frozen=True)
+class ClassificationResult:
+    table: pd.DataFrame  # CLASSIFICATION_COLUMNS, one row per feature-variables row, same order
+    summary: dict  # JSON-safe
+
+
+def resolve_discovery_date(assessment_date, discovery_date, max_days: int) -> tuple[date, str]:
+    """(discovery date, source). An entered date (``entered``) must lie in [assessment date, assessment
+    date + ``max_days``] (195.452(h)(2); the limit itself is allowed), else ValueError. Without one, the
+    latest permissible date, assessment date + ``max_days`` (``latest_permissible``). Dates may be
+    ``datetime.date``, datetime/Timestamp or ISO text; a blank discovery date counts as not entered."""
+    assessed = _as_date(assessment_date, "assessment date")
+    if assessed is None:
+        raise ValueError("the assessment date is missing")
+    latest = assessed + timedelta(days=int(max_days))
+    entered = _as_date(discovery_date, "discovery date")
+    if entered is None:
+        return latest, DISCOVERY_LATEST
+    if entered < assessed:
+        raise ValueError(f"discovery date {entered.isoformat()} is before the assessment date "
+                         f"{assessed.isoformat()}")
+    if entered > latest:
+        raise ValueError(f"discovery date {entered.isoformat()} is more than {max_days} days after the assessment "
+                         f"date {assessed.isoformat()} (latest permissible {latest.isoformat()}, 195.452(h)(2))")
+    return entered, DISCOVERY_ENTERED
+
+
+def _rule_set(could_affect_hca, upstream_reasons: list[str]) -> tuple[str, str, list[str]]:
+    """(rule_set, the ``applies_to`` value it uses, extra review reasons). An unknown HCA flag uses the
+    HCA rules (the conservative choice) and is flagged ``hca_unknown``; a feature outside every segment
+    (upstream ``no_segment``, HCA already assumed by ``feature_variables``) is ``hca_assumed``."""
+    if could_affect_hca is None:
+        return RULE_SET_HCA_ASSUMED, "hca", [REVIEW_HCA_UNKNOWN]
+    if could_affect_hca:
+        return (RULE_SET_HCA_ASSUMED if REVIEW_NO_SEGMENT in upstream_reasons else RULE_SET_HCA), "hca", []
+    return RULE_SET_NON_HCA, "non_hca", []
+
+
+def _join(items: list[str]):
+    return REASON_SEP.join(items) if items else None
+
+
+def classify(variables: pd.DataFrame, criteria: RepairCriteria, settings: Settings, assessment_date,
+             discovery_date=None, criteria_sha256: str | None = None) -> ClassificationResult:
+    """Classify every row of a ``feature_variables`` table (spec 6.8). Columns ``CLASSIFICATION_COLUMNS``.
+
+    - **Rules.** A rule applies when its ``applies_to`` is ``all`` or matches the feature's rule set
+      (``could_affect_hca`` True: ``hca``; False: ``non_hca``; None: the HCA rules, ``hca_assumed``,
+      reason ``hca_unknown``; outside every segment, upstream ``no_segment``: ``hca_assumed``) and its
+      ``feature_types`` include the feature's. Each applicable condition is evaluated (Kleene) on the
+      plain dict of ``variable_dicts``: True is triggered (``triggered_rules``), None is not evaluable
+      (``rules_not_evaluable``), both ``;``-joined in criteria-file order.
+    - **Governing category.** The highest ``CATEGORY_PRIORITY`` category of a triggered rule, or the
+      default -- ``imp_scheduled`` when ``dig_required_by_remaining_life`` is True, else ``evaluate`` --
+      when that is higher. ``governing_rule``: the first triggered rule in file order within the governing
+      category, else ``REMAINING_LIFE`` / ``EVALUATE``. A not-evaluable rule NEVER raises or lowers the
+      category (an unknown is neither a trigger nor a pass): it is listed and requires review. A
+      metal-loss feature with an unknown dig flag is never ``imp_scheduled`` by guess; ``REMAINING_LIFE``
+      is listed as not evaluable.
+    - **Review.** ``review_reasons``: the upstream reasons, then ``rule_review`` (a triggered rule has
+      ``requires_review``), ``rule_not_evaluable``, ``hca_unknown``, ``due_date_unknown``, without repeats
+      (None when there are none). ``requires_review``: the upstream flag (unknown counts as True) or any
+      reason.
+    - **Dates.** ``resolve_discovery_date`` (``classification.discovery_max_days``). ``due_date``:
+      ``immediate`` the discovery date; ``60_day`` / ``180_day`` discovery + ``classification.due_days``;
+      ``imp_scheduled`` M6's ``repair_by_date`` (None, flagged ``due_date_unknown``, when unknown);
+      ``evaluate`` None. ``action_note``: ``IMMEDIATE_ACTION_NOTE`` for ``immediate``, else None.
+
+    ``criteria_sha256`` (the criteria file's hash, computed by the caller) is recorded in the summary.
+    """
+    _require_columns(variables, FEATURE_VARIABLE_COLUMNS, "feature variables")
+    cfg = settings.classification
+    discovered, source = resolve_discovery_date(assessment_date, discovery_date, cfg.discovery_max_days)
+    names = set(VARIABLES)
+    compiled = [(r, compile_condition(r.condition, names), frozenset(t.value for t in r.feature_types))
+                for r in criteria.rules]  # once per run
+    rank = {c: k for k, c in enumerate(CATEGORY_PRIORITY)}
+    rows = variables.reset_index(drop=True)
+    out = {c: [] for c in CLASSIFICATION_COLUMNS[len(FEATURE_VARIABLE_COLUMNS):]}
+    for k, d in enumerate(variable_dicts(rows)):
+        upstream = rows.upstream_review_reasons.iloc[k]
+        reasons = [r for r in upstream.split(REASON_SEP) if r] if isinstance(upstream, str) else []
+        rule_set, applies, extra = _rule_set(d["could_affect_hca"], reasons)
+        triggered, unknown = [], []
+        for rule, cond, types in compiled:
+            if rule.applies_to not in ("all", applies) or d["feature_type"] not in types:
+                continue
+            value = cond.evaluate(d)
+            if value is True:
+                triggered.append(rule)
+            elif value is None:
+                unknown.append(rule.id)
+        dig = d["dig_required_by_remaining_life"]
+        if d["feature_type"] == FeatureType.metal_loss.value and dig is None:
+            unknown.append(GOVERNING_REMAINING_LIFE)
+        default = ("imp_scheduled", GOVERNING_REMAINING_LIFE) if dig is True else ("evaluate", GOVERNING_EVALUATE)
+        category = min([r.category for r in triggered] + [default[0]], key=rank.__getitem__)
+        governing = next((r.id for r in triggered if r.category == category), default[1])
+
+        if category == "immediate":
+            due = discovered
+        elif category in ("60_day", "180_day"):
+            due = discovered + timedelta(days=int(cfg.due_days[category]))
+        elif category == "imp_scheduled":
+            due = _as_date(rows.repair_by_date.iloc[k], "repair_by_date")
+        else:
+            due = None
+        reasons += [REVIEW_RULE] * any(r.requires_review for r in triggered)
+        reasons += [REVIEW_NOT_EVALUABLE] * bool(unknown) + extra
+        reasons += [REVIEW_DUE_DATE] * (category == "imp_scheduled" and due is None)
+        reasons = list(dict.fromkeys(reasons))
+        upstream_flag = _flag(rows.upstream_needs_review.iloc[k], "upstream_needs_review")
+        for col, value in (
+            ("rule_set", rule_set), ("triggered_rules", _join([r.id for r in triggered])),
+            ("rules_not_evaluable", _join(unknown)), ("governing_category", category),
+            ("governing_rule", governing), ("requires_review", upstream_flag is not False or bool(reasons)),
+            ("review_reasons", _join(reasons)), ("discovery_date", discovered),
+            ("discovery_date_source", source), ("due_date", due),
+            ("action_note", IMMEDIATE_ACTION_NOTE if category == "immediate" else None),
+        ):
+            out[col].append(value)
+
+    table = rows.copy()
+    for col, values in out.items():
+        table[col] = pd.Series(values, dtype=bool if col == "requires_review" else object, index=table.index)
+    table = table[CLASSIFICATION_COLUMNS]
+    return ClassificationResult(table, _classification_summary(table, criteria, criteria_sha256, discovered,
+                                                               source, settings))
+
+
+def _count_ids(joined, order: list[str]) -> dict[str, int]:
+    """Occurrences of each id in the ``;``-joined cells, in ``order``, only ids that occur."""
+    hits = [x for cell in joined if isinstance(cell, str) for x in cell.split(REASON_SEP)]
+    return {i: hits.count(i) for i in order if i in hits}
+
+
+def _classification_summary(table: pd.DataFrame, criteria: RepairCriteria, criteria_sha256: str | None,
+                            discovered: date, source: str, settings: Settings) -> dict:
+    cfg = settings.classification
+    ids = [r.id for r in criteria.rules]
+    return {
+        "criteria_version": criteria.version,
+        "criteria_sha256": criteria_sha256,
+        "n_features": int(len(table)),
+        "counts_by_category": {c: int((table.governing_category == c).sum()) for c in CATEGORY_PRIORITY},
+        "counts_by_rule": _count_ids(table.triggered_rules, ids),
+        "n_requires_review": int(table.requires_review.sum()),
+        "n_not_evaluable_by_rule": _count_ids(table.rules_not_evaluable, [*ids, GOVERNING_REMAINING_LIFE]),
+        "discovery_date": discovered.isoformat(),
+        "discovery_date_source": source,
+        "discovery_warning": (DISCOVERY_WARNING.format(days=cfg.discovery_max_days)
+                              if source == DISCOVERY_LATEST else None),
+        "discovery_max_days": int(cfg.discovery_max_days),
+        "due_days": {k: int(v) for k, v in cfg.due_days.items()},
+    }
