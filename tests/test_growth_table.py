@@ -399,6 +399,12 @@ def test_excludes_dents_and_missing(settings):
     assert f.match_id.tolist() == ["K1"]
 
 
+def test_rejects_duplicate_segment_ids(settings):
+    dup = pd.DataFrame({"start_ft": [0.0, 1100.0], "end_ft": [1000.0, 2000.0], "segment_id": ["HCA-1", "HCA-1"]})
+    with pytest.raises(ValueError, match="repeats segment_id"):
+        _run(SEG_A_MATCHED, settings, segs=dup)
+
+
 def test_requires_match_table_columns(settings):
     with pytest.raises(ValueError, match="curr_depth_pct"):
         growth.compute_growth(_table([_row("K1", "new", 140.0, d_curr=20.0)]).drop(columns="curr_depth_pct"),

@@ -28,7 +28,7 @@ from ili.align_welds import DRAFT_LABEL, comparison_dir
 from ili.config import DEFAULT_SETTINGS, PROJECT_ROOT, GrowthMethod, Settings, ToolCfg, load_settings
 from ili.ingest import load_standardized
 from ili.match import MILS_PER_IN, delta_t_years, load_match_table
-from ili.reference import _require_columns, assign_segment, lookup, segment_table
+from ili.reference import _require_columns, assign_segment, check_segments, lookup, segment_table
 from ili.schema import FeatureType
 from ili.units import sigma_from_tolerance
 from ili.validation import score_growth, write_metrics
@@ -313,6 +313,7 @@ def compute_growth(match_table: pd.DataFrame, dt_yr: float, prev_year: int, curr
     if not dt_yr > 0:
         raise ValueError("dt_yr must be positive")
     g = settings.growth
+    check_segments(seg_table)  # segment_table checks too; a table built by hand must not pool segments
     rows = growth_rows(match_table)
     n = len(rows)
     pos = rows.curr_log_dist_ft.to_numpy(float)

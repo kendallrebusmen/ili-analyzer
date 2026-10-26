@@ -47,9 +47,10 @@ def lookup(table: pd.DataFrame, pos_ft, column: str, tol_ft: float, what: str = 
     return got
 
 
-def _check_segments(seg: pd.DataFrame) -> None:
+def check_segments(seg: pd.DataFrame) -> None:
     """ValueError for a repeated segment id or overlapping segments (sorted by start, a start before the
     previous end): either would pool or double-count features in the per-segment statistics."""
+    _require_columns(seg, SEGMENT_COLUMNS, "segments table")
     ids = seg.segment_id.astype(str)
     dup = ids[ids.duplicated()]
     if not dup.empty:
@@ -75,13 +76,13 @@ def segment_table(settings: Settings, segments: pd.DataFrame | None, line_start_
             raise ValueError(f"segment_definition {g.segment_definition!r} needs a segments table, none was given")
         _require_columns(segments, SEGMENT_COLUMNS, "segments table")
         seg = segments[list(SEGMENT_COLUMNS)].reset_index(drop=True)
-        _check_segments(seg)
+        check_segments(seg)
         return seg
     length = g.fixed_segment_length_mi * FT_PER_MI
     if not length > 0:
         raise ValueError("fixed_segment_length_mi must be positive")
     starts = np.arange(line_start_ft, line_end_ft, length)
-    ends = np.minimum(starts + length, line_end_ft)
+    ends = np.append(starts[1:], line_end_ft)[:len(starts)]  # each ends exactly where the next starts
     ids = [f"FIX-{i:03d}" for i in range(1, len(starts) + 1)]
     return pd.DataFrame({"start_ft": starts, "end_ft": ends, "segment_id": ids})
 
