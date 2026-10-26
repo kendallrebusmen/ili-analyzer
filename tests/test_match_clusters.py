@@ -188,3 +188,50 @@ def test_dent_beside_pits_does_not_join_group():
     curr = f.copy()
     out = match_clusters(_vendor(), curr, 5.0, S)
     assert len(out) == 1 and out[0][1] == [0, 2]
+
+
+# ---- vendor cluster reports absorb leftover pit groups ---------------------------------------
+
+def test_vendor_cluster_absorbs_pit_groups_the_interaction_rule_splits():
+    """Two pits 2.1 in apart (edge gap > axial_spacing_in) are separate groups, but both lie inside
+    the vendor report's +-2 in box: the report takes both, and the metrics use the merged envelope."""
+    prev = _vendor(length=4.0, width=3.0, depth=38.0)
+    curr = _frame("curr", [50 - 1.2 * IN, 50 + 1.2 * IN], clock=[100, 100], depth=[20.0, 40.0])
+    assert len(set(interaction_groups(curr, S))) == 2
+    out = match_clusters(prev, curr, 5.0, S)
+    assert len(out) == 1
+    p, c, m = out[0]
+    assert p == [0] and c == [0, 1]
+    assert m.depth_change_pct == pytest.approx(2.0)  # merged max depth 40, not the first group's 20
+    assert m.axial_diff_in == 0 and m.score == pytest.approx(0.0)
+
+
+def test_vendor_cluster_absorption_respects_axial_tolerance():
+    """The vendor box is +-2 in and a 0.3 in pit adds 0.15 in: box gap = offset - 2.15 in."""
+    prev = _vendor(length=4.0, width=3.0)
+    near = match_clusters(prev, _frame("curr", [50.0, 50 + 8.05 * IN]), 5.0, S)   # gap 5.9 in
+    assert len(near) == 1 and near[0][1] == [0, 1]
+    far = match_clusters(prev, _frame("curr", [50.0, 50 + 8.25 * IN]), 5.0, S)    # gap 6.1 in
+    assert len(far) == 1 and far[0][1] == [0]
+
+
+def test_leftover_pit_joins_the_lowest_score_vendor_cluster():
+    """Vendor reports at 50 ft and 50 ft + 10 in each match their own pit; the leftover pit at
+    +6 in is within tolerance of both (gaps 4.85 and 2.85 in) and joins the nearer, second one."""
+    prev = _frame("prev", [50.0, 50 + 10 * IN], clock=[100, 100], length=2.0, width=2.0, vendor=["A", "B"])
+    curr = _frame("curr", [50.0, 50 + 6 * IN, 50 + 10 * IN], clock=[100, 100, 100])
+    out = match_clusters(prev, curr, 5.0, S)
+    assert [(p, c) for p, c, _ in out] == [([0], [0]), ([1], [1, 2])]
+    assert out[1][2].axial_diff_in == 0
+
+
+def test_absorption_needs_the_vendor_report_on_the_opposite_side():
+    """A leftover curr pit joins only a match whose prev side holds a vendor report: with the report
+    on the curr side (same side as the leftover) the pit stays unmatched."""
+    curr = _frame("curr", [50.0, 50 + 0.6 * IN, 50 + 3 * IN], clock=[100, 100, 100])
+    same = match_clusters(_frame("prev", [50.0, 50 + 0.6 * IN], clock=[100, 100]),
+                          curr.assign(vendor_cluster_id=["V", None, None]), 5.0, S)
+    assert [(p, c) for p, c, _ in same] == [([0, 1], [0, 1])]
+    opposite = match_clusters(_frame("prev", [50.0, 50 + 0.6 * IN], clock=[100, 100], vendor=["V", None]),
+                              curr, 5.0, S)
+    assert [(p, c) for p, c, _ in opposite] == [([0, 1], [0, 1, 2])]

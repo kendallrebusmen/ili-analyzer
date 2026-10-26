@@ -7,7 +7,7 @@ from conftest import MAP_A, MAP_B
 from ili.align_welds import align_welds
 from ili.config import load_settings
 from ili.ingest import ingest_tally
-from ili.match import match_anomalies
+from ili.match import ANOMALY_TYPES, match_anomalies
 from ili.synth import SynthParams, generate, write_outputs
 from ili.validation import MIN_MATCH_PRECISION, MIN_MATCH_RECALL, score_matching
 
@@ -38,18 +38,15 @@ def small_run():
     return match_anomalies(r.prev_std, r.curr_std, wm, SETTINGS, pipe, repairs).match_table, r.ground_truth
 
 
-def _assert_cluster_reports_matched_as_clusters(table: pd.DataFrame, truth: pd.DataFrame) -> int:
-    """Every vendor cluster report (a feature id several true pits share, truth matched_cluster) sits
-    in a matched_cluster row. Returns how many reports were checked."""
+def _assert_cluster_features_matched_as_clusters(score: dict, truth: pd.DataFrame) -> int:
+    """Every truth matched_cluster anomaly feature id, in both runs (vendor cluster reports and the
+    individually reported pits opposite them), sits in a matched_cluster row. Returns how many."""
     n = 0
     for run in ("prev", "curr"):
-        reports = set(truth.loc[(truth[f"{run}_status"] == "reported_in_cluster")
-                                & (truth.truth_class == "matched_cluster"), f"{run}_feature_id"])
-        rows = table[f"{run}_feature_id"].fillna("").str.split(";")
-        kind = {fid: mt for ids, mt in zip(rows, table.match_type) for fid in ids if fid in reports}
-        assert set(kind) == reports
-        assert {f: k for f, k in kind.items() if k != "matched_cluster"} == {}
-        n += len(reports)
+        ids = truth.loc[(truth.truth_class == "matched_cluster") & truth.feature_type.isin(ANOMALY_TYPES),
+                        f"{run}_feature_id"].dropna().unique()
+        assert score["confusion"][run].get("matched_cluster", {}) == {"matched_cluster": len(ids)}
+        n += len(ids)
     return n
 
 
@@ -59,7 +56,7 @@ def test_default_dataset_meets_acceptance(default_line):
     assert score["precision"] >= 0.98, score["false_links"]
     assert score["recall"] >= 0.95, score["missed_links"]
     assert score["passes"] is True
-    assert _assert_cluster_reports_matched_as_clusters(table, truth) > 0
+    assert _assert_cluster_features_matched_as_clusters(score, truth) > 0
 
 
 @pytest.mark.parametrize("seed", range(1, 6))
@@ -72,7 +69,7 @@ def test_acceptance_across_seeds(seed):
     assert score["precision"] >= 0.98, score["false_links"]
     assert score["recall"] >= 0.95, score["missed_links"]
     assert score["passes"] is True
-    assert _assert_cluster_reports_matched_as_clusters(table, r.ground_truth) > 0
+    assert _assert_cluster_features_matched_as_clusters(score, r.ground_truth) > 0
 
 
 def test_targets_are_spec_values():

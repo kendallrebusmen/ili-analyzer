@@ -329,7 +329,8 @@ def _group_table(f: pd.DataFrame, settings: Settings):
     members = [order[label[order] == g].tolist() for g in range(label.max() + 1)] if len(f) else []
     env = pd.DataFrame([envelope(f.iloc[m]) for m in members])
     vendor = f.vendor_cluster_id.notna().to_numpy()
-    env["multi"] = [len(m) >= 2 or bool(vendor[m].any()) for m in members]
+    env["vendor"] = [bool(vendor[m].any()) for m in members]
+    env["multi"] = [len(m) >= 2 or v for m, v in zip(members, env["vendor"])]
     return env, members
 
 
@@ -342,20 +343,62 @@ def _box_gaps(p: pd.DataFrame, q: pd.DataFrame, od: np.ndarray) -> tuple[np.ndar
     return np.maximum(axial, 0.0), np.maximum(circ, 0.0) / (np.pi * od) * CLOCK_MINUTES
 
 
+def _envelope_pairs(p: pd.DataFrame, q: pd.DataFrame, dt_yr: float, settings: Settings):
+    """For aligned prev/curr envelope rows: whether each pair passes the box rule (compatible
+    surfaces, axial box gap <= ``axial_tol_in``, circumferential gap in minutes, with the current
+    OD else the previous, <= ``clock_tol_min``) and the ``_metrics`` of the gaps and max depths."""
+    mt = settings.matching
+    sp, sq = p.surface.to_numpy(str), q.surface.to_numpy(str)
+    od = np.where(np.isnan(_num(q.od_in)), _num(p.od_in), _num(q.od_in))
+    axial, circ = _box_gaps(p, q, od)
+    with np.errstate(invalid="ignore"):
+        ok = ((sp == sq) | (sp == "UNK") | (sq == "UNK")) & (axial <= mt.axial_tol_in) & ~(circ > mt.clock_tol_min)
+    return ok, _metrics(axial, circ, p.depth_pct, q.depth_pct, p.wt_nom_in, q.wt_nom_in, dt_yr, settings)
+
+
+def _absorb(pairs: list, pe: pd.DataFrame, ce: pd.DataFrame, dt_yr: float, settings: Settings) -> list:
+    """Extend matched group pairs with the groups left unassigned.
+
+    ``pairs`` holds (prev group, curr group) labels. A leftover group of one run joins the match
+    whose opposite group holds a vendor cluster report and passes the box rule against it, the
+    lowest-score match winning (ties: the earlier match). Returns [prev labels, curr labels] per match."""
+    out = [[[a], [b]] for a, b in pairs]
+    for side, own, opp in ((0, pe, ce), (1, ce, pe)):
+        used = {pair[side] for pair in pairs}
+        left = [g for g in range(len(own)) if g not in used]
+        hosts = [k for k, pair in enumerate(pairs) if opp.vendor.iat[pair[1 - side]]]
+        if not left or not hosts:
+            continue
+        li, ki = np.repeat(left, len(hosts)), np.tile(hosts, len(left))
+        oi = np.array([pairs[k][1 - side] for k in ki])
+        a, b = own.iloc[li].reset_index(drop=True), opp.iloc[oi].reset_index(drop=True)
+        ok, m = _envelope_pairs(a, b, dt_yr, settings) if side == 0 else _envelope_pairs(b, a, dt_yr, settings)
+        score = np.where(ok, m.score.to_numpy(float), np.inf).reshape(len(left), len(hosts))
+        for row, g in enumerate(left):
+            best = int(np.argmin(score[row]))  # first minimum: the earlier match on ties
+            if np.isfinite(score[row, best]):
+                out[hosts[best]][side].append(g)
+    return out
+
+
 def match_clusters(prev: pd.DataFrame, curr: pd.DataFrame, dt_yr: float, settings: Settings):
     """Many-to-one matches between interaction groups of the features left after the 1:1 pass.
 
-    Only metal_loss rows take part (others are ignored). Inputs are placed frames already filtered to unmatched features in matched rows, with ``od_in``.
-    Groups are formed per run; a group is multi with >= 2 members or a vendor cluster report. A
-    group pair is a candidate when one side is multi, the surfaces are equal or either UNK, and the
-    box gaps (axial in inches; circumferential converted to minutes with the current OD, else the
-    previous) are within ``axial_tol_in`` and ``clock_tol_min``. Scored by ``_metrics`` on the gaps
-    and the envelopes' max depths, then assigned one-to-one. Returns (prev rows, curr rows, metrics)
-    per match, rows being positional member indices in log order."""
-    mt = settings.matching
+    Only metal_loss rows take part (others are ignored). Inputs are placed frames already filtered
+    to unmatched features in matched rows, with ``od_in``. Groups are formed per run; a group is
+    multi with >= 2 members or a vendor cluster report. A group pair is a candidate when one side
+    is multi and it passes the box rule of ``_envelope_pairs`` (surfaces equal or either UNK; box
+    gaps within ``axial_tol_in`` and ``clock_tol_min``); candidates are scored by ``_metrics`` on
+    the gaps and the envelopes' max depths, then assigned one-to-one. A vendor report asserts that
+    one envelope holds its pits, which tool noise can scatter beyond the interaction rule, so each
+    group left unassigned then joins the match whose opposite group holds a vendor report and
+    passes the box rule against it (lowest score wins; ties go to the earlier match); a match that
+    absorbed groups has its metrics recomputed from the merged envelopes. Returns (prev rows, curr
+    rows, metrics) per match, rows being positional member indices in log order."""
     pk, ck = (np.flatnonzero((f.feature_type == "metal_loss").to_numpy()) for f in (prev, curr))
     if not len(pk) or not len(ck):
         return []
+    mt = settings.matching
     pe, pm = _group_table(prev.iloc[pk], settings)
     ce, cm = _group_table(curr.iloc[ck], settings)
     pm, cm = [pk[m].tolist() for m in pm], [ck[m].tolist() for m in cm]
@@ -368,17 +411,30 @@ def match_clusters(prev: pd.DataFrame, curr: pd.DataFrame, dt_yr: float, setting
     gi = np.repeat(np.arange(len(pe)), n)
     gj = ps[np.repeat(lo, n) + np.arange(n.sum()) - np.repeat(np.cumsum(n) - n, n)]
     p, q = pe.iloc[gi].reset_index(drop=True), ce.iloc[gj].reset_index(drop=True)
-    sp, sq = p.surface.to_numpy(str), q.surface.to_numpy(str)
-    od = np.where(np.isnan(_num(q.od_in)), _num(p.od_in), _num(q.od_in))
-    axial, circ = _box_gaps(p, q, od)
-    with np.errstate(invalid="ignore"):
-        keep = (p.multi.to_numpy() | q.multi.to_numpy()) & ((sp == sq) | (sp == "UNK") | (sq == "UNK"))
-        keep &= (axial <= mt.axial_tol_in) & ~(circ > mt.clock_tol_min)
-    m = _metrics(axial, circ, p.depth_pct, q.depth_pct, p.wt_nom_in, q.wt_nom_in, dt_yr, settings)
+    ok, m = _envelope_pairs(p, q, dt_yr, settings)
+    keep = (p.multi.to_numpy() | q.multi.to_numpy()) & ok
     cands = pd.concat([pd.DataFrame({"prev_i": gi, "curr_i": gj}), m], axis=1)[keep]
     chosen = assign_one_to_one(cands.reset_index(drop=True))
     cols = ["axial_diff_in", "clock_diff_min", "depth_change_pct", "implausible", "score"]
-    return [(pm[int(row.prev_i)], cm[int(row.curr_i)], row[cols]) for _, row in chosen.iterrows()]
+    pairs = [(int(a), int(b)) for a, b in zip(chosen.prev_i, chosen.curr_i)]
+    merged = _absorb(pairs, pe, ce, dt_yr, settings)
+    found = []
+    for (_, row), (gp, gc) in zip(chosen.iterrows(), merged):
+        if len(gp) == 1 and len(gc) == 1:
+            found.append((pm[gp[0]], cm[gc[0]], row[cols]))
+            continue
+        rows_p, rows_c = (_log_order(f, [i for g in gs for i in members[g]])
+                          for f, gs, members in ((prev, gp, pm), (curr, gc, cm)))
+        env_p = pd.DataFrame([envelope(prev.iloc[rows_p])])
+        env_c = pd.DataFrame([envelope(curr.iloc[rows_c])])
+        found.append((rows_p, rows_c, _envelope_pairs(env_p, env_c, dt_yr, settings)[1].iloc[0][cols]))
+    return found
+
+
+def _log_order(f: pd.DataFrame, rows: list) -> list:
+    """Positional rows sorted by log distance (ties by row), as ``_group_table`` orders members."""
+    pos = f.log_dist_ft.to_numpy(float)
+    return sorted(rows, key=lambda i: (pos[i], i))
 
 
 # --- Whole-run matching and the match table ---------------------------------------------------
