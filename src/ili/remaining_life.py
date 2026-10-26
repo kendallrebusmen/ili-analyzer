@@ -659,6 +659,34 @@ def write_remaining_life(result: RLResult, out_dir: Path) -> dict[str, Path]:
     return paths
 
 
+_RL_TEXT = ("match_id", "curr_feature_id", "segment_id", "method", "rl_governing", "next_assessment_source",
+            "review_reasons")
+_RL_FLAGS = ("could_affect_hca", "exceeds_80pct", "dig_required_by_remaining_life", "needs_review")
+_RL_DATES = ("repair_by_date", "next_assessment_date")
+
+
+def load_remaining_life_table(path: Path) -> pd.DataFrame:
+    """Read a ``remaining_life.csv`` back with its types (as ``growth.load_growth_table``): ids and labels
+    stay text (empty is None), flags are True/False/None, dates are ``datetime.date`` or None, the rest
+    float. ValueError for a flag that is not True, False or blank, or a date that is not ISO."""
+    header = pd.read_csv(path, nrows=0).columns
+    text = [c for c in (*_RL_TEXT, *_RL_DATES) if c in header]
+    flags = [c for c in _RL_FLAGS if c in header]
+    df = pd.read_csv(path, dtype={c: str for c in text + flags}, keep_default_na=False,
+                     na_values={c: [""] for c in header if c not in text + flags})
+    for c in text:
+        df[c] = df[c].astype(object).where(df[c] != "", None)
+    for c in flags:
+        bad = df[c][~df[c].isin(["True", "False", ""])]
+        if not bad.empty:
+            raise ValueError(f"{path}: column {c} has {bad.iloc[0]!r}; expected True, False or blank")
+        df[c] = df[c].map({"True": True, "False": False}).astype(object).where(df[c] != "", None)
+    for c in _RL_DATES:
+        if c in header:
+            df[c] = pd.Series([_as_date(v, f"{path}: {c}") for v in df[c]], dtype=object, index=df.index)
+    return df
+
+
 def _run_ids(growth_path: Path, curr_std: pd.DataFrame) -> tuple[str | None, str]:
     """(prev_run_id, curr_run_id): from ``growth_summary.json`` beside the growth table (M5 writes it there);
     without it (or without its ``curr_run_id``), the current standardized file's run id and no previous id,
