@@ -49,6 +49,15 @@ py -3.13 -m venv .venv
     --prev outputs\standardized\2021_vendorA.csv --curr outputs\standardized\2026_vendorB.csv `
     --repairs data\synthetic\reference\repairs_between_runs.csv `
     --truth data\synthetic\ground_truth_welds.csv
+
+# Match anomalies -> outputs/<prev>_vs_<curr>/match_table.csv, match_summary.json
+# (--truth scores links into outputs/validation_metrics.json under anomaly_matching)
+.\.venv\Scripts\python.exe -m ili.match `
+    --prev outputs\standardized\2021_vendorA.csv --curr outputs\standardized\2026_vendorB.csv `
+    --weld-map outputs\2021_vendorA_vs_2026_vendorB\weld_map.csv `
+    --pipe data\synthetic\reference\pipe_properties.csv `
+    --repairs data\synthetic\reference\repairs_between_runs.csv `
+    --truth data\synthetic\ground_truth.csv
 ```
 
 The run date is the third `--run` value. It can be left out when the vendor map says where the file states it (vendor B's title row). The run id is `<run year>_<run_label from the vendor map>`.

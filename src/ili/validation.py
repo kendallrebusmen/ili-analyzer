@@ -13,6 +13,8 @@ from pathlib import Path
 
 import pandas as pd
 
+from ili.schema import ANOMALY_TYPES
+
 MAX_LISTED = 20
 
 
@@ -114,6 +116,133 @@ def score_alignment(weld_map: pd.DataFrame, prev_std: pd.DataFrame, curr_std: pd
         "n_missed_weld_groups": len(missed),
         "missed_welds_handled": all(g["correct"] for g in missed),
         "replaced_section_flagged": bool(replaced) and all(g["correct"] for g in replaced),
+    }
+
+
+# Spec section 9, M4 acceptance: anomaly matching precision and recall against ground truth.
+MIN_MATCH_PRECISION = 0.98
+MIN_MATCH_RECALL = 0.95
+_TRUTH_LINK_CLASSES = ("matched_1to1", "matched_cluster")
+_MATCHED_TYPES = ("matched_1to1", "matched_cluster")
+_REPORTED_STATUSES = ("reported", "reported_in_cluster")
+# Ids each side of a match-table row may hold: (min, max) per run; None is unbounded.
+_ROW_SHAPES = {
+    "matched_1to1": ((1, 1), (1, 1)),
+    "matched_cluster": ((1, None), (1, None)),
+    "new": ((0, 0), (1, None)),
+    "missing": ((1, None), (0, 0)),
+}
+
+
+def _ids(value) -> list[str]:
+    """The feature ids of one match-table cell (``;``-joined for clusters, None when absent)."""
+    if value is None or (not isinstance(value, str) and pd.isna(value)):
+        return []
+    return [i for i in str(value).split(";") if i]
+
+
+def _truth_classes(truth: pd.DataFrame, run: str) -> dict[str, str]:
+    """{feature id: truth_class} for one run; one vendor feature id must have one class."""
+    classes: dict[str, str] = {}
+    for fid, cls in zip(truth[f"{run}_feature_id"], truth.truth_class):
+        if pd.isna(fid):
+            continue
+        fid = str(fid)
+        if classes.setdefault(fid, cls) != cls:
+            raise ValueError(f"{run} feature {fid} has conflicting truth classes {classes[fid]!r} and {cls!r}")
+    return classes
+
+
+def _fits(n: int, bounds: tuple) -> bool:
+    lo, hi = bounds
+    return n >= lo and (hi is None or n <= hi)
+
+
+def _link_list(links) -> list[dict]:
+    return [{"prev_feature_id": p, "curr_feature_id": c} for p, c in sorted(links)[:MAX_LISTED]]
+
+
+def score_matching(match_table: pd.DataFrame, truth: pd.DataFrame) -> dict:
+    """Link-level precision and recall of a match table against ``ground_truth.csv``.
+
+    Truth links are the distinct (prev, curr) feature-id pairs of anomaly truth rows classed
+    matched_1to1 or matched_cluster with both ids reported; a vendor cluster report yields one
+    link per true pit it holds. Predicted links are every prev id x every curr id of each
+    matched row. ``confusion`` counts, per run, each reported feature id of the table by its
+    truth class and its row's match type. A table id absent from the truth (truth from another
+    dataset), conflicting truth classes for one id, or missing columns are a ``ValueError``.
+
+    The table must also account for every reported anomaly exactly once. Each run's reported ids
+    are its anomaly truth rows with ``{run}_status`` reported or reported_in_cluster, and:
+    ``n_unreported`` counts reported ids absent from the table, ``n_duplicated`` ids in more than
+    one row, ``n_wrong_side`` rows whose ids do not fit their match type (matched_1to1: one id each
+    side; matched_cluster: both sides non-empty; new: current run only; missing: previous run only;
+    any other type), and ``n_duplicate_links`` links produced by more than one row. ``passes``
+    needs the precision and recall targets, all four counts 0, and at least one truth link.
+    """
+    for df, cols, what in ((truth, ("feature_type", "prev_feature_id", "curr_feature_id", "truth_class",
+                                    "prev_status", "curr_status"),
+                            "truth (expected ground_truth.csv)"),
+                           (match_table, ("match_type", "prev_feature_id", "curr_feature_id"), "match table")):
+        missing = sorted(set(cols) - set(df.columns))
+        if missing:
+            raise ValueError(f"{what} is missing columns {missing}")
+
+    classes = {run: _truth_classes(truth, run) for run in ("prev", "curr")}
+    linked = truth[truth.truth_class.isin(_TRUTH_LINK_CLASSES) & truth.feature_type.isin(ANOMALY_TYPES)
+                   & truth.prev_feature_id.notna() & truth.curr_feature_id.notna()]
+    true_links = {(str(p), str(c)) for p, c in zip(linked.prev_feature_id, linked.curr_feature_id)}
+
+    anomalies = truth[truth.feature_type.isin(ANOMALY_TYPES)]
+    reported = {run: {str(i) for i, st in zip(anomalies[f"{run}_feature_id"], anomalies[f"{run}_status"])
+                      if pd.notna(i) and st in _REPORTED_STATUSES} for run in ("prev", "curr")}
+
+    pred_links: set[tuple[str, str]] = set()
+    link_rows: dict[tuple[str, str], int] = {}
+    seen: dict[str, dict[str, int]] = {"prev": {}, "curr": {}}
+    n_wrong_side = 0
+    confusion: dict[str, dict[str, dict[str, int]]] = {"prev": {}, "curr": {}}
+    for k, (mtype, prev_cell, curr_cell) in enumerate(
+            zip(match_table.match_type, match_table.prev_feature_id, match_table.curr_feature_id)):
+        ids = {"prev": _ids(prev_cell), "curr": _ids(curr_cell)}
+        for run, fids in ids.items():
+            for fid in fids:
+                if fid not in classes[run]:
+                    raise ValueError(f"match table row {k} names {run} feature {fid!r}, which is not in the "
+                                     f"truth; is it from another dataset?")
+                cell = confusion[run].setdefault(classes[run][fid], {})
+                cell[mtype] = cell.get(mtype, 0) + 1
+                seen[run][fid] = seen[run].get(fid, 0) + 1
+        shape = _ROW_SHAPES.get(mtype)
+        if shape is None or not (_fits(len(ids["prev"]), shape[0]) and _fits(len(ids["curr"]), shape[1])):
+            n_wrong_side += 1
+        if mtype in _MATCHED_TYPES:
+            row_links = {(p, c) for p in ids["prev"] for c in ids["curr"]}
+            pred_links |= row_links
+            for link in row_links:
+                link_rows[link] = link_rows.get(link, 0) + 1
+
+    counts = {
+        "n_unreported": sum(len(reported[run] - set(seen[run])) for run in ("prev", "curr")),
+        "n_duplicated": sum(n > 1 for run in ("prev", "curr") for n in seen[run].values()),
+        "n_wrong_side": n_wrong_side,
+        "n_duplicate_links": sum(n > 1 for n in link_rows.values()),
+    }
+    correct = pred_links & true_links
+    precision = len(correct) / len(pred_links) if pred_links else 1.0
+    recall = len(correct) / len(true_links) if true_links else 1.0
+    return {
+        "precision": precision,
+        "recall": recall,
+        "n_pred_links": len(pred_links),
+        "n_true_links": len(true_links),
+        "n_correct_links": len(correct),
+        "false_links": _link_list(pred_links - true_links),
+        "missed_links": _link_list(true_links - pred_links),
+        **counts,
+        "confusion": confusion,
+        "passes": bool(precision >= MIN_MATCH_PRECISION and recall >= MIN_MATCH_RECALL
+                       and not any(counts.values()) and true_links),
     }
 
 
