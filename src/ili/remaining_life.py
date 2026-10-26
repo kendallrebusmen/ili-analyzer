@@ -31,18 +31,24 @@ DRAFT – for review by qualified personnel.
 
 from __future__ import annotations
 
+import argparse
 import calendar
+import json
 import math
+import sys
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
+from pathlib import Path
 from typing import Callable
 
 import numpy as np
 import pandas as pd
 from scipy.optimize import brentq
 
-from ili.config import Settings
-from ili.growth import REASON_SEP, REVIEW_REASONS
+from ili.align_welds import DRAFT_LABEL, comparison_dir
+from ili.config import DEFAULT_SETTINGS, PROJECT_ROOT, Settings, load_settings
+from ili.growth import REASON_SEP, REVIEW_REASONS, load_growth_table
+from ili.ingest import load_standardized
 from ili.match import DAYS_PER_YEAR, MILS_PER_IN
 from ili.reference import _require_columns, assign_segment, check_segments, lookup
 from ili.strength import (WALL_LOSS_LIMIT, assessed_depth_in, assessed_length_in, burst_pressure,
@@ -526,3 +532,91 @@ def compute_remaining_life(growth: pd.DataFrame, curr_run_date, pipe: pd.DataFra
     })[RL_FEATURE_COLUMNS]
     intervals = reinspection_intervals(f, segments, settings)
     return RLResult(f, intervals, _summary(f, intervals, run_date, settings, prev_run_id, curr_run_id))
+
+
+# ---------------------------------------------------------------------------
+# Output and CLI
+# ---------------------------------------------------------------------------
+
+OUTPUT_FILES = ("remaining_life.csv", "reinspection_intervals.csv", "remaining_life_summary.json")
+
+
+def write_remaining_life(result: RLResult, out_dir: Path) -> dict[str, Path]:
+    """Write the three outputs into ``comparison_dir`` (created); the summary JSON carries the DRAFT label."""
+    s = result.summary
+    folder = comparison_dir(out_dir, s["prev_run_id"], s["curr_run_id"])
+    folder.mkdir(parents=True, exist_ok=True)
+    paths = {name: folder / name for name in OUTPUT_FILES}
+    result.features.to_csv(paths["remaining_life.csv"], index=False, lineterminator="\n")
+    result.intervals.to_csv(paths["reinspection_intervals.csv"], index=False, lineterminator="\n")
+    paths["remaining_life_summary.json"].write_text(
+        json.dumps({"label": DRAFT_LABEL, **s}, indent=2, allow_nan=False), encoding="utf-8")
+    return paths
+
+
+def _run_ids(growth_path: Path, curr_std: pd.DataFrame) -> tuple[str | None, str]:
+    """(prev_run_id, curr_run_id): from ``growth_summary.json`` beside the growth table (M5 writes it there);
+    without it, the current standardized file's run id and no previous id."""
+    summary = Path(growth_path).parent / "growth_summary.json"
+    if summary.exists():
+        data = json.loads(summary.read_text(encoding="utf-8"))
+        prev, curr = data.get("prev_run_id"), data.get("curr_run_id")
+        if curr is not None:
+            return (None if prev is None else str(prev)), str(curr)
+    return None, str(curr_std.run_id.iloc[0])
+
+
+def _parser() -> argparse.ArgumentParser:
+    ap = argparse.ArgumentParser(prog="python -m ili.remaining_life",
+                                 description="Remaining strength and remaining life. " + DRAFT_LABEL)
+    ap.add_argument("--curr", type=Path, required=True, help="standardized CSV of the current run (run date)")
+    ap.add_argument("--growth", type=Path, required=True, help="growth.csv from ili.growth")
+    ap.add_argument("--pipe", type=Path, required=True, help="pipe_properties.csv (od_in, smys_psi)")
+    ap.add_argument("--mop", type=Path, required=True, help="mop_profile.csv")
+    ap.add_argument("--segments", type=Path, required=True,
+                    help="hca_segments.csv (start_ft, end_ft, segment_id, could_affect_hca)")
+    ap.add_argument("--next-inspection", type=Path, required=True, help="next_inspection.csv")
+    ap.add_argument("--settings", type=Path, default=DEFAULT_SETTINGS, help="settings YAML")
+    ap.add_argument("--out", type=Path, default=PROJECT_ROOT / "outputs", help="output directory")
+    return ap
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = _parser().parse_args(argv)
+    try:
+        # every input is read before anything is written, so a bad input leaves no partial outputs
+        settings = load_settings(args.settings)
+        curr = load_standardized(args.curr)
+        growth = load_growth_table(args.growth)
+        pipe, mop = pd.read_csv(args.pipe), pd.read_csv(args.mop)
+        segments = pd.read_csv(args.segments, dtype={"segment_id": str})
+        next_inspection = pd.read_csv(args.next_inspection, dtype={"segment_id": str})
+        prev_id, curr_id = _run_ids(args.growth, curr)
+        run_dates = curr.run_date.dropna()
+        if run_dates.empty:
+            raise ValueError(f"{args.curr}: the current run has no run date")
+        result = compute_remaining_life(growth, run_dates.iloc[0], pipe, mop, segments, next_inspection, settings,
+                                        prev_run_id=prev_id, curr_run_id=curr_id)
+        paths = write_remaining_life(result, args.out)
+    except (ValueError, OSError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    s = result.summary
+    print(DRAFT_LABEL)
+    print(f"{s['prev_run_id']} vs {s['curr_run_id']}: {s['n_features']} metal-loss features, "
+          f"{s['method']} strength, RL factor {s['rl_factor']}, horizon {s['horizon_yr']:g} years")
+    print("governing criterion: " + ", ".join(f"{k} {v}" for k, v in s["counts_by_rl_governing"].items())
+          + f", not evaluated {s['n_rl_not_evaluated']}")
+    min_rl = s["min_rl_yr"]
+    print(f"exceeds 80%: {s['n_exceeds_80pct']}; dig required: {s['n_dig_required']}; "
+          f"min RL: " + ("n/a" if min_rl is None else f"{min_rl:.2f} years"))
+    reasons = ", ".join(f"{k} {v}" for k, v in s["counts_by_review_reason"].items())
+    print(f"needs review: {s['n_needs_review']} ({reasons})")
+    print("reinspection intervals:")
+    print(result.intervals.to_string(index=False, float_format=lambda x: f"{x:.2f}"))
+    print(f"wrote {paths['remaining_life.csv'].parent}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
