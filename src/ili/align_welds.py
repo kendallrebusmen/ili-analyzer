@@ -491,6 +491,20 @@ def write_alignment(result: AlignmentResult, out_dir: Path) -> dict[str, Path]:
     return paths
 
 
+def load_weld_map(path: Path) -> pd.DataFrame:
+    """Read a ``weld_map.csv`` back with ids as text (``"1"``, never ``1.0``; blank is None)
+    and the flags as bool."""
+    id_cols = ["prev_gw_id", "prev_gw_id_2", "curr_gw_id", "curr_gw_id_2"]
+    wm = pd.read_csv(path, dtype={c: str for c in id_cols + ["match_type", "confidence"]},
+                     keep_default_na=False, na_values={c: [""] for c in WELD_MAP_COLUMNS if c not in id_cols
+                                                       and c not in ("match_type", "confidence")})
+    for c in id_cols:
+        wm[c] = wm[c].astype(object).where(wm[c] != "", None)
+    for c in ("in_repair", "is_anchor"):
+        wm[c] = wm[c].astype(str).str.lower().eq("true")
+    return wm
+
+
 def _parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(prog="python -m ili.align_welds",
                                  description="Align girth welds between two ILI runs. " + DRAFT_LABEL)
