@@ -15,8 +15,9 @@ Compares two in-line inspection (ILI) runs on the same 49 CFR Part 195 hazardous
 | Milestone | State |
 |---|---|
 | M1 Skeleton, config, schema, synthetic generator | done |
-| M2 Ingestion and vendor maps | done (awaiting review) |
-| M3–M10 | not started |
+| M2 Ingestion and vendor maps | done |
+| M3 Girth weld alignment | done (awaiting review) |
+| M4–M10 | not started |
 
 ## Setup
 
@@ -39,6 +40,15 @@ py -3.13 -m venv .venv
 .\.venv\Scripts\python.exe -m ili.ingest `
     --run data\synthetic\tally_prev_vendor_a.csv config\vendor_maps\synthetic_vendor_a.yaml 2021-06-15 `
     --run data\synthetic\tally_curr_vendor_b.xlsx config\vendor_maps\synthetic_vendor_b.yaml
+```
+
+```powershell
+# Align girth welds -> outputs/<prev>_vs_<curr>/weld_map.csv, changed_sections.csv, alignment_summary.json
+# (--truth scores against synthetic ground truth into outputs/validation_metrics.json)
+.\.venv\Scripts\python.exe -m ili.align_welds `
+    --prev outputs\standardized\2021_vendorA.csv --curr outputs\standardized\2026_vendorB.csv `
+    --repairs data\synthetic\reference\repairs_between_runs.csv `
+    --truth data\synthetic\ground_truth_welds.csv
 ```
 
 The run date is the third `--run` value. It can be left out when the vendor map says where the file states it (vendor B's title row). The run id is `<run year>_<run_label from the vendor map>`.

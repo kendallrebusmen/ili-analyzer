@@ -21,6 +21,15 @@ def test_shipped_settings_load():
     assert s.classification.girth_weld_proximity_in is None
 
 
+def test_alignment_extra_keys():
+    a = load_settings().alignment
+    assert a.missed_weld_penalty == 1.0
+    assert a.gap_penalty_repair == 0.5
+    assert a.anchor_tol_ft == 100
+    assert a.band_joints == 30
+    assert (a.confidence_bands.high, a.confidence_bands.medium) == (1.0, 2.0)
+
+
 def _write_settings(tmp_path, mutate):
     raw = yaml.safe_load(DEFAULT_SETTINGS.read_text(encoding="utf-8"))
     mutate(raw)
