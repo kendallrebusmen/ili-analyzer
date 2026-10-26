@@ -213,6 +213,46 @@ def test_brentq_failure_falls_back_to_interval_start(monkeypatch):
     assert times["tau_80"] < 20.02
 
 
+# --- exact-zero plateaus: the first time the margin reaches 0, not a later point on the plateau -----------
+
+
+def test_plateau_after_original_jump_not_late():
+    # Original B31G, no depth growth: after the z = 20 jump (tau 1.013) S_F is the constant long form.
+    # With MOP equal to that P_safe the margin is exactly 0 from 1.013 on; brentq used to return the
+    # grid END 1.05 (stepped back by 1e-6), later than the true crossing.
+    s = _settings("original_b31g")
+    L0 = math.sqrt(20 * D * T) - 1.013  # gL 1 in/yr -> z = 20 at tau = 1.013
+    _, _, _, s_long = rl_mod.failure_stress("original_b31g", D, T, 0.125, 100.0, SMYS)
+    mop = float(rl_mod.safe_pressure(rl_mod.burst_pressure(s_long, T, D), s))
+    m = criterion_margins(np.array([1.0, 1.05, 2.0]), 0.125, L0, 0.0, 1.0, D, T, SMYS, mop, s)["tau_safe"]
+    assert m[0] > 0 and m[1] == 0 and m[2] == 0  # the plateau the fix is about
+    times = _ttc(d0=0.125, L0=L0, g=0.0, gL=1.0, mop=mop, settings=s)
+    assert 1.013 - 1e-5 <= times["tau_safe"] <= 1.013
+    assert criterion_margins(times["tau_safe"], 0.125, L0, 0.0, 1.0, D, T, SMYS, mop, s)["tau_safe"] > 0
+    assert remaining_life(times, s) == (times["tau_safe"], "tau_safe")
+
+
+def test_plateau_at_through_wall_not_late():
+    # Modified B31G, gL 0: once depth reaches the wall d/t is clipped at 1 and P_F is constant. With MOP
+    # equal to that P_F the burst margin is exactly 0 from tau = 0.15 / g = 1.5195 yr on.
+    s = _settings()
+    L0, d0, g = 2.0, 0.10, 0.10 / 1.013
+    _, _, _, s_wall = rl_mod.failure_stress("modified_b31g", D, T, T, L0, SMYS)
+    mop = float(rl_mod.burst_pressure(s_wall, T, D))
+    true = (T - d0) / g
+    times = _ttc(d0=d0, L0=L0, g=g, gL=0.0, mop=mop, settings=s)
+    assert true - 1e-5 <= times["tau_burst"] <= true
+
+
+def test_bisect_met_never_late_and_stops_on_nan():
+    def step(tau):  # met (exactly 0) from 0.3 on
+        return 1.0 if tau < 0.3 else 0.0
+
+    x = rl_mod._bisect_met(step, 0.0, 1.0)
+    assert 0.3 - rl_mod.BRENTQ_XTOL_YR <= x < 0.3
+    assert rl_mod._bisect_met(lambda tau: math.nan, 0.0, 1.0) == 0.0
+
+
 # --- a criterion met today is met regardless of missing growth or other inputs --------------------------
 
 

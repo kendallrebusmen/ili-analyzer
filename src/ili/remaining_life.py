@@ -128,6 +128,11 @@ def _first_crossing(margin: Callable[[float], float], grid: np.ndarray, m_grid: 
       the estimate x and the other bracket end are less than xtol + rtol |x| apart with τ* between
       them. If m(x) <= 0, x is at or after τ*, so it is stepped back by that width (not below a):
       the result is then before τ* by at most ~1e-6 yr. If m(x) > 0, x is already before τ*.
+    - A margin of exactly 0 can hold on a whole stretch (a plateau: P_F is constant once d/t is
+      clipped at 1, or after the Original B31G z = 20 jump with no depth growth). There ``brentq``
+      may stop anywhere on the plateau (it returns b at once when m(b) == 0), far after τ*. So when
+      the END margin m(b) is exactly 0, or ``brentq`` returns a point whose margin is exactly 0,
+      ``_bisect_met`` is used instead: it is never later than τ*.
     - If ``brentq`` raises or returns something unusable (cannot happen with m(a) > 0 >= m(b),
       but guarded), fall back to the interval START a. a is not met yet, so it is up to one grid
       step EARLY - the conservative side. The END b is the first grid point at which the
@@ -140,6 +145,8 @@ def _first_crossing(margin: Callable[[float], float], grid: np.ndarray, m_grid: 
         return math.inf
     i = int(hits[0])
     a, b = float(grid[i - 1]), float(grid[i])
+    if m_grid[i] == 0:
+        return _bisect_met(margin, a, b)
     try:
         x = float(brentq(margin, a, b, xtol=BRENTQ_XTOL_YR, rtol=BRENTQ_RTOL))
         m_x = float(margin(x))
@@ -147,9 +154,33 @@ def _first_crossing(margin: Callable[[float], float], grid: np.ndarray, m_grid: 
         return a
     if not (math.isfinite(x) and math.isfinite(m_x) and a <= x <= b):
         return a
-    if m_x <= 0:
+    if m_x == 0:
+        return _bisect_met(margin, a, b)
+    if m_x < 0:
         x = max(a, x - (BRENTQ_XTOL_YR + BRENTQ_RTOL * abs(x)))
     return x
+
+
+def _bisect_met(margin: Callable[[float], float], a: float, b: float) -> float:
+    """Bisection on the predicate margin <= 0 over [a, b] with m(a) > 0 >= m(b), down to ``BRENTQ_XTOL_YR``.
+
+    Returns the lower end lo, which always has m(lo) > 0: with a non-increasing margin lo is before the
+    first time the criterion is met, so the result is never late (and early by at most the tolerance).
+    A non-finite midpoint margin stops the search at the current lo (still not late).
+    """
+    lo, hi = a, b
+    while hi - lo > BRENTQ_XTOL_YR:
+        mid = 0.5 * (lo + hi)
+        if not lo < mid < hi:
+            break
+        m_mid = float(margin(mid))
+        if m_mid <= 0:
+            hi = mid
+        elif m_mid > 0:
+            lo = mid
+        else:  # NaN
+            break
+    return lo
 
 
 def time_to_criteria(d0, L0, g, gL, D, t, smys, mop, settings: Settings) -> dict[str, float]:
