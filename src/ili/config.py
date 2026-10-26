@@ -105,7 +105,8 @@ class NextAssessmentYears(_Strict):
 
 
 class RemainingLifeCfg(_Strict):
-    horizon_yr: float
+    horizon_yr: float = Field(gt=0)
+    time_step_yr: float = Field(gt=0)  # crossing-search grid step (numerical setting)
     rl_factor: float
     default_next_assessment_yr: NextAssessmentYears
     hca_max_interval_months: float

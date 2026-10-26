@@ -57,6 +57,7 @@ strength:
 
 remaining_life:
   horizon_yr: 30
+  time_step_yr: 0.05                # fallback grid step for the crossing search, years; numerical, not an engineering value
   rl_factor: 0.5                    # PLACEHOLDER
   default_next_assessment_yr: {hca: 5, non_hca: 10}
   hca_max_interval_months: 68
