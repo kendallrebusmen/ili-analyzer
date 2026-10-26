@@ -173,27 +173,77 @@ def _near_shared_weld(p: pd.DataFrame, q: pd.DataFrame, pi, qi, limit_ft: float)
     return (dp <= limit_ft) & (dq <= limit_ft)
 
 
-def candidates(prev: pd.DataFrame, curr: pd.DataFrame, dt_yr: float, settings: Settings) -> pd.DataFrame:
+def _window(sorted_pos: np.ndarray, x: np.ndarray, reach: float) -> tuple[np.ndarray, np.ndarray]:
+    """All (k, j) with sorted_pos[j] within ``reach`` of x[k]: positional pairs, no dense matrix."""
+    lo = np.searchsorted(sorted_pos, x - reach, side="left")
+    hi = np.searchsorted(sorted_pos, x + reach, side="right")
+    n = hi - lo
+    return np.repeat(np.arange(len(x)), n), np.repeat(lo, n) + np.arange(n.sum()) - np.repeat(np.cumsum(n) - n, n)
+
+
+def _near_reports(f: pd.DataFrame, reports: pd.DataFrame, f_is_curr: bool, settings: Settings) -> np.ndarray:
+    """Per row of ``f``: a metal-loss feature in a matched row whose box interacts with the box of a
+    vendor cluster report of the other run (``reports``), on the previous-run axis."""
+    rule = settings.matching.interaction_rule
+    out = np.zeros(len(f), bool)
+    ml = (f.feature_type == "metal_loss").to_numpy() & f.in_matched_row.to_numpy(bool)
+    is_rep = ((reports.feature_type == "metal_loss").to_numpy() & reports.in_matched_row.to_numpy(bool)
+              & reports.vendor_cluster_id.notna().to_numpy())
+    fi, ri = np.flatnonzero(ml), np.flatnonzero(is_rep)
+    if not len(fi) or not len(ri):
+        return out
+    length_f, length_r = (np.nan_to_num(_num(d.length_in)) for d in (f, reports))
+    width_f, width_r = (np.nan_to_num(_num(d.width_in)) for d in (f, reports))
+    pos_f = _num(f.pos_prev_ft)[fi]
+    order = np.argsort(pos_f, kind="stable")
+    reach = (rule.axial_spacing_in + (length_f[fi].max() + length_r[ri].max()) / 2) * FT_PER_IN * (1 + 1e-9)
+    k, j = _window(pos_f[order], _num(reports.pos_prev_ft)[ri], reach)
+    r, i = ri[k], fi[order[j]]
+    axial_gap = (np.abs(_num(reports.pos_prev_ft)[r] - _num(f.pos_prev_ft)[i]) / FT_PER_IN
+                 - (length_r[r] + length_f[i]) / 2)
+    od_f, od_r = _num(f.od_in)[i], _num(reports.od_in)[r]
+    od_c, od_p = (od_f, od_r) if f_is_curr else (od_r, od_f)
+    od = np.where(np.isnan(od_c), od_p, od_c)  # the current-run OD, else the previous
+    circ_gap = (_arc_in(clock_diff_min(_num(reports.clock_min)[r], _num(f.clock_min)[i]), od)
+                - (width_r[r] + width_f[i]) / 2)
+    with np.errstate(invalid="ignore"):  # a missing clock or OD leaves the circumferential test passing
+        ok = ((_surface(reports)[r] == _surface(f)[i]) & (axial_gap <= rule.axial_spacing_in)
+              & ~(circ_gap > rule.circ_spacing_in))
+    out[i[ok]] = True
+    return out
+
+
+def near_vendor_reports(prev: pd.DataFrame, curr: pd.DataFrame, settings: Settings) -> tuple[np.ndarray, np.ndarray]:
+    """Boolean masks (prev, curr) of features to withhold from the 1:1 pass.
+
+    A metal-loss feature in a matched row is withheld when its box interacts with the box of a vendor
+    cluster report of the other run: the interaction rule (same surface, UNK only with UNK; axial
+    edge gap within ``axial_spacing_in``; circumferential edge gap, through the current-run OD,
+    within ``circ_spacing_in``; a missing clock or OD passing), compared on the previous-run axis.
+    The report claims such pits, so they go to the cluster pass with it rather than being taken
+    one-to-one by a nearby individual feature."""
+    return _near_reports(prev, curr, False, settings), _near_reports(curr, prev, True, settings)
+
+
+def candidates(prev: pd.DataFrame, curr: pd.DataFrame, dt_yr: float, settings: Settings,
+               withheld: tuple[np.ndarray, np.ndarray] | None = None) -> pd.DataFrame:
     """Candidate pairs (positional ``prev_i``, ``curr_i``) with their metrics.
 
     Both features sit in matched rows, within the axial tolerance on the previous-run axis, with
     equal types, compatible surfaces (equal or either UNK), clocks within tolerance (or either
-    missing), neither a vendor cluster report, and either the same row or adjacent rows with both
-    features near the shared weld. Curr features are sorted by position and each prev feature
-    searches a window, so no dense matrix is built."""
+    missing), neither a vendor cluster report nor ``withheld`` (prev mask, curr mask), and either
+    the same row or adjacent rows with both features near the shared weld. Curr features are
+    sorted by position and each prev feature searches a window, so no dense matrix is built."""
     mt = settings.matching
-    pi_ok = np.flatnonzero(prev.in_matched_row.to_numpy(bool) & prev.vendor_cluster_id.isna().to_numpy())
-    ci_ok = np.flatnonzero(curr.in_matched_row.to_numpy(bool) & curr.vendor_cluster_id.isna().to_numpy())
+    skip_p, skip_c = withheld if withheld is not None else (np.zeros(len(prev), bool), np.zeros(len(curr), bool))
+    pi_ok = np.flatnonzero(prev.in_matched_row.to_numpy(bool) & prev.vendor_cluster_id.isna().to_numpy() & ~skip_p)
+    ci_ok = np.flatnonzero(curr.in_matched_row.to_numpy(bool) & curr.vendor_cluster_id.isna().to_numpy() & ~skip_c)
     pos = curr.pos_prev_ft.to_numpy(float)[ci_ok]
     order = np.argsort(pos, kind="stable")
     ci_sorted, pos_sorted = ci_ok[order], pos[order]
     reach = mt.axial_tol_in * FT_PER_IN * (1 + 1e-9)  # slack only widens the window; the exact test follows
-    x = prev.pos_prev_ft.to_numpy(float)[pi_ok]
-    lo = np.searchsorted(pos_sorted, x - reach, side="left")
-    hi = np.searchsorted(pos_sorted, x + reach, side="right")
-    n = hi - lo
-    pi = np.repeat(pi_ok, n)
-    ci = ci_sorted[np.repeat(lo, n) + np.arange(n.sum()) - np.repeat(np.cumsum(n) - n, n)]
+    k, j = _window(pos_sorted, prev.pos_prev_ft.to_numpy(float)[pi_ok], reach)
+    pi, ci = pi_ok[k], ci_sorted[j]
 
     def surface(df):
         return df.surface.fillna("UNK").astype(str).to_numpy()
@@ -697,7 +747,7 @@ def match_anomalies(prev_std, curr_std, weld_map, settings: Settings, pipe, repa
     prev = _with_od(place(prev_std, weld_map, "prev", pmap), pipe, tol)
     curr = _with_od(place(curr_std, weld_map, "curr", pmap), pipe, tol)
     dt = delta_t_years(prev_std, curr_std)
-    chosen = assign_one_to_one(candidates(prev, curr, dt, settings))
+    chosen = assign_one_to_one(candidates(prev, curr, dt, settings, near_vendor_reports(prev, curr, settings)))
     used_p, used_c = chosen.prev_i.to_numpy(int), chosen.curr_i.to_numpy(int)
     parts = [_part("matched_1to1", _feature_side(prev.iloc[used_p]), _feature_side(curr.iloc[used_c]), chosen[METRIC_COLS])]
     left_p, left_c = _unused(len(prev), used_p), _unused(len(curr), used_c)

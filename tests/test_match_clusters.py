@@ -3,7 +3,7 @@ import pandas as pd
 import pytest
 
 from ili.config import load_settings
-from ili.match import envelope, interaction_groups, match_clusters
+from ili.match import candidates, envelope, interaction_groups, match_clusters, near_vendor_reports
 from tests.test_match_pairs import _WM1, _placed
 
 OD = 12.75
@@ -283,3 +283,42 @@ def test_absorbed_far_pit_is_scored_by_its_own_gap():
     circ_min = (40 * np.pi * OD / 720 - 0.75) * MIN_PER_IN
     assert m.axial_diff_in == pytest.approx(0.45 * 12 - 1.25) and m.clock_diff_min == pytest.approx(circ_min)
     assert m.score == pytest.approx(_gap_score(0.45 * 12 - 1.25, circ_min)) and not bool(m.implausible)
+
+
+# ---- pits near an opposite-run vendor report are withheld from the 1:1 pass -------------------
+
+def test_withhold_pits_interacting_with_opposite_vendor_report():
+    """Prev vendor box: 4 in long, 2 in wide at 50 ft / clock 100. Curr 0.3 in pits: axial edge gap
+    = offset - 2.15 in, circ edge gap = arc - 1.15 in; withheld when both are within 1 in."""
+    prev = _vendor(length=4.0, width=2.0, surface="EXT")
+    prev = pd.concat([prev, _frame("prev", [50 - 3 * IN], surface=["EXT"])], ignore_index=True)
+    cases = {  # name: (offset in, clock, surface, withheld)
+        "inside": (0.0, 100, "EXT", True), "axial 0.9": (3.05, 100, "EXT", True),
+        "axial 1.1": (-3.25, 100, "EXT", False), "circ 0.91": (0.0, 137, "EXT", True),
+        "circ 1.13": (0.0, 141, "EXT", False), "other surface": (0.0, 100, "INT", False),
+        "unknown surface": (0.0, 100, "UNK", False), "dent": (0.0, 100, "EXT", False),
+    }
+    curr = _frame("curr", [50 + v[0] * IN for v in cases.values()], clock=[v[1] for v in cases.values()],
+                  surface=[v[2] for v in cases.values()])
+    curr["feature_type"] = ["dent" if k == "dent" else "metal_loss" for k in cases]
+    wp, wc = near_vendor_reports(prev, curr, S)
+    assert dict(zip(cases, wc.tolist())) == {k: v[3] for k, v in cases.items()}
+    assert not wp.any()  # the prev pit beside its own run's report is not withheld
+    wp, wc = near_vendor_reports(curr.assign(vendor_cluster_id=None), prev.assign(vendor_cluster_id=None), S)
+    assert not wp.any() and not wc.any()
+
+
+def test_withhold_works_both_ways_and_ignores_unmatched_rows():
+    curr = _frame("curr", [50.0], clock=[100], length=4.0, width=2.0, vendor=["V"])
+    prev = _frame("prev", [50.0, 50 + 2.5 * IN], clock=[100, 100])
+    wp, wc = near_vendor_reports(prev, curr, S)
+    assert wp.tolist() == [True, True] and wc.tolist() == [False]
+    prev["in_matched_row"] = False
+    assert not near_vendor_reports(prev, curr, S)[0].any()
+
+
+def test_candidates_skip_withheld_features():
+    prev, curr = _frame("prev", [50.0]), _frame("curr", [50.0])
+    assert len(candidates(prev, curr, 5.0, S)) == 1
+    assert candidates(prev, curr, 5.0, S, (np.zeros(1, bool), np.ones(1, bool))).empty
+    assert candidates(prev, curr, 5.0, S, (np.ones(1, bool), np.zeros(1, bool))).empty

@@ -340,3 +340,38 @@ def test_absorbed_cluster_row_is_capped_at_medium_and_reviewed():
     assert row.score == pytest.approx(0.0) and bool(row.absorbed) is True
     assert row.confidence == "medium" and bool(row.needs_review) is True
     assert res.summary["n_absorbed"] == 1 and res.summary["n_needs_review"] == 1
+
+
+# ---- the 1:1 pass must not take a pit that an opposite-run vendor report claims ----------------
+
+def _p10(n2_clock):
+    """Prev: vendor report V (4 x 2 in) and an individual pit n 2.4 in upstream. Curr: pits s1, s2
+    inside V's box and n2 beside n. Before withholding, n took s1 one-to-one (0.6 in away)."""
+    wm = _wm(("1:1", 0.0, 1000.0, 0.0, 1000.0))
+    wm["in_repair"] = False
+    ml = "metal_loss"
+    prev = _frame([("valve", 10.0, "PV"), (ml, 50.0, "V", 40.0, 100, 4.0, "C1"), (ml, 49.80, "n", 30.0, 100, 0.5)],
+                  date(2021, 6, 15))
+    prev["width_in"] = [0.5, 2.0, 0.5]
+    curr = _frame([("valve", 10.0, "CV"), (ml, 49.85, "s1", 40.0, 100, 0.5), (ml, 50.10, "s2", 38.0, 100, 0.5),
+                   (ml, 49.78, "n2", 31.0, n2_clock, 0.5)], date(2026, 6, 15))
+    curr["width_in"] = 0.5
+    pipe = pd.DataFrame({"start_ft": [0.0], "end_ft": [2000.0], "od_in": [12.75]})
+    t = match_anomalies(prev, curr, wm, S, pipe).match_table
+    return {(r.match_type, r.prev_feature_id, r.curr_feature_id) for r in t.itertuples()}, t
+
+
+def test_one_to_one_does_not_take_a_vendor_cluster_pit():
+    """n2 at 144 min is outside V's interaction distance (circ edge gap 1.20 in) but a 1:1 candidate
+    of n (44 min): n pairs with n2 and V takes both pits it holds."""
+    rows, t = _p10(144)
+    assert rows == {("matched_1to1", "n", "n2"), ("matched_cluster", "V", "s1;s2")}
+
+
+def test_reviewer_p10_pits_stay_with_the_vendor_report():
+    """As reported (n2 at 140 min): n2's circ edge gap to V's box is 0.975 in, within circ_spacing_in, so
+    it is withheld too, and n interacts with V in its own run (0.15 in). All five go to the cluster
+    pass and come out as one absorbed cluster for review, never s1 taken by n one-to-one."""
+    rows, t = _p10(140)
+    assert rows == {("matched_cluster", "n;V", "n2;s1;s2")}
+    assert t.absorbed.iloc[0] and t.needs_review.iloc[0] and t.confidence.iloc[0] == "medium"
