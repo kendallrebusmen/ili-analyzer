@@ -547,9 +547,12 @@ def _blank_side(n: int) -> pd.DataFrame:
 
 
 def _part(match_type: str, prev: pd.DataFrame, curr: pd.DataFrame, metrics: pd.DataFrame | None = None) -> pd.DataFrame:
-    """Rows of one match type from aligned side frames (one row per match) and their metrics."""
+    """Rows of one match type from aligned side frames (one row per match) and their metrics.
+
+    Every part has the same columns, also when empty, so the table can always be assembled."""
     n = len(prev)
-    out = pd.DataFrame({"match_type": [match_type] * n, "n_prev": prev.n.to_numpy(), "n_curr": curr.n.to_numpy(),
+    out = pd.DataFrame({"match_type": [match_type] * n, "missing_hint": [None] * n,
+                        "n_prev": prev.n.to_numpy(), "n_curr": curr.n.to_numpy(),
                         "prev_feature_id": prev.feature_id.to_numpy(), "curr_feature_id": curr.feature_id.to_numpy()})
     for s, side in (("prev", prev), ("curr", curr)):
         for c in SIDE_FIELDS:
@@ -603,12 +606,13 @@ def _finish(table: pd.DataFrame, settings: Settings) -> pd.DataFrame:
     key = pd.DataFrame({"pos": np.where(np.isnan(pp), cp, pp), "p": table.prev_feature_id.fillna(""),
                         "c": table.curr_feature_id.fillna("")})
     table = table.iloc[key.sort_values(["pos", "p", "c"], kind="stable").index].reset_index(drop=True)
-    table["match_id"] = [f"M{i + 1:05d}" for i in range(len(table))]
+    table["match_id"] = pd.Series([f"M{i + 1:05d}" for i in range(len(table))], dtype="str")
+    table["match_type"] = table.match_type.astype("str")
     matched = table.match_type.isin(("matched_1to1", "matched_cluster")).to_numpy()
     table["score"] = _num(table.score)
     table["confidence"] = pd.Series(np.where(matched, _confidence(np.nan_to_num(table.score), settings), None),
                                     dtype=object)
-    table["review_status"] = REVIEW_PENDING
+    table["review_status"] = pd.Series([REVIEW_PENDING] * len(table), dtype="str")
     table["needs_review"] = ((table.confidence == CONFIDENCES[2]) | (table.missing_hint == HINTS[2])).astype(bool)
     for s in ("prev", "curr"):
         for c in _FLOAT_FIELDS:
@@ -621,7 +625,7 @@ def _finish(table: pd.DataFrame, settings: Settings) -> pd.DataFrame:
         table[c] = _num(table[c])
     for c in ("prev_feature_id", "curr_feature_id", "implausible", "missing_hint"):
         table[c] = _none_for_na(table[c])
-    table["n_prev"], table["n_curr"] = table.n_prev.astype(int), table.n_curr.astype(int)
+    table["n_prev"], table["n_curr"] = table.n_prev.astype("int64"), table.n_curr.astype("int64")
     return table[TABLE_COLUMNS]
 
 
@@ -647,7 +651,8 @@ def _summary(prev_std, curr_std, dt: float, table: pd.DataFrame, n_prev: int, n_
 def _unmatched_part(f: pd.DataFrame, keep: np.ndarray, run: str, hints=None) -> pd.DataFrame:
     side, blank = _feature_side(f.iloc[keep]), _blank_side(len(keep))
     part = _part("missing", side, blank) if run == "prev" else _part("new", blank, side)
-    part["missing_hint"] = hints[keep] if hints is not None else None
+    if hints is not None:
+        part["missing_hint"] = hints[keep]
     return part
 
 
@@ -683,7 +688,7 @@ def match_anomalies(prev_std, curr_std, weld_map, settings: Settings, pipe, repa
     hints = missing_hints(prev, weld_map, repairs, settings)
     parts.append(_unmatched_part(prev, np.flatnonzero(left_p), "prev", hints))
     parts.append(_unmatched_part(curr, np.flatnonzero(left_c), "curr"))
-    table = _finish(pd.concat([p for p in parts if len(p)], ignore_index=True), settings)
+    table = _finish(pd.concat(parts, ignore_index=True), settings)
     return MatchResult(table, _summary(prev_std, curr_std, dt, table, len(prev), len(curr)))
 
 

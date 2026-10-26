@@ -290,3 +290,34 @@ def test_hand_built_summary_ids():
     assert (s["prev_run_id"], s["curr_run_id"]) == ("RUN-2021", "RUN-2026")
     assert (s["n_prev_anomalies"], s["n_curr_anomalies"]) == (8, 3)
     assert s["delta_t_years"] == pytest.approx(1826 / 365.25)
+
+
+# ---- degenerate tables: nothing unmatched, one side empty, both empty -------------------------
+
+def _degenerate(keep_prev, keep_curr):
+    prev, curr, wm, pipe, repairs = _runs()
+    def keep(std, ids):  # the valve / weld rows stay, so each run keeps its run date
+        return std[std.feature_id.isin(ids) | ~std.feature_type.isin(ANOMALY_TYPES)]
+    prev, curr = keep(prev, keep_prev), keep(curr, keep_curr)
+    return match_anomalies(prev, curr, wm, S, pipe, repairs)
+
+
+@pytest.mark.parametrize("keep_prev, keep_curr, counts", [
+    (["P0"], ["C0"], {"matched_1to1": 1, "matched_cluster": 0, "missing": 0, "new": 0}),
+    (["P0", "P1", "P2"], ["C0", "C1"], {"matched_1to1": 1, "matched_cluster": 1, "missing": 0, "new": 0}),
+    (["P0"], [], {"matched_1to1": 0, "matched_cluster": 0, "missing": 1, "new": 0}),
+    ([], ["C0"], {"matched_1to1": 0, "matched_cluster": 0, "missing": 0, "new": 1}),
+    ([], [], {"matched_1to1": 0, "matched_cluster": 0, "missing": 0, "new": 0}),
+])
+def test_degenerate_tables_keep_columns_and_dtypes(keep_prev, keep_curr, counts):
+    ref = match_anomalies(*_runs()[:3], S, *_runs()[3:]).match_table
+    res = _degenerate(keep_prev, keep_curr)
+    t, s = res.match_table, res.summary
+    assert list(t.columns) == COLUMNS
+    assert t.dtypes.to_dict() == ref.dtypes.to_dict()
+    assert s["counts_by_match_type"] == counts
+    assert set(s["counts_by_confidence"]) == {"high", "medium", "low"}
+    assert set(s["counts_by_hint"]) == {"in_repaired_section", "near_threshold", "unexplained"}
+    assert sum(s["counts_by_confidence"].values()) == counts["matched_1to1"] + counts["matched_cluster"]
+    assert s["n_needs_review"] == int(t.needs_review.sum())
+    assert (s["n_prev_anomalies"], s["n_curr_anomalies"]) == (len(keep_prev), len(keep_curr))
