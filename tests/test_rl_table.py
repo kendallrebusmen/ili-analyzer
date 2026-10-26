@@ -19,8 +19,8 @@ FEATURE_COLUMNS = [
     "od_in", "wt_in", "smys_psi", "mop_psig", "d_reported_pct", "d_assessed_in", "assessed_dt", "exceeds_80pct",
     "length_in", "length_assessed_in",
     "method", "z", "folias_m", "flow_stress_psi", "failure_stress_psi", "burst_psig", "safe_psig",
-    "g_inyr", "gl_inyr", "tau_80_yr", "tau_burst_yr", "tau_safe_yr", "rl_yr", "rl_governing", "rl_factor",
-    "rl_factored_yr", "repair_by_date",
+    "g_inyr", "gl_inyr", "tau_80_yr", "tau_burst_yr", "tau_safe_yr", "rl_yr", "rl_governing",
+    "rl_upper_bound_yr", "rl_factor", "rl_factored_yr", "repair_by_date",
     "next_assessment_date", "next_assessment_source", "years_to_next_assessment", "dig_required_by_remaining_life",
     "needs_review", "review_reasons",
 ]
@@ -67,11 +67,14 @@ def _by_id(res):
 
 @pytest.fixture
 def fake_rl(monkeypatch):
-    """Replace the solver: RL by governing rate (mpy) -> tau_80 = that RL, others inf; NaN RL -> all NaN."""
+    """Replace the solver: RL by governing rate (mpy) -> tau_80 = that RL, others inf; NaN RL -> all NaN;
+    a dict value is returned as the criterion times."""
     table = {}
 
     def fake(d0, L0, g, gL, D, t, smys, mop, settings):
         rl = table[round(g * 1000, 9)]
+        if isinstance(rl, dict):
+            return rl
         if math.isnan(rl):
             return {c: NAN for c in rl_mod.CRITERIA}
         return {"tau_80": rl, "tau_burst": INF, "tau_safe": INF}
@@ -192,6 +195,7 @@ def test_dig_flag_boundary(settings, fake_rl):
     assert f.loc["LT", "dig_required_by_remaining_life"]
     na = f.loc["NA"]
     assert math.isnan(na.rl_yr) and na.rl_governing is None and math.isnan(na.rl_factored_yr)
+    assert math.isnan(na.rl_upper_bound_yr)  # no criterion finite: no bound, no dig claim
     assert na.repair_by_date is None and not na.dig_required_by_remaining_life
     assert na.review_reasons == "rl_not_evaluated" and na.needs_review
 
@@ -205,6 +209,7 @@ def test_repair_by_rounds_down_and_beyond_horizon(settings, fake_rl):
     fake_rl.update({7.0: INF})  # no criterion within the horizon
     h = _by_id(_run([_g("H", 2500.0, gov=7.0)], settings)).loc["H"]
     assert (h.rl_yr, h.rl_governing, h.rl_factored_yr) == (30.0, "beyond_horizon", 15.0)
+    assert h.rl_upper_bound_yr == 30.0  # equals RL whenever RL is finite
     assert h.repair_by_date == RUN + timedelta(days=math.floor(15.0 * YR)) == RUN + timedelta(days=5478)
     assert not h.dig_required_by_remaining_life and h.review_reasons is None
 
@@ -219,6 +224,46 @@ def test_failing_today_with_nan_growth_digs_now(settings):
     assert (f.rl_yr, f.rl_governing, f.rl_factored_yr) == (0.0, "tau_safe", 0.0)
     assert f.dig_required_by_remaining_life and f.repair_by_date == RUN
     assert f.review_reasons == "no_governing" and f.needs_review
+
+
+def test_nan_mop_upper_bound_forces_dig(settings):
+    # 60 % reported + 10 = 70 % of 0.25 in = 0.175 in; g 25 mpy -> 0.80 t = 0.2 in at tau = 1 yr. With a NaN
+    # MOP the pressure criteria are NaN, so RL is NaN, but RL <= tau_80 = 1 yr: 1 x 0.5 < 5 yr proves a dig.
+    mop = MOP.assign(mop_psig=[NAN])
+    rows = [_g("B", 2500.0, d_curr=60.0, gov=25.0)]
+    f = compute_remaining_life(pd.DataFrame(rows), RUN, PIPE, mop, SEGS, NEXT, settings).features.iloc[0]
+    assert f.tau_80_yr == pytest.approx(1.0, abs=1e-5) and math.isnan(f.tau_burst_yr)
+    assert math.isnan(f.rl_yr) and f.rl_governing is None and math.isnan(f.rl_factored_yr)
+    assert f.rl_upper_bound_yr == f.tau_80_yr == pytest.approx(1.0, abs=1e-5)
+    assert f.dig_required_by_remaining_life
+    assert f.repair_by_date is None  # a bound is not an RL
+    assert f.review_reasons == "rl_not_evaluated" and f.needs_review
+
+
+def test_upper_bound_rules(settings, fake_rl):
+    years = 1826 / YR  # SEG-03 default_hca
+    fake_rl.update({
+        1.0: {"tau_80": 4.0, "tau_burst": NAN, "tau_safe": 9.0},  # bound 4 -> 2 < 5: dig
+        2.0: {"tau_80": 2 * years, "tau_burst": NAN, "tau_safe": INF},  # bound x 0.5 == years: not less
+        3.0: {"tau_80": INF, "tau_burst": NAN, "tau_safe": INF},  # nothing finite: no bound
+    })
+    rows = [_g("P", 2500.0, gov=1.0), _g("Q", 2600.0, gov=2.0), _g("R", 2700.0, gov=3.0)]
+    f = _by_id(_run(rows, settings))
+    assert f.loc["P", "rl_upper_bound_yr"] == 4.0 and f.loc["P", "dig_required_by_remaining_life"]
+    assert f.loc["Q", "rl_upper_bound_yr"] == 2 * years and not f.loc["Q", "dig_required_by_remaining_life"]
+    assert math.isnan(f.loc["R", "rl_upper_bound_yr"]) and not f.loc["R", "dig_required_by_remaining_life"]
+    for mid in "PQR":
+        assert math.isnan(f.loc[mid, "rl_yr"]) and f.loc[mid, "repair_by_date"] is None
+        assert f.loc[mid, "review_reasons"] == "rl_not_evaluated" and f.loc[mid, "needs_review"]
+
+
+def test_rl_upper_bound_function():
+    s = load_settings()
+    assert rl_mod.rl_upper_bound({"tau_80": 3.0, "tau_burst": NAN, "tau_safe": 1.5}, NAN) == 1.5
+    assert rl_mod.rl_upper_bound({"tau_80": INF, "tau_burst": NAN, "tau_safe": INF}, NAN) is None
+    assert rl_mod.rl_upper_bound({"tau_80": NAN, "tau_burst": NAN, "tau_safe": NAN}, NAN) is None
+    times = {"tau_80": INF, "tau_burst": INF, "tau_safe": INF}
+    assert rl_mod.rl_upper_bound(times, rl_mod.remaining_life(times, s)[0]) == s.remaining_life.horizon_yr
 
 
 @pytest.mark.parametrize("column", ["od_in", "smys_psi"])
@@ -268,7 +313,11 @@ def test_nan_reference_values_flag_not_crash(settings):
     f = _by_id(res)
     for mid in ("M", "L"):
         assert math.isnan(f.loc[mid, "rl_yr"]) and f.loc[mid, "review_reasons"] == "rl_not_evaluated"
-        assert not f.loc[mid, "dig_required_by_remaining_life"]
+        assert f.loc[mid, "rl_upper_bound_yr"] == pytest.approx(20.0, abs=1e-5)  # tau_80: 0.1 in at 5 mpy
+    # The bound decides the dig: M (SEG-01, planned ~3.3 yr out): 20 x 0.5 = 10 is not less, no dig;
+    # L (SEG-02 non-HCA default, 3653 days = 10.0014 yr): 10 < 10.0014, dig.
+    assert not f.loc["M", "dig_required_by_remaining_life"]
+    assert f.loc["L", "dig_required_by_remaining_life"] and f.loc["L", "repair_by_date"] is None
 
 
 @pytest.mark.parametrize("table,column", [("mop", "mop_psig"), ("pipe", "od_in"), ("pipe", "smys_psi")])
@@ -329,6 +378,23 @@ def test_reasons_appended_to_m5(settings, fake_rl):
 
 
 # --- intervals ---------------------------------------------------------------------------------------
+
+
+def test_interval_min_uses_upper_bound(settings, fake_rl):
+    # SEG-03 (HCA, default 5 yr): A has RL 8 (factored 4); B's RL is NaN but bounded by tau_80 2 yr
+    # (factored 1), which must set the min; C has neither and is only counted.
+    fake_rl.update({1.0: 8.0, 2.0: {"tau_80": 2.0, "tau_burst": NAN, "tau_safe": INF}, 3.0: NAN})
+    rows = [_g("A", 2100.0, gov=1.0), _g("B", 2200.0, gov=2.0), _g("C", 2300.0, gov=3.0)]
+    seg3 = _run(rows, settings).intervals.set_index("segment_id").loc["SEG-03"]
+    assert (seg3.n_features, seg3.n_rl_not_evaluated) == (3, 2)
+    assert (seg3.min_rl_factored_yr, seg3.recommended_interval_yr, seg3.governing_match_id) == (1.0, 1.0, "B")
+    assert seg3.needs_review
+    # only bounded NaN-RL rows: the bound still gives an interval, flagged
+    fake_rl.update({4.0: {"tau_80": 30.0, "tau_burst": NAN, "tau_safe": INF}})
+    only = _run([_g("D", 2100.0, gov=4.0), _g("E", 2200.0, gov=3.0)], settings).intervals
+    only = only.set_index("segment_id").loc["SEG-03"]
+    assert (only.min_rl_factored_yr, only.recommended_interval_yr, only.governing_match_id) == (15.0, 68 / 12, "D")
+    assert only.n_rl_not_evaluated == 2 and only.needs_review
 
 
 def test_intervals_min_and_cap(settings, fake_rl):
@@ -453,11 +519,13 @@ def test_every_feature_has_rl_and_governing(synth_pipeline, tmp_path):
     for row in f.itertuples():
         if math.isfinite(row.rl_yr):
             assert row.rl_governing in (*rl_mod.CRITERIA, rl_mod.BEYOND_HORIZON)
-            assert row.repair_by_date is not None
+            assert row.repair_by_date is not None and row.rl_upper_bound_yr == row.rl_yr
         else:
-            assert math.isnan(row.rl_yr) and row.rl_governing is None
+            assert math.isnan(row.rl_yr) and row.rl_governing is None and row.repair_by_date is None
             assert "rl_not_evaluated" in row.review_reasons.split(";") and row.needs_review
-            assert not row.dig_required_by_remaining_life
+            bounded = math.isfinite(row.rl_upper_bound_yr)
+            assert row.dig_required_by_remaining_life == (
+                bounded and row.rl_upper_bound_yr * row.rl_factor < row.years_to_next_assessment)
     # SEG-03 is deliberately missing from next_inspection: HCA default, 5 calendar years.
     seg3 = f[f.segment_id == "SEG-03"]
     assert len(seg3) and (seg3.next_assessment_source == "default_hca").all()

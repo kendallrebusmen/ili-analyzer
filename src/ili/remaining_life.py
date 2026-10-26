@@ -22,8 +22,9 @@ criterion is met is the single crossing τ* = inf{τ : margin(τ) <= 0}. It is f
 margin cannot be evaluated. RL = min over the criteria (spec 6.7).
 
 ``compute_remaining_life`` assembles the per-feature table from M5 ``growth.csv`` rows and the reference
-tables: strength at τ = 0, the criterion times and RL, the repair-by date, the next assessment date of the
-feature's segment, the dig flag, review reasons appended to M5's, and per-segment reinspection intervals.
+tables: strength at τ = 0, the criterion times, RL and its upper bound, the repair-by date, the next
+assessment date of the feature's segment, the dig flag, review reasons appended to M5's, and per-segment
+reinspection intervals.
 Every uncertain case is resolved on the conservative side and flagged (see the function docstrings).
 
 DRAFT – for review by qualified personnel.
@@ -248,6 +249,24 @@ def remaining_life(times: dict[str, float], settings: Settings) -> tuple[float, 
     return float(times[governing]), governing
 
 
+def rl_upper_bound(times: dict[str, float], rl_yr: float) -> float | None:
+    """A known upper bound on RL in years: ``rl_yr`` when it is finite, else the smallest finite criterion
+    time (RL = min of the times, so RL <= any one of them even when another is NaN); None when no
+    criterion time is finite. It drives the dig flag and intervals of a NaN-RL row, never its repair-by
+    date (a bound is not an RL)."""
+    if math.isfinite(rl_yr):
+        return float(rl_yr)
+    finite = [float(times[c]) for c in CRITERIA if math.isfinite(times[c])]
+    return min(finite) if finite else None
+
+
+def factored_bound(rl_factored_yr, rl_upper_bound_yr, rl_factor) -> np.ndarray:
+    """The factored RL used for the dig flag and intervals: RL x rl_factor where RL is finite, else the
+    upper bound x rl_factor (NaN when there is neither)."""
+    rl_f = np.asarray(rl_factored_yr, dtype=float)
+    return np.where(np.isfinite(rl_f), rl_f, np.asarray(rl_upper_bound_yr, dtype=float) * float(rl_factor))
+
+
 # --- assembled remaining-life table -------------------------------------------------------------------
 
 MONTHS_PER_YEAR = 12
@@ -271,8 +290,8 @@ RL_FEATURE_COLUMNS = [
     "od_in", "wt_in", "smys_psi", "mop_psig", "d_reported_pct", "d_assessed_in", "assessed_dt", "exceeds_80pct",
     "length_in", "length_assessed_in",
     "method", "z", "folias_m", "flow_stress_psi", "failure_stress_psi", "burst_psig", "safe_psig",
-    "g_inyr", "gl_inyr", "tau_80_yr", "tau_burst_yr", "tau_safe_yr", "rl_yr", "rl_governing", "rl_factor",
-    "rl_factored_yr", "repair_by_date",
+    "g_inyr", "gl_inyr", "tau_80_yr", "tau_burst_yr", "tau_safe_yr", "rl_yr", "rl_governing",
+    "rl_upper_bound_yr", "rl_factor", "rl_factored_yr", "repair_by_date",
     "next_assessment_date", "next_assessment_source", "years_to_next_assessment", "dig_required_by_remaining_life",
     "needs_review", "review_reasons",
 ]
@@ -417,19 +436,26 @@ def _segment_hca(segments: pd.DataFrame) -> dict[str, bool]:
 
 
 def reinspection_intervals(features: pd.DataFrame, segments: pd.DataFrame, settings: Settings) -> pd.DataFrame:
-    """One row per segment, in table order (spec 6.7). ``min_rl_factored_yr``: the minimum finite RL x
-    rl_factor of its features (NaN-RL features are left out of the min and counted in ``n_rl_not_evaluated``);
-    ``regulatory_max_yr``: hca_max_interval_months / 12 (HCA) or default_next_assessment_yr.non_hca;
-    ``recommended_interval_yr`` = min of the two; the regulatory max for a segment without features; NaN
-    for a segment with features none of which has a finite RL (no interval can be supported);
-    ``governing_match_id``: the feature attaining the min (first in table order), None without one;
-    ``needs_review``: any feature's RL could not be evaluated (``n_rl_not_evaluated`` > 0)."""
+    """One row per segment, in table order (spec 6.7).
+
+    - ``min_rl_factored_yr``: the minimum over its features of RL x rl_factor, using for a NaN-RL feature
+      its ``rl_upper_bound_yr`` x rl_factor (``factored_bound``; the true value can only be smaller).
+      A feature with neither is left out of the min. Every NaN-RL feature is counted in
+      ``n_rl_not_evaluated``.
+    - ``regulatory_max_yr``: hca_max_interval_months / 12 (HCA) or default_next_assessment_yr.non_hca.
+    - ``recommended_interval_yr`` = min of the two; the regulatory max for a segment without features; NaN
+      for a segment with features none of which has an RL or a bound (no interval can be supported).
+    - ``governing_match_id``: the feature attaining the min (first in table order), None without one.
+    - ``needs_review``: any feature's RL could not be evaluated (``n_rl_not_evaluated`` > 0), even when
+      a bound gave the min.
+    """
     rl = settings.remaining_life
     hca = _segment_hca(segments)
     out = []
     for sid in segments.segment_id.astype(str):
         in_seg = features[features.segment_id == sid]
-        vals = in_seg.rl_factored_yr.to_numpy(float)
+        not_evaluated = ~np.isfinite(in_seg.rl_factored_yr.to_numpy(float))
+        vals = factored_bound(in_seg.rl_factored_yr, in_seg.rl_upper_bound_yr, rl.rl_factor)
         finite = np.isfinite(vals)
         reg_max = (rl.hca_max_interval_months / MONTHS_PER_YEAR if hca[sid]
                    else float(rl.default_next_assessment_yr.non_hca))
@@ -442,10 +468,10 @@ def reinspection_intervals(features: pd.DataFrame, segments: pd.DataFrame, setti
             recommended = float(reg_max) if len(in_seg) == 0 else math.nan
         out.append({
             "segment_id": sid, "could_affect_hca": hca[sid], "n_features": len(in_seg),
-            "n_rl_not_evaluated": int((~finite).sum()), "min_rl_factored_yr": min_rl,
+            "n_rl_not_evaluated": int(not_evaluated.sum()), "min_rl_factored_yr": min_rl,
             "regulatory_max_yr": float(reg_max),
             "recommended_interval_yr": recommended, "governing_match_id": gov,
-            "needs_review": bool((~finite).any()),
+            "needs_review": bool(not_evaluated.any()),
         })
     table = pd.DataFrame(out, columns=INTERVAL_COLUMNS)
     # object columns keep None (pandas would infer a string dtype with NaN for a missing id)
@@ -498,8 +524,12 @@ def compute_remaining_life(growth: pd.DataFrame, curr_run_date, pipe: pd.DataFra
       rl_factored = RL x rl_factor; ``repair_by_date`` from ``repair_by``.
     - Segment (``segments``: start_ft, end_ft, segment_id, could_affect_hca) by ``assign_segment``; the
       next assessment by ``next_assessment``; years to it = days / 365.25.
-    - ``dig_required_by_remaining_life`` = rl_factored < years to next assessment; False for a NaN RL,
-      which is flagged ``rl_not_evaluated`` instead.
+    - ``rl_upper_bound_yr`` (``rl_upper_bound``): RL when finite, else the smallest finite criterion
+      time, NaN when there is none.
+    - ``dig_required_by_remaining_life`` = rl_factored < years to next assessment; for a NaN RL,
+      rl_upper_bound x rl_factor < years to next assessment (the true RL can only be smaller, so a dig
+      the bound proves is never dropped); False for a NaN RL without a bound. A NaN-RL row is flagged
+      ``rl_not_evaluated`` either way and its ``repair_by_date`` is None.
     - ``review_reasons``: M5's, then ``RL_REVIEW_REASONS`` that apply (``append_reasons``).
     """
     _require_columns(growth, GROWTH_INPUT_COLUMNS, "growth table")
@@ -539,6 +569,7 @@ def compute_remaining_life(growth: pd.DataFrame, curr_run_date, pipe: pd.DataFra
 
     taus = {c: np.full(n, math.nan) for c in CRITERIA}
     rl_yr = np.full(n, math.nan)
+    rl_bound = np.full(n, math.nan)
     rl_gov = np.full(n, None, dtype=object)
     for k in range(n):
         times = time_to_criteria(d_as[k], l_as[k], g_inyr[k], gl_inyr[k], od[k], wt[k], smys[k], mop_psig[k],
@@ -546,6 +577,8 @@ def compute_remaining_life(growth: pd.DataFrame, curr_run_date, pipe: pd.DataFra
         for c in CRITERIA:
             taus[c][k] = times[c]
         rl_yr[k], rl_gov[k] = remaining_life(times, settings)
+        bound = rl_upper_bound(times, rl_yr[k])
+        rl_bound[k] = math.nan if bound is None else bound
     rl_factored = rl_yr * rl_cfg.rl_factor
 
     seg_id = assign_segment(segments, pos)
@@ -558,7 +591,9 @@ def compute_remaining_life(growth: pd.DataFrame, curr_run_date, pipe: pd.DataFra
     outside = next_assessment(None, None, run_date, settings)
     nxt = [outside if s is None else per_seg[s] for s in seg_id]
     years_next = np.array([(d - run_date).days / DAYS_PER_YEAR for d, _ in nxt], dtype=float)
-    dig = np.isfinite(rl_factored) & (rl_factored < years_next)  # NaN RL: no dig claim, flagged instead
+    # NaN RL: the factored upper bound decides (flagged rl_not_evaluated either way); no bound: no dig claim
+    for_dig = factored_bound(rl_factored, rl_bound, rl_cfg.rl_factor)
+    dig = np.isfinite(for_dig) & (for_dig < years_next)
 
     m6_flags = {"rl_not_evaluated": np.isnan(rl_yr), "exceeds_80pct": exceeds,
                 "no_segment": np.array([s is None for s in seg_id], dtype=bool)}
@@ -578,7 +613,7 @@ def compute_remaining_life(growth: pd.DataFrame, curr_run_date, pipe: pd.DataFra
         "failure_stress_psi": s_f, "burst_psig": p_f, "safe_psig": p_safe,
         "g_inyr": g_inyr, "gl_inyr": gl_inyr,
         "tau_80_yr": taus["tau_80"], "tau_burst_yr": taus["tau_burst"], "tau_safe_yr": taus["tau_safe"],
-        "rl_yr": rl_yr, "rl_governing": obj(rl_gov),
+        "rl_yr": rl_yr, "rl_governing": obj(rl_gov), "rl_upper_bound_yr": rl_bound,
         "rl_factor": np.full(n, float(rl_cfg.rl_factor)), "rl_factored_yr": rl_factored,
         "repair_by_date": obj(repair_by(run_date, x) for x in rl_factored),
         "next_assessment_date": obj(d for d, _ in nxt), "next_assessment_source": obj(s for _, s in nxt),
