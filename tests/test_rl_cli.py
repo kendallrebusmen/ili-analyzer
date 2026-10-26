@@ -64,3 +64,28 @@ def test_cli_missing_mop_exit_2(synth, tmp_path, capsys):
     assert remaining_life.main(_args(std, folder, data, out, mop="nope.csv")) == 2
     assert "error:" in capsys.readouterr().err
     assert not (folder / "remaining_life.csv").exists()
+
+
+def test_cli_non_object_growth_summary_exit_2(synth, tmp_path, capsys):
+    _, data = synth
+    out = tmp_path / "out"
+    std, folder = _prepare(data, out)
+    (folder / "growth_summary.json").write_text("[1, 2]", encoding="utf-8")
+    capsys.readouterr()
+    assert remaining_life.main(_args(std, folder, data, out)) == 2
+    err = capsys.readouterr().err
+    assert "error:" in err and "growth_summary.json" in err and "JSON object" in err
+    assert not (folder / "remaining_life.csv").exists()
+
+
+def test_cli_missing_growth_summary_warns(synth, tmp_path, capsys):
+    _, data = synth
+    out = tmp_path / "out"
+    std, folder = _prepare(data, out)
+    (folder / "growth_summary.json").unlink()
+    capsys.readouterr()
+    assert remaining_life.main(_args(std, folder, data, out)) == 0
+    err = capsys.readouterr().err
+    assert f"warning: growth_summary.json not found beside {folder / 'growth.csv'}; previous run id unknown" in err
+    summary = json.loads((out / "None_vs_2026_vendorB" / "remaining_life_summary.json").read_text(encoding="utf-8"))
+    assert summary["prev_run_id"] is None and summary["curr_run_id"] == "2026_vendorB"

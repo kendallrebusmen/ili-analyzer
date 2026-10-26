@@ -487,13 +487,28 @@ def _finite_min(values: np.ndarray) -> float | None:
     return float(v.min()) if len(v) else None
 
 
+def _parameters(settings: Settings) -> dict:
+    """Every setting the remaining-strength and remaining-life results depend on (traceability)."""
+    st, tool, rl = settings.strength, settings.tool, settings.remaining_life
+    return {
+        "method": st.method, "design_factor": float(st.design_factor),
+        "depth_basis": st.depth_basis, "length_basis": st.length_basis,
+        "depth_tolerance_pct_wt": float(tool.depth_tolerance_pct_wt),
+        "depth_certainty": float(tool.depth_certainty),
+        "length_tolerance_in": float(tool.length_tolerance_in),
+        "time_step_yr": float(rl.time_step_yr), "horizon_yr": float(rl.horizon_yr),
+        "rl_factor": float(rl.rl_factor), "hca_max_interval_months": float(rl.hca_max_interval_months),
+        "default_next_assessment_yr": {"hca": float(rl.default_next_assessment_yr.hca),
+                                       "non_hca": float(rl.default_next_assessment_yr.non_hca)},
+    }
+
+
 def _summary(f: pd.DataFrame, intervals: pd.DataFrame, run_date: date, settings: Settings, prev_run_id,
              curr_run_id) -> dict:
     reasons = [r.split(REASON_SEP) if isinstance(r, str) else [] for r in f.review_reasons]
     return {
         "prev_run_id": prev_run_id, "curr_run_id": curr_run_id, "curr_run_date": run_date.isoformat(),
-        "method": settings.strength.method, "rl_factor": float(settings.remaining_life.rl_factor),
-        "horizon_yr": float(settings.remaining_life.horizon_yr),
+        **_parameters(settings),
         "n_features": len(f),
         "counts_by_rl_governing": {g: int((f.rl_governing == g).sum()) for g in RL_GOVERNING},
         "n_rl_not_evaluated": int(f.rl_yr.isna().sum()),
@@ -646,13 +661,20 @@ def write_remaining_life(result: RLResult, out_dir: Path) -> dict[str, Path]:
 
 def _run_ids(growth_path: Path, curr_std: pd.DataFrame) -> tuple[str | None, str]:
     """(prev_run_id, curr_run_id): from ``growth_summary.json`` beside the growth table (M5 writes it there);
-    without it, the current standardized file's run id and no previous id."""
+    without it (or without its ``curr_run_id``), the current standardized file's run id and no previous id,
+    with a warning on stderr. ValueError when the file is not a JSON object."""
     summary = Path(growth_path).parent / "growth_summary.json"
     if summary.exists():
         data = json.loads(summary.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            raise ValueError(f"{summary}: expected a JSON object, got {type(data).__name__}")
         prev, curr = data.get("prev_run_id"), data.get("curr_run_id")
         if curr is not None:
             return (None if prev is None else str(prev)), str(curr)
+        print(f"warning: {summary} has no curr_run_id; previous run id unknown", file=sys.stderr)
+    else:
+        print(f"warning: growth_summary.json not found beside {growth_path}; previous run id unknown",
+              file=sys.stderr)
     return None, str(curr_std.run_id.iloc[0])
 
 

@@ -442,6 +442,16 @@ def test_summary_counts_and_json(settings, fake_rl):
     json.dumps(s, allow_nan=False)
     assert (s["prev_run_id"], s["curr_run_id"], s["method"], s["n_features"]) == ("RUN-A", "RUN-B", "modified_b31g", 3)
     assert s["curr_run_date"] == "2026-03-15"
+    st, tool, rl = settings.strength, settings.tool, settings.remaining_life
+    assert {k: s[k] for k in ("method", "design_factor", "depth_basis", "length_basis")} == {
+        "method": st.method, "design_factor": st.design_factor, "depth_basis": st.depth_basis,
+        "length_basis": st.length_basis}
+    assert (s["depth_tolerance_pct_wt"], s["depth_certainty"], s["length_tolerance_in"]) == (
+        tool.depth_tolerance_pct_wt, tool.depth_certainty, tool.length_tolerance_in)
+    assert (s["time_step_yr"], s["horizon_yr"], s["rl_factor"], s["hca_max_interval_months"]) == (
+        rl.time_step_yr, rl.horizon_yr, rl.rl_factor, rl.hca_max_interval_months)
+    assert s["default_next_assessment_yr"] == {"hca": rl.default_next_assessment_yr.hca,
+                                               "non_hca": rl.default_next_assessment_yr.non_hca}
     # fake: finite RL governed by tau_80; 30.0 is reported as tau_80 too (not all inf)
     assert s["counts_by_rl_governing"] == {"tau_80": 2, "tau_burst": 0, "tau_safe": 0, "beyond_horizon": 0}
     assert s["n_rl_not_evaluated"] == 1
