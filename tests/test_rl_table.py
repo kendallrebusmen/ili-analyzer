@@ -26,7 +26,7 @@ FEATURE_COLUMNS = [
 ]
 INTERVAL_COLUMNS = [
     "segment_id", "could_affect_hca", "n_features", "n_rl_not_evaluated", "min_rl_factored_yr",
-    "regulatory_max_yr", "recommended_interval_yr", "governing_match_id",
+    "regulatory_max_yr", "recommended_interval_yr", "governing_match_id", "needs_review",
 ]
 NAN, INF = float("nan"), float("inf")
 RUN = date(2026, 3, 15)
@@ -286,15 +286,18 @@ def test_intervals_min_and_cap(settings, fake_rl):
     a = by.loc["SEG-A"]  # min 3.0 (A2 and A4 tie: first in table order), NaN A3 excluded but counted
     assert (a.n_features, a.n_rl_not_evaluated, a.min_rl_factored_yr) == (4, 1, 3.0)
     assert (a.regulatory_max_yr, a.recommended_interval_yr, a.governing_match_id) == (hca_max, 3.0, "A2")
+    assert a.needs_review  # mixed: min of the finite RLs, flagged for the unevaluated one
     b = by.loc["SEG-B"]  # beyond-horizon 30 x 0.5 = 15, capped at the non-HCA 10 yr
     assert (b.could_affect_hca, b.n_features, b.min_rl_factored_yr) == (False, 1, 15.0)
     assert (b.regulatory_max_yr, b.recommended_interval_yr, b.governing_match_id) == (10.0, 10.0, "B1")
+    assert not b.needs_review
     c = by.loc["SEG-C"]  # empty: regulatory max
     assert (c.n_features, c.n_rl_not_evaluated, c.governing_match_id) == (0, 0, None)
-    assert math.isnan(c.min_rl_factored_yr) and c.recommended_interval_yr == hca_max
-    d = by.loc["SEG-D"]  # only a NaN-RL feature: visible in the count
-    assert (d.n_features, d.n_rl_not_evaluated, d.governing_match_id) == (1, 1, None)
-    assert math.isnan(d.min_rl_factored_yr) and d.recommended_interval_yr == hca_max
+    assert math.isnan(c.min_rl_factored_yr) and c.recommended_interval_yr == hca_max and not c.needs_review
+    d = by.loc["SEG-D"]  # only a NaN-RL feature: no interval can be recommended, flagged
+    assert (d.n_features, d.n_rl_not_evaluated, d.governing_match_id, d.regulatory_max_yr) == (1, 1, None, hca_max)
+    assert math.isnan(d.min_rl_factored_yr) and math.isnan(d.recommended_interval_yr) and d.needs_review
+    assert iv.needs_review.map(type).eq(bool).all() or iv.needs_review.dtype == bool
 
 
 # --- summary -----------------------------------------------------------------------------------------
@@ -320,6 +323,7 @@ def test_summary_counts_and_json(settings, fake_rl):
     assert s["min_rl_yr"] == 8.0 and s["min_rl_factored_yr"] == 4.0
     assert s["counts_by_next_assessment_source"] == {
         "planned": 1, "capped": 0, "default_hca": 1, "default_non_hca": 0, "default_no_segment": 1}
+    assert s["n_segments_needs_review"] == 1  # SEG-01: B's RL could not be evaluated
     empty = compute_remaining_life(pd.DataFrame(columns=list(_g("x", 0.0))), RUN, PIPE, MOP, SEGS, NEXT,
                                    settings).summary
     json.dumps(empty, allow_nan=False)

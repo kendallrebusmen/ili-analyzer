@@ -207,7 +207,7 @@ RL_FEATURE_COLUMNS = [
 ]
 INTERVAL_COLUMNS = [
     "segment_id", "could_affect_hca", "n_features", "n_rl_not_evaluated", "min_rl_factored_yr",
-    "regulatory_max_yr", "recommended_interval_yr", "governing_match_id",
+    "regulatory_max_yr", "recommended_interval_yr", "governing_match_id", "needs_review",
 ]
 
 
@@ -348,8 +348,10 @@ def reinspection_intervals(features: pd.DataFrame, segments: pd.DataFrame, setti
     """One row per segment, in table order (spec 6.7). ``min_rl_factored_yr``: the minimum finite RL x
     rl_factor of its features (NaN-RL features are left out of the min and counted in ``n_rl_not_evaluated``);
     ``regulatory_max_yr``: hca_max_interval_months / 12 (HCA) or default_next_assessment_yr.non_hca;
-    ``recommended_interval_yr`` = min of the two, the regulatory max when no feature has a finite RL;
-    ``governing_match_id``: the feature attaining the min (first in table order), None without one."""
+    ``recommended_interval_yr`` = min of the two; the regulatory max for a segment without features; NaN
+    for a segment with features none of which has a finite RL (no interval can be supported);
+    ``governing_match_id``: the feature attaining the min (first in table order), None without one;
+    ``needs_review``: any feature's RL could not be evaluated (``n_rl_not_evaluated`` > 0)."""
     rl = settings.remaining_life
     hca = _segment_hca(segments)
     out = []
@@ -362,19 +364,22 @@ def reinspection_intervals(features: pd.DataFrame, segments: pd.DataFrame, setti
         if finite.any():
             k = int(np.flatnonzero(vals == vals[finite].min())[0])
             min_rl, gov = float(vals[k]), str(in_seg.match_id.iloc[k])
+            recommended = float(min(min_rl, reg_max))
         else:
             min_rl, gov = math.nan, None
+            recommended = float(reg_max) if len(in_seg) == 0 else math.nan
         out.append({
             "segment_id": sid, "could_affect_hca": hca[sid], "n_features": len(in_seg),
             "n_rl_not_evaluated": int((~finite).sum()), "min_rl_factored_yr": min_rl,
             "regulatory_max_yr": float(reg_max),
-            "recommended_interval_yr": float(min(min_rl, reg_max)) if gov is not None else float(reg_max),
-            "governing_match_id": gov,
+            "recommended_interval_yr": recommended, "governing_match_id": gov,
+            "needs_review": bool((~finite).any()),
         })
     table = pd.DataFrame(out, columns=INTERVAL_COLUMNS)
     # object columns keep None (pandas would infer a string dtype with NaN for a missing id)
     table["segment_id"] = pd.Series([r["segment_id"] for r in out], dtype=object)
     table["governing_match_id"] = pd.Series([r["governing_match_id"] for r in out], dtype=object)
+    table["needs_review"] = table.needs_review.astype(bool)
     return table
 
 
@@ -384,7 +389,8 @@ def _finite_min(values: np.ndarray) -> float | None:
     return float(v.min()) if len(v) else None
 
 
-def _summary(f: pd.DataFrame, run_date: date, settings: Settings, prev_run_id, curr_run_id) -> dict:
+def _summary(f: pd.DataFrame, intervals: pd.DataFrame, run_date: date, settings: Settings, prev_run_id,
+             curr_run_id) -> dict:
     reasons = [r.split(REASON_SEP) if isinstance(r, str) else [] for r in f.review_reasons]
     return {
         "prev_run_id": prev_run_id, "curr_run_id": curr_run_id, "curr_run_date": run_date.isoformat(),
@@ -401,6 +407,7 @@ def _summary(f: pd.DataFrame, run_date: date, settings: Settings, prev_run_id, c
         "min_rl_factored_yr": _finite_min(f.rl_factored_yr.to_numpy(float)),
         "counts_by_next_assessment_source": {s: int((f.next_assessment_source == s).sum())
                                              for s in NEXT_ASSESSMENT_SOURCES},
+        "n_segments_needs_review": int(intervals.needs_review.sum()),
     }
 
 
@@ -499,4 +506,4 @@ def compute_remaining_life(growth: pd.DataFrame, curr_run_date, pipe: pd.DataFra
         "needs_review": needs_review, "review_reasons": obj(reasons),
     })[RL_FEATURE_COLUMNS]
     intervals = reinspection_intervals(f, segments, settings)
-    return RLResult(f, intervals, _summary(f, run_date, settings, prev_run_id, curr_run_id))
+    return RLResult(f, intervals, _summary(f, intervals, run_date, settings, prev_run_id, curr_run_id))
