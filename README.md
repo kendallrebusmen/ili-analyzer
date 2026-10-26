@@ -53,10 +53,10 @@ py -3.13 -m venv .venv
 # Match anomalies -> outputs/<prev>_vs_<curr>/match_table.csv, match_summary.json
 # (--truth scores links into outputs/validation_metrics.json under anomaly_matching)
 .\.venv\Scripts\python.exe -m ili.match `
-    --prev outputs\standardized1_vendorA.csv --curr outputs\standardized6_vendorB.csv `
-    --weld-map outputs1_vendorA_vs_2026_vendorB\weld_map.csv `
-    --pipe data\syntheticeference\pipe_properties.csv `
-    --repairs data\syntheticeferenceepairs_between_runs.csv `
+    --prev outputs\standardized\2021_vendorA.csv --curr outputs\standardized\2026_vendorB.csv `
+    --weld-map outputs\2021_vendorA_vs_2026_vendorB\weld_map.csv `
+    --pipe data\synthetic\reference\pipe_properties.csv `
+    --repairs data\synthetic\reference\repairs_between_runs.csv `
     --truth data\synthetic\ground_truth.csv
 ```
 
