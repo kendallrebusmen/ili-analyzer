@@ -210,7 +210,15 @@ Interpretations of `docs/SPEC.md` and choices the spec leaves open. Newest at th
   - NaN when the segment has no matched rows or the row has no segment.
   - No minimum sample size was invented. `n_matched` per segment is reported in `growth_segments.csv`.
   - `hca_segment` and `reference_segments` need `--segments`. `fixed_length` builds FIX-### segments from the current run's first girth weld.
-- **Governing rule** lives in settings `growth.governing` (spec §6.5 default rule). The largest rate wins, ignoring NaN, and ties go to the first listed method. A NaN governing rate sets `needs_review`.
+  - A supplied segments table with a repeated `segment_id` (compared as strings) or overlapping segments (sorted by start, a start before the previous end) is a `ValueError`; it would pool or double-count features. `compute_growth` checks the table it is given as well. Each governing list needs at least one method.
+- **Governing rule** lives in settings `growth.governing` (spec §6.5 default rule). The largest rate wins, ignoring NaN, and ties go to the first listed method.
+- **Review rule.** Governing is not floored — a governing rate below `min_rate_mpy` is flagged, and M6 must treat flagged rows explicitly. `needs_review` is True when any reason applies; `review_reasons` (right after it) joins them with `;` in this order, None when there are none:
+  - `no_governing`: the governing rate is NaN.
+  - `incomplete_rule`: a method in the row's class list is NaN, so the max covered fewer rates than the rule intends. Examples: a `new` or `matched` row with no segment, or in a segment without matched rows (no percentile); any `no_history` row while `default_rate_mpy` is null.
+  - `below_min_rate`: governing < `min_rate_mpy`, e.g. `new_feature` for a feature reported below the threshold (−2.0 mpy for 6 % at a 10 % threshold over 5 years).
+  - `match_review`: M4's `needs_review` on the match row.
+- **M4 evidence carried.** M4's `confidence`, `implausible` and `needs_review` (as `match_needs_review`) are columns after `history_class`, and are required in the match table. `implausible` is carried but does not by itself set `needs_review`; M4 decides that.
+- **Missing install year.** A NaN `install_year` in the pipe-properties row a feature uses gives NaN `full_life` and `no_history` (a `new` row needs a known year), flagged `incomplete_rule`, rather than aborting the run (`reference.lookup(..., allow_nan=True)`). A position outside the table is still an error, and a NaN wall in the fallback lookup still raises.
 - **Length growth.** `none` gives 0, `fixed_rate` gives `length_rate_ipy`, and `proportional` gives length × governing / depth (aspect ratio kept).
 - **Diagnostics are data** (raw-rate histogram counts, % negative raw, per-segment stats). Charts come in M8.
 - **Scoring** (`validation.score_growth`). True growth per row is the max `growth_mpy` over the truth rows of its current id(s), so a cluster takes its fastest pit.
@@ -218,8 +226,15 @@ Interpretations of `docs/SPEC.md` and choices the spec leaves open. Newest at th
   - `passes` needs conservatism ≥ 0.90 (PLACEHOLDER), every truth current feature scored, and no current id scored twice.
 - **Results.**
   - Default 20-mile dataset: conservatism 0.9982 (matched 1.000, new 0.982; `no_history` has no rows). Governing bias +9.41 mpy, RMSE 10.04. Raw bias −0.05 mpy, RMSE 5.49.
-  - Seeds 1–5: conservatism 0.9945–1.000.
+  - Default dataset review: 34 of 543 rows need review, all `match_review` (31 low and 3 medium M4 confidence); no `no_governing`, `incomplete_rule` or `below_min_rate`. 8 rows are `implausible` without M4 review.
+  - Seeds 1–5: conservatism 0.9945–1.000; 30–48 rows need review, all `match_review`.
+  - The acceptance tests also bound |raw bias| ≤ 1.0 mpy (a test bound; raw is unbiased by construction, so a units bug shows there) and need a finite governing RMSE. `score_growth` rejects a `history_class` outside matched/new/no_history.
   - No settings tuned in M5.
 - **Observation for the integrity engineer.** Governing rates average about 9 mpy above true growth. Both governing methods add margin over about 5 mpy of raw-rate noise (two ±10 % wall measurements over 5 years).
   - This conservatism flows into the M6 remaining-life intervals. It depends on the PLACEHOLDER `k_sigma`, `segment_percentile` and tool tolerance.
   - The `no_history` path (`full_life`, `default_rate`) is exercised only by unit tests. The synthetic data has no features in post-run pipe.
+- **Open items for the integrity engineer.**
+  - New-pipe classification compares the calendar years of the runs with the pipe install year. `repairs_between_runs.csv` dates are not consulted, so `pipe_properties` must be updated for repairs.
+  - Features in pipe the previous run never covered (runs of different extent) are labelled `new`. Their rate is conservative, but the label is not.
+  - `fixed_length` segments start at the current run's first girth weld. Features before it or after the last weld have no segment and are now flagged `incomplete_rule`.
+  - M4's `lookup_od` no longer raises on a NaN `od_in` in a row that no position uses.
