@@ -13,6 +13,7 @@ from scipy.stats import norm
 
 FT_PER_M = 1 / 0.3048
 IN_PER_MM = 1 / 25.4
+FT_PER_MI = 5280.0
 
 CLOCK_MINUTES = 720
 _HHMM = re.compile(r"^\s*(\d{1,2}):(\d{2})\s*$")

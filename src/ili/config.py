@@ -69,6 +69,15 @@ class MatchingCfg(_Strict):
     interaction_rule: InteractionRule
 
 
+GrowthMethod = Literal["raw", "tolerance_adjusted", "segment_percentile", "new_feature", "full_life", "default_rate"]
+
+
+class GoverningRule(_Strict):
+    matched: list[GrowthMethod]
+    new: list[GrowthMethod]
+    no_history: list[GrowthMethod]
+
+
 class GrowthCfg(_Strict):
     k_sigma: float
     min_rate_mpy: float
@@ -78,6 +87,8 @@ class GrowthCfg(_Strict):
     default_rate_mpy: float | None
     length_growth: Literal["none", "proportional", "fixed_rate"]
     length_rate_ipy: float
+    governing: GoverningRule
+    diagnostic_bin_mpy: float
 
 
 class StrengthCfg(_Strict):

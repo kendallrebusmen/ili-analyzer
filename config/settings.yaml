@@ -43,6 +43,11 @@ growth:
   default_rate_mpy: null            # PLACEHOLDER - IMP default rate
   length_growth: none               # none | proportional | fixed_rate
   length_rate_ipy: 0.0
+  governing:                        # spec §6.5 default rule; configurable. Each list is maxed (largest rate wins)
+    matched: [segment_percentile, tolerance_adjusted]   # methods: raw | tolerance_adjusted | segment_percentile
+    new: [new_feature, segment_percentile]              #          | new_feature | full_life | default_rate
+    no_history: [full_life, default_rate]
+  diagnostic_bin_mpy: 1.0           # mpy; histogram bin width for the raw-growth diagnostic
 
 strength:
   method: modified_b31g             # modified_b31g | original_b31g

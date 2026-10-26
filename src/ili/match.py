@@ -24,6 +24,7 @@ from scipy.sparse.csgraph import connected_components
 from ili.align_welds import DRAFT_LABEL, comparison_dir, load_weld_map
 from ili.config import DEFAULT_SETTINGS, PROJECT_ROOT, Settings, ToolCfg, load_settings
 from ili.ingest import load_standardized
+from ili.reference import lookup
 from ili.schema import ANOMALY_TYPES
 from ili.units import CLOCK_MINUTES, wrap_clock_min
 from ili.validation import score_matching, write_metrics
@@ -553,26 +554,8 @@ def _require_columns(df: pd.DataFrame, cols: tuple, what: str) -> None:
 
 
 def lookup_od(pos_ft, pipe: pd.DataFrame, tol_ft: float) -> np.ndarray:
-    """Outside diameter (in) at each current-run position: the covering pipe row, else the nearest
-    one within ``tol_ft`` of the table; ValueError naming the first position that is not covered,
-    and for an empty table or a row without ``od_in``."""
-    _require_columns(pipe, ("start_ft", "end_ft", "od_in"), "pipe properties")
-    if pipe.empty:
-        raise ValueError("the pipe properties table has no rows")
-    pipe = pipe.sort_values("start_ft", kind="stable")
-    start, end, od = (pipe[c].to_numpy(float) for c in ("start_ft", "end_ft", "od_in"))
-    if np.isnan(od).any():
-        raise ValueError(f"pipe properties row starting at {start[np.isnan(od)][0]:.3f} ft has no od_in")
-    x = np.asarray(pos_ft, dtype=float)
-    k = np.clip(np.searchsorted(start, x, side="right") - 1, 0, len(start) - 1)
-    alt = np.minimum(k + 1, len(start) - 1)  # in a gap between rows the next row may be nearer
-    d_k, d_alt = (np.maximum(np.maximum(start[j] - x, x - end[j]), 0.0) for j in (k, alt))
-    use_alt = d_alt < d_k
-    near, row = np.where(use_alt, d_alt, d_k), np.where(use_alt, alt, k)
-    bad = ~(near <= tol_ft)
-    if bad.any():
-        raise ValueError(f"position {x[bad][0]:.3f} ft is outside the pipe properties table by more than {tol_ft} ft")
-    return od[row]
+    """Outside diameter (in) at each current-run position; see ``reference.lookup`` for the rule."""
+    return lookup(pipe, pos_ft, "od_in", tol_ft, what="pipe properties")
 
 
 def _with_od(placed: pd.DataFrame, pipe: pd.DataFrame, tol_ft: float) -> pd.DataFrame:
@@ -781,6 +764,35 @@ def write_matches(result: MatchResult, out_dir: Path) -> dict[str, Path]:
     result.match_table.to_csv(paths["match_table.csv"], index=False, lineterminator="\n")
     paths["match_summary.json"].write_text(json.dumps({"label": DRAFT_LABEL, **s}, indent=2), encoding="utf-8")
     return paths
+
+
+_TABLE_TEXT = (
+    "match_id", "match_type", "confidence", "review_status", "missing_hint", "prev_feature_id", "curr_feature_id",
+    *(f"{s}_{c}" for s in ("prev", "curr") for c in ("feature_type", "us_gw_id", "surface", "vendor_cluster_id")),
+)
+_TABLE_FLAGS = (
+    "needs_review", "absorbed", "implausible",
+    *(f"{s}_{c}" for s in ("prev", "curr") for c in ("seam_interaction", "dent_metal_loss")),
+)
+_TABLE_INTS = ("n_prev", "n_curr", "prev_wm_row", "curr_wm_row", "prev_clock_min", "curr_clock_min")
+
+
+def load_match_table(path: Path) -> pd.DataFrame:
+    """Read a ``match_table.csv`` back with its types: ids and labels stay text (empty is None),
+    flags are True/False/None, counts and clock/row numbers are Int64, the rest float."""
+    header = pd.read_csv(path, nrows=0).columns
+    text = [c for c in _TABLE_TEXT if c in header]
+    flags = [c for c in _TABLE_FLAGS if c in header]
+    ints = [c for c in _TABLE_INTS if c in header]
+    df = pd.read_csv(path, dtype={c: str for c in text + flags}, keep_default_na=False,
+                     na_values={c: [""] for c in header if c not in text + flags})
+    for c in text:
+        df[c] = df[c].astype(object).where(df[c] != "", None)
+    for c in flags:
+        df[c] = df[c].map({"True": True, "False": False}).astype(object).where(df[c] != "", None)
+    for c in ints:
+        df[c] = df[c].astype("Int64")
+    return df
 
 
 def _parser() -> argparse.ArgumentParser:
