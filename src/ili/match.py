@@ -17,7 +17,7 @@ from scipy.sparse import coo_matrix
 from scipy.sparse.csgraph import connected_components
 
 from ili.config import Settings, ToolCfg
-from ili.units import CLOCK_MINUTES
+from ili.units import CLOCK_MINUTES, wrap_clock_min
 
 ANOMALY_TYPES = ("metal_loss", "dent", "gouge")
 _MATCHED = ("1:1", "2:1", "1:2")
@@ -118,8 +118,8 @@ def _num(series) -> np.ndarray:
     return pd.Series(series, dtype="Float64").to_numpy(dtype=float, na_value=np.nan)
 
 
-def pair_metrics(prev: pd.DataFrame, curr: pd.DataFrame, dt_yr: float, settings: Settings) -> pd.DataFrame:
-    """Per-pair differences, plausibility flag and score for aligned (equal-length) placed frames.
+def _metrics(axial, clock, d_prev, d_curr, wt_prev, wt_curr, dt_yr: float, settings: Settings) -> pd.DataFrame:
+    """Score and plausibility from axial (in) and clock (min) differences and the two depths.
 
     score = sqrt((w_axial a^2 + w_circ c^2) / (w_axial + w_circ)) + w_depth_change * implausible,
     with a, c the axial and clock differences in units of their tolerances; a missing clock
@@ -127,16 +127,14 @@ def pair_metrics(prev: pd.DataFrame, curr: pd.DataFrame, dt_yr: float, settings:
     or growth beyond it that exceeds the plausible rate (current-run nominal wall, else previous)."""
     mt = settings.matching
     w = mt.weights
-    axial = np.abs(_num(prev.pos_prev_ft) - _num(curr.pos_prev_ft)) / FT_PER_IN
-    clock = clock_diff_min(prev.clock_min, curr.clock_min)
     a, c = axial / mt.axial_tol_in, clock / mt.clock_tol_min
     has_clock = ~np.isnan(c)
     num = w.axial * a**2 + np.where(has_clock, w.circ * np.nan_to_num(c) ** 2, 0.0)
     den = w.axial + np.where(has_clock, w.circ, 0.0)
-    delta = _num(curr.depth_pct) - _num(prev.depth_pct)
+    delta = _num(d_curr) - _num(d_prev)
     tol = depth_change_tol_pct(settings.tool)
-    wt = _num(curr.wt_nom_in)
-    wt = np.where(np.isnan(wt), _num(prev.wt_nom_in), wt)
+    wt = _num(wt_curr)
+    wt = np.where(np.isnan(wt), _num(wt_prev), wt)
     with np.errstate(invalid="ignore"):  # NaN compares False: a missing depth is never implausible
         growth_mpy = (delta - tol) / 100.0 * wt * MILS_PER_IN / dt_yr
         implausible = (delta < -tol) | (growth_mpy > mt.max_plausible_growth_mpy)
@@ -147,6 +145,14 @@ def pair_metrics(prev: pd.DataFrame, curr: pd.DataFrame, dt_yr: float, settings:
         "implausible": implausible,
         "score": np.sqrt(num / den) + w.depth_change * implausible,
     })
+
+
+def pair_metrics(prev: pd.DataFrame, curr: pd.DataFrame, dt_yr: float, settings: Settings) -> pd.DataFrame:
+    """Per-pair differences, plausibility flag and score for aligned (equal-length) placed frames
+    (rule in ``_metrics``; axial and clock differences are between the features themselves)."""
+    axial = np.abs(_num(prev.pos_prev_ft) - _num(curr.pos_prev_ft)) / FT_PER_IN
+    clock = clock_diff_min(prev.clock_min, curr.clock_min)
+    return _metrics(axial, clock, prev.depth_pct, curr.depth_pct, prev.wt_nom_in, curr.wt_nom_in, dt_yr, settings)
 
 
 def _near_shared_weld(p: pd.DataFrame, q: pd.DataFrame, pi, qi, limit_ft: float) -> np.ndarray:
@@ -227,3 +233,143 @@ def assign_one_to_one(cands: pd.DataFrame) -> pd.DataFrame:
         at = {(a, b): rows[i] for i, (a, b) in enumerate(zip(ri, cj))}
         chosen.extend(at[(a, b)] for a, b in zip(r[real], k[real]))
     return c.iloc[sorted(chosen)]
+
+
+def _arc_in(minutes, od_in) -> np.ndarray:
+    """Circumferential arc (in) of a clock-minute span on a pipe of outside diameter ``od_in``."""
+    return minutes / CLOCK_MINUTES * np.pi * od_in
+
+
+def _surface(df: pd.DataFrame) -> np.ndarray:
+    return df.surface.fillna("UNK").astype(str).to_numpy()
+
+
+def interaction_groups(f: pd.DataFrame, settings: Settings) -> np.ndarray:
+    """Group label per row: connected components of "interacts" within one run.
+
+    Two features interact when they share a surface (exactly; UNK only with UNK), their axial edge
+    gap |dpos| * 12 - (L1 + L2) / 2 is within ``axial_spacing_in`` and their circumferential edge
+    gap arc(dclock) - (W1 + W2) / 2 is within ``circ_spacing_in``. A missing clock or OD leaves
+    the circumferential test passing; missing sizes count as 0. Neighbours come from a window
+    over sorted positions, so no dense matrix is built."""
+    rule = settings.matching.interaction_rule
+    n = len(f)
+    if n == 0:
+        return np.zeros(0, dtype=int)
+    pos = _num(f.log_dist_ft)
+    length = np.nan_to_num(_num(f.length_in))
+    width = np.nan_to_num(_num(f.width_in))
+    clock, od = _num(f.clock_min), _num(f.od_in)
+    surf = _surface(f)
+    order = np.argsort(pos, kind="stable")
+    ps = pos[order]
+    reach = (rule.axial_spacing_in + length.max()) * FT_PER_IN * (1 + 1e-9)  # (L1 + L2) / 2 <= max L
+    lo = np.arange(n)
+    hi = np.searchsorted(ps, ps + reach, side="right")
+    cnt = hi - lo - 1  # later neighbours only
+    i = np.repeat(order, cnt)
+    j = order[np.repeat(lo + 1, cnt) + np.arange(cnt.sum()) - np.repeat(np.cumsum(cnt) - cnt, cnt)]
+    axial_gap = np.abs(pos[i] - pos[j]) / FT_PER_IN - (length[i] + length[j]) / 2
+    circ_gap = _arc_in(clock_diff_min(clock[i], clock[j]), od[i]) - (width[i] + width[j]) / 2
+    with np.errstate(invalid="ignore"):
+        ok = (surf[i] == surf[j]) & (axial_gap <= rule.axial_spacing_in) & ~(circ_gap > rule.circ_spacing_in)
+    graph = coo_matrix((np.ones(ok.sum()), (i[ok], j[ok])), shape=(n, n))
+    return connected_components(graph, directed=False)[1]
+
+
+def envelope(f: pd.DataFrame) -> dict:
+    """Bounding box of the member rows in the previous-run frame, as one feature.
+
+    Axial: member pos_prev_ft +- length / 24 ft, so the box spans the outer edges (pos_curr_ft the
+    same way from the members' current-run positions). Circumferential: member clocks are unwrapped
+    relative to the first member into (-360, 360], converted to arc inches (pi * OD), boxed, and the
+    centre converted back to minutes and wrapped (as ``synth._cluster_envelope``); a missing clock
+    leaves ``clock_min`` missing and the width the widest member. Depth is the maximum; the surface
+    is the first non-UNK member surface; ``wt_nom_in`` the first non-missing value."""
+    half = np.nan_to_num(_num(f.length_in)) / 24  # ft
+
+    def axial(col):
+        x = _num(f[col])
+        lo, hi = (x - half).min(), (x + half).max()
+        return (lo + hi) / 2, (hi - lo) * 12
+
+    centre_prev, length = axial("pos_prev_ft")
+    centre_curr, _ = axial("pos_curr_ft")
+    width = np.nan_to_num(_num(f.width_in))
+    clock, od = _num(f.clock_min), _num(f.od_in)
+    od = od[~np.isnan(od)][0] if (~np.isnan(od)).any() else np.nan
+    if np.isnan(clock).any():
+        clock_min, width_in = pd.NA, width.max()
+    else:
+        rel = (clock - clock[0] + 360) % CLOCK_MINUTES - 360
+        arc = _arc_in(rel, od)
+        lo, hi = (arc - width / 2).min(), (arc + width / 2).max()
+        clock_min = wrap_clock_min(clock[0] + (lo + hi) / 2 / (np.pi * od) * CLOCK_MINUTES)
+        width_in = hi - lo
+    surf = [s for s in _surface(f) if s != "UNK"]
+    wt = _num(f.wt_nom_in)
+    wt = wt[~np.isnan(wt)]
+    depth = _num(f.depth_pct)
+    return {
+        "pos_prev_ft": centre_prev, "pos_curr_ft": centre_curr, "length_in": length, "width_in": width_in,
+        "clock_min": clock_min, "depth_pct": np.nan if np.isnan(depth).all() else np.nanmax(depth),
+        "surface": surf[0] if surf else "UNK", "wt_nom_in": wt[0] if len(wt) else np.nan,
+        "od_in": od,
+    }
+
+
+def _group_table(f: pd.DataFrame, settings: Settings):
+    """Envelope table (one row per group, ordered by label), member positions and multi flags."""
+    label = interaction_groups(f, settings)
+    order = np.argsort(f.log_dist_ft.to_numpy(float), kind="stable")  # members in log order
+    members = [order[label[order] == g].tolist() for g in range(label.max() + 1)] if len(f) else []
+    env = pd.DataFrame([envelope(f.iloc[m]) for m in members])
+    vendor = f.vendor_cluster_id.notna().to_numpy()
+    env["multi"] = [len(m) >= 2 or bool(vendor[m].any()) for m in members]
+    return env, members
+
+
+def _box_gaps(p: pd.DataFrame, q: pd.DataFrame, od: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Axial gap (in) and circumferential gap (clock min) between aligned envelope rows; 0 on overlap,
+    NaN circ gap when either clock is missing."""
+    axial = np.abs(_num(p.pos_prev_ft) - _num(q.pos_prev_ft)) / FT_PER_IN - (_num(p.length_in) + _num(q.length_in)) / 2
+    arc = _arc_in(clock_diff_min(p.clock_min, q.clock_min), od)
+    circ = arc - (_num(p.width_in) + _num(q.width_in)) / 2
+    return np.maximum(axial, 0.0), np.maximum(circ, 0.0) / (np.pi * od) * CLOCK_MINUTES
+
+
+def match_clusters(prev: pd.DataFrame, curr: pd.DataFrame, dt_yr: float, settings: Settings):
+    """Many-to-one matches between interaction groups of the features left after the 1:1 pass.
+
+    Inputs are placed frames already filtered to unmatched features in matched rows, with ``od_in``.
+    Groups are formed per run; a group is multi with >= 2 members or a vendor cluster report. A
+    group pair is a candidate when one side is multi, the surfaces are equal or either UNK, and the
+    box gaps (axial in inches; circumferential converted to minutes with the current OD, else the
+    previous) are within ``axial_tol_in`` and ``clock_tol_min``. Scored by ``_metrics`` on the gaps
+    and the envelopes' max depths, then assigned one-to-one. Returns (prev rows, curr rows, metrics)
+    per match, rows being positional member indices in log order."""
+    mt = settings.matching
+    if prev.empty or curr.empty:
+        return []
+    pe, pm = _group_table(prev, settings)
+    ce, cm = _group_table(curr, settings)
+    ps = np.argsort(ce.pos_prev_ft.to_numpy(float), kind="stable")
+    cpos = ce.pos_prev_ft.to_numpy(float)[ps]
+    reach = (mt.axial_tol_in + (pe.length_in.max() + ce.length_in.max()) / 2) * FT_PER_IN * (1 + 1e-9)
+    x = pe.pos_prev_ft.to_numpy(float)
+    lo, hi = np.searchsorted(cpos, x - reach, side="left"), np.searchsorted(cpos, x + reach, side="right")
+    n = hi - lo
+    gi = np.repeat(np.arange(len(pe)), n)
+    gj = ps[np.repeat(lo, n) + np.arange(n.sum()) - np.repeat(np.cumsum(n) - n, n)]
+    p, q = pe.iloc[gi].reset_index(drop=True), ce.iloc[gj].reset_index(drop=True)
+    sp, sq = p.surface.to_numpy(str), q.surface.to_numpy(str)
+    od = np.where(np.isnan(_num(q.od_in)), _num(p.od_in), _num(q.od_in))
+    axial, circ = _box_gaps(p, q, od)
+    with np.errstate(invalid="ignore"):
+        keep = (p.multi.to_numpy() | q.multi.to_numpy()) & ((sp == sq) | (sp == "UNK") | (sq == "UNK"))
+        keep &= (axial <= mt.axial_tol_in) & ~(circ > mt.clock_tol_min)
+    m = _metrics(axial, circ, p.depth_pct, q.depth_pct, p.wt_nom_in, q.wt_nom_in, dt_yr, settings)
+    cands = pd.concat([pd.DataFrame({"prev_i": gi, "curr_i": gj}), m], axis=1)[keep]
+    chosen = assign_one_to_one(cands.reset_index(drop=True))
+    cols = ["axial_diff_in", "clock_diff_min", "depth_change_pct", "implausible", "score"]
+    return [(pm[int(row.prev_i)], cm[int(row.curr_i)], row[cols]) for _, row in chosen.iterrows()]
