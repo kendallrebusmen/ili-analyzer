@@ -13,17 +13,25 @@ DRAFT – for review by qualified personnel.
 
 from __future__ import annotations
 
+import argparse
+import json
+import sys
 from dataclasses import dataclass
 from functools import reduce
+from pathlib import Path
 from typing import get_args
 
 import numpy as np
 import pandas as pd
 
-from ili.config import GrowthMethod, Settings, ToolCfg
-from ili.match import MILS_PER_IN
-from ili.reference import _require_columns, assign_segment, lookup
+from ili.align_welds import DRAFT_LABEL, comparison_dir
+from ili.config import DEFAULT_SETTINGS, PROJECT_ROOT, GrowthMethod, Settings, ToolCfg, load_settings
+from ili.ingest import load_standardized
+from ili.match import MILS_PER_IN, delta_t_years, load_match_table
+from ili.reference import _require_columns, assign_segment, lookup, segment_table
+from ili.schema import FeatureType
 from ili.units import sigma_from_tolerance
+from ili.validation import score_growth, write_metrics
 
 PCT_PER_FRACTION = 100.0
 
@@ -296,3 +304,89 @@ def compute_growth(match_table: pd.DataFrame, dt_yr: float, prev_year: int, curr
     f = f[FEATURE_COLUMNS]
     summary = _summary(f, dt_yr, prev_year, curr_year, settings, prev_run_id, curr_run_id)
     return GrowthResult(f, segment_stats(f, seg_table, p_by_seg), summary)
+
+
+# ---------------------------------------------------------------------------
+# Output and CLI
+# ---------------------------------------------------------------------------
+
+
+def write_growth(result: GrowthResult, out_dir: Path) -> dict[str, Path]:
+    s = result.summary
+    folder = comparison_dir(out_dir, s["prev_run_id"], s["curr_run_id"])
+    folder.mkdir(parents=True, exist_ok=True)
+    paths = {name: folder / name for name in ("growth.csv", "growth_segments.csv", "growth_summary.json")}
+    result.features.to_csv(paths["growth.csv"], index=False, lineterminator="\n")
+    result.segments.to_csv(paths["growth_segments.csv"], index=False, lineterminator="\n")
+    paths["growth_summary.json"].write_text(json.dumps({"label": DRAFT_LABEL, **s}, indent=2), encoding="utf-8")
+    return paths
+
+
+def _run_year(std: pd.DataFrame) -> int:
+    return std.run_date.dropna().iloc[0].year
+
+
+def _line_extent(curr_std: pd.DataFrame) -> tuple[float, float]:
+    """First and last girth-weld log distance of the current run (ft)."""
+    x = curr_std.log_dist_ft[curr_std.feature_type == FeatureType.girth_weld.value].dropna()
+    if x.empty:
+        raise ValueError("the current run has no girth welds to give the line extent")
+    return float(x.min()), float(x.max())
+
+
+def _parser() -> argparse.ArgumentParser:
+    ap = argparse.ArgumentParser(prog="python -m ili.growth",
+                                 description="Corrosion growth rates between two ILI runs. " + DRAFT_LABEL)
+    ap.add_argument("--prev", type=Path, required=True, help="standardized CSV of the previous run")
+    ap.add_argument("--curr", type=Path, required=True, help="standardized CSV of the current run")
+    ap.add_argument("--matches", type=Path, required=True, help="match_table.csv from ili.match")
+    ap.add_argument("--pipe", type=Path, required=True, help="pipe_properties.csv (current-run log distance)")
+    ap.add_argument("--segments", type=Path, help="segments CSV (start_ft, end_ft, segment_id); "
+                    "required unless segment_definition is fixed_length")
+    ap.add_argument("--truth", type=Path, help="ground_truth.csv (synthetic data only) to score against")
+    ap.add_argument("--settings", type=Path, default=DEFAULT_SETTINGS, help="settings YAML")
+    ap.add_argument("--out", type=Path, default=PROJECT_ROOT / "outputs", help="output directory")
+    return ap
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = _parser().parse_args(argv)
+    try:
+        settings = load_settings(args.settings)
+        prev, curr = load_standardized(args.prev), load_standardized(args.curr)
+        matches = load_match_table(args.matches)
+        pipe = pd.read_csv(args.pipe)
+        segments = pd.read_csv(args.segments) if args.segments else None
+        seg_table = segment_table(settings, segments, *_line_extent(curr))
+        result = compute_growth(matches, delta_t_years(prev, curr), _run_year(prev), _run_year(curr), pipe,
+                                seg_table, settings, prev_run_id=str(prev.run_id.iloc[0]),
+                                curr_run_id=str(curr.run_id.iloc[0]))
+        paths = write_growth(result, args.out)
+        score = None
+        if args.truth:
+            truth = pd.read_csv(args.truth, dtype={"prev_feature_id": str, "curr_feature_id": str})
+            score = score_growth(result.features, truth)
+            write_metrics("growth", score, Path(args.out) / "validation_metrics.json")
+    except (ValueError, OSError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    s = result.summary
+    print(DRAFT_LABEL)
+    print(f"{s['prev_run_id']} vs {s['curr_run_id']}: {s['n_features']} metal-loss features, "
+          f"delta t {s['delta_t_years']:.2f} years")
+    print("history: " + ", ".join(f"{k} {v}" for k, v in s["counts_by_history_class"].items()))
+    print("governing method: " + ", ".join(f"{k} {v}" for k, v in s["counts_by_governing_method"].items()))
+    pct = s["pct_negative_raw"]
+    print(f"needs review: {s['n_needs_review']}; negative raw growth: " + ("n/a" if pct is None else f"{pct:.1f}%"))
+    if score is not None:
+        g, r = score["governing"], score["raw"]
+        print(f"conservatism {score['conservatism_rate']:.4f} vs ground truth "
+              f"({score['n_non_conservative']} non-conservative, {score['n_no_governing']} without a rate, "
+              f"passes: {score['passes']})")
+        print(f"governing bias {g['bias_mpy']:+.2f} mpy, RMSE {g['rmse_mpy']:.2f}; raw bias {r['bias_mpy']:+.2f}, RMSE {r['rmse_mpy']:.2f}")
+    print(f"wrote {paths['growth.csv'].parent}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
