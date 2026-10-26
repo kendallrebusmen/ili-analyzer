@@ -87,8 +87,8 @@ def default_rate(n: int, settings: Settings):
 METHODS = get_args(GrowthMethod)  # raw, tolerance_adjusted, segment_percentile, new_feature, full_life, default_rate
 HISTORY_CLASSES = ("matched", "new", "no_history")
 # Why a row needs review, in this order in ``review_reasons``: no governing rate; a method of its class's
-# governing rule is NaN; governing below ``min_rate_mpy`` (not floored, so flagged).
-REVIEW_REASONS = ("no_governing", "incomplete_rule", "below_min_rate")
+# governing rule is NaN; governing below ``min_rate_mpy`` (not floored, so flagged); M4 flagged the match.
+REVIEW_REASONS = ("no_governing", "incomplete_rule", "below_min_rate", "match_review")
 REASON_SEP = ";"
 MATCHED_TYPES = ("matched_1to1", "matched_cluster")
 NEW_TYPE = "new"
@@ -98,10 +98,11 @@ PIPE_WHAT = "pipe properties table"
 INPUT_COLUMNS = (
     "match_id", "match_type", "prev_feature_id", "curr_feature_id", "curr_feature_type", "curr_log_dist_ft",
     "prev_wt_nom_in", "curr_wt_nom_in", "prev_depth_pct", "curr_depth_pct", "curr_length_in",
+    "confidence", "implausible", "needs_review",
 )
 FEATURE_COLUMNS = [
     "match_id", "match_type", "prev_feature_id", "curr_feature_id", "curr_log_dist_ft", "segment_id",
-    "history_class",
+    "history_class", "confidence", "implausible", "match_needs_review",
     "wt_in", "d_prev_pct", "d_curr_pct", "d_prev_in", "d_curr_in", "dt_yr", "sigma_diff_pct", "k_sigma",
     "install_year",
     *(f"{m}_mpy" for m in METHODS),
@@ -120,6 +121,11 @@ class GrowthResult:
     features: pd.DataFrame
     segments: pd.DataFrame
     summary: dict
+
+
+def _none_for_nan(values: pd.Series, kind: type) -> pd.Series:
+    """Object column of ``kind`` values with None (not NaN) where blank, as ``match.load_match_table`` gives."""
+    return pd.Series([None if pd.isna(v) else kind(v) for v in values], dtype=object)
 
 
 def growth_rows(match_table: pd.DataFrame) -> pd.DataFrame:
@@ -188,10 +194,11 @@ def governing_rate(rates: pd.DataFrame, cls, settings: Settings) -> tuple[np.nda
     return gov, method
 
 
-def review_flags(rates: pd.DataFrame, cls, governing_mpy, settings: Settings) -> dict[str, np.ndarray]:
+def review_flags(rates: pd.DataFrame, cls, governing_mpy, match_review, settings: Settings) -> dict[str, np.ndarray]:
     """Per ``REVIEW_REASONS`` name, a bool array of the rows it applies to. ``incomplete_rule``: any method
     ``growth.governing`` lists for the row's class is NaN, so the max was taken over fewer rates than the
-    rule intends. ``below_min_rate``: governing < ``min_rate_mpy`` (governing itself is never floored)."""
+    rule intends. ``below_min_rate``: governing < ``min_rate_mpy`` (governing itself is never floored).
+    ``match_review``: the M4 match row's ``needs_review``, carried so the match evidence reaches M6."""
     cls = np.asarray(cls, dtype=object)
     gov = np.asarray(governing_mpy, dtype=float)
     incomplete = np.zeros(len(rates), dtype=bool)
@@ -200,7 +207,8 @@ def review_flags(rates: pd.DataFrame, cls, governing_mpy, settings: Settings) ->
         for m in getattr(settings.growth.governing, c):
             incomplete |= rows & np.isnan(rates[f"{m}_mpy"].to_numpy(float))
     return {"no_governing": np.isnan(gov), "incomplete_rule": incomplete,
-            "below_min_rate": gov < settings.growth.min_rate_mpy}  # False for NaN
+            "below_min_rate": gov < settings.growth.min_rate_mpy,  # False for NaN
+            "match_review": np.asarray(match_review, dtype=bool)}
 
 
 def join_reasons(flags: dict[str, np.ndarray], n: int) -> tuple[np.ndarray, np.ndarray]:
@@ -300,7 +308,8 @@ def compute_growth(match_table: pd.DataFrame, dt_yr: float, prev_year: int, curr
     calendar years; reference positions are ``curr_log_dist_ft``. A position outside the pipe table is a
     ValueError (reference coverage is a data error). The governing rate is never floored; ``needs_review``
     and ``review_reasons`` flag a row whose rate is missing, incomplete under its rule, or below
-    ``min_rate_mpy`` (``REVIEW_REASONS``)."""
+    ``min_rate_mpy``, or whose M4 match row needs review (``REVIEW_REASONS``); M4's ``confidence``,
+    ``implausible`` and ``needs_review`` (as ``match_needs_review``) are carried as columns."""
     if not dt_yr > 0:
         raise ValueError("dt_yr must be positive")
     g = settings.growth
@@ -315,11 +324,13 @@ def compute_growth(match_table: pd.DataFrame, dt_yr: float, prev_year: int, curr
     seg_id = assign_segment(seg_table, pos)
     cls = history_class(rows.match_type, d_prev_pct, d_curr_pct, install, prev_year)
     matched, new = cls == "matched", cls == "new"
+    match_review = np.array([not pd.isna(v) and bool(v) for v in rows.needs_review], dtype=bool)  # None: unflagged
 
     f = pd.DataFrame({
         "match_id": rows.match_id, "match_type": rows.match_type, "prev_feature_id": rows.prev_feature_id,
         "curr_feature_id": rows.curr_feature_id, "curr_log_dist_ft": pos, "segment_id": pd.Series(seg_id, dtype=object),
-        "history_class": cls, "wt_in": wt, "d_prev_pct": d_prev_pct, "d_curr_pct": d_curr_pct,
+        "history_class": cls, "confidence": _none_for_nan(rows.confidence, str),
+        "implausible": _none_for_nan(rows.implausible, bool), "match_needs_review": match_review, "wt_in": wt, "d_prev_pct": d_prev_pct, "d_curr_pct": d_curr_pct,
         "d_prev_in": d_prev, "d_curr_in": d_curr, "dt_yr": np.full(n, float(dt_yr)),
         "sigma_diff_pct": np.full(n, sigma_diff_pct(settings.tool)), "k_sigma": np.full(n, float(g.k_sigma)),
         "install_year": install,
@@ -333,7 +344,7 @@ def compute_growth(match_table: pd.DataFrame, dt_yr: float, prev_year: int, curr
     f["default_rate_mpy"] = default_rate(n, settings)
     gov, method = governing_rate(f, cls, settings)
     f["governing_mpy"], f["governing_method"] = gov, pd.Series(method, dtype=object)  # object keeps None
-    needs_review, reasons = join_reasons(review_flags(f, cls, gov, settings), n)
+    needs_review, reasons = join_reasons(review_flags(f, cls, gov, match_review, settings), n)
     f["needs_review"], f["review_reasons"] = needs_review, pd.Series(reasons, dtype=object)
     f["length_in"] = rows.curr_length_in.to_numpy(float)
     f["length_rate_ipy"] = length_growth_rate(f.length_in, f.governing_mpy, d_curr, settings)

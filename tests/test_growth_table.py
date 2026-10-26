@@ -12,7 +12,7 @@ from ili.synth import SynthParams, generate
 
 FEATURE_COLUMNS = [
     "match_id", "match_type", "prev_feature_id", "curr_feature_id", "curr_log_dist_ft", "segment_id",
-    "history_class",
+    "history_class", "confidence", "implausible", "match_needs_review",
     "wt_in", "d_prev_pct", "d_curr_pct", "d_prev_in", "d_curr_in", "dt_yr", "sigma_diff_pct", "k_sigma",
     "install_year",
     "raw_mpy", "tolerance_adjusted_mpy", "segment_percentile_mpy", "new_feature_mpy", "full_life_mpy",
@@ -47,7 +47,8 @@ def _with_growth(settings, **kw):
     return settings.model_copy(update={"growth": settings.growth.model_copy(update=kw)})
 
 
-def _row(mid, mtype, pos, d_prev=NAN, d_curr=NAN, wt=0.25, prev_wt=0.25, length=1.0, ftype="metal_loss"):
+def _row(mid, mtype, pos, d_prev=NAN, d_curr=NAN, wt=0.25, prev_wt=0.25, length=1.0, ftype="metal_loss",
+         confidence="high", implausible=False, needs_review=False):
     matched = mtype in ("matched_1to1", "matched_cluster")
     return {
         "match_id": mid, "match_type": mtype,
@@ -57,6 +58,9 @@ def _row(mid, mtype, pos, d_prev=NAN, d_curr=NAN, wt=0.25, prev_wt=0.25, length=
         "curr_log_dist_ft": NAN if mtype == "missing" else pos,
         "prev_wt_nom_in": prev_wt if matched or mtype == "missing" else NAN,
         "curr_wt_nom_in": wt, "prev_depth_pct": d_prev, "curr_depth_pct": d_curr, "curr_length_in": length,
+        # M4 sets confidence and implausible on matched rows only
+        "confidence": confidence if matched else None, "implausible": implausible if matched else None,
+        "needs_review": needs_review,
     }
 
 
@@ -121,6 +125,15 @@ def test_one_row_per_current_metal_loss(synth_growth):
     assert sum(s["counts_by_history_class"].values()) == len(f)
     assert sum(s["counts_by_governing_method"].values()) + s["counts_by_review_reason"]["no_governing"] == len(f)
     assert s["n_needs_review"] == int(f.needs_review.sum()) == int(f.review_reasons.notna().sum())
+    # M4's review evidence is carried and never lost
+    m4 = mt.set_index("match_id").loc[f.match_id]
+    assert f.confidence.tolist() == m4.confidence.tolist()
+    assert f.implausible.tolist() == m4.implausible.tolist()
+    assert f.match_needs_review.tolist() == m4.needs_review.astype(bool).tolist()
+    assert f.match_needs_review.any() and f.implausible.eq(True).any()  # the synth exercises both
+    assert f.needs_review[f.match_needs_review].all()
+    assert f.review_reasons[f.match_needs_review].str.contains("match_review").all()
+    assert s["counts_by_review_reason"]["match_review"] == int(f.match_needs_review.sum())
     assert sum(s["raw_histogram"]["counts"]) == s["counts_by_history_class"]["matched"]
 
 
@@ -172,7 +185,8 @@ def test_segment_percentile_hand_built(settings):
         "default_rate": 0,
     }
     assert s["n_needs_review"] == 2
-    assert s["counts_by_review_reason"] == {"no_governing": 0, "incomplete_rule": 2, "below_min_rate": 0}
+    assert s["counts_by_review_reason"] == {"no_governing": 0, "incomplete_rule": 2, "below_min_rate": 0,
+                                            "match_review": 0}
     assert s["pct_negative_raw"] == pytest.approx(20.0)
     assert s["raw_histogram"]["bin_edges_mpy"] == pytest.approx([float(e) for e in range(-2, 11)])
     assert s["raw_histogram"]["counts"] == [1, 0, 1, 1, 0, 1, 0, 0, 0, 0, 0, 1]
@@ -335,6 +349,30 @@ def test_review_reasons(settings):
     only_new = settings.growth.governing.model_copy(update={"new": ["new_feature"]})
     low = _by_id(_run(SEG_A_MATCHED + [_row("B3", "new", 400.0, d_curr=6.0)], _with_growth(settings, governing=only_new)))
     assert low.loc["B3", "review_reasons"] == "below_min_rate"
+
+
+def test_match_review_carried(settings):
+    rows = [
+        _row("R1", "matched_1to1", 100.0, 30.0, 26.0, confidence="low", implausible=True, needs_review=True),
+        _row("R2", "matched_1to1", 150.0, 30.0, 32.0, confidence="medium"),
+        _row("R3", "matched_cluster", 200.0, 30.0, 34.0, confidence="medium", needs_review=True),
+        _row("R4", "new", 2500.0, d_curr=6.0, needs_review=True),
+        _row("R5", "new", 300.0, d_curr=20.0, needs_review=None),  # unset flag: not a match review
+    ]
+    f = _by_id(_run(rows, settings))
+    assert list(f.reset_index().columns) == FEATURE_COLUMNS
+    assert f.confidence.tolist() == ["low", "medium", "medium", None, None]
+    assert f.implausible.tolist() == [True, False, False, None, None]
+    assert f.match_needs_review.tolist() == [True, False, True, True, False]
+    assert f.match_needs_review.dtype == bool
+    assert f.needs_review.tolist() == [True, False, True, True, False]
+    assert f.review_reasons.tolist() == ["match_review", None, "match_review",
+                                         "incomplete_rule;below_min_rate;match_review", None]
+    # the rates do not change; only the flags do
+    assert f.loc["R1", "governing_mpy"] == pytest.approx(-2 + MARGIN)
+    assert f.loc["R1", "governing_method"] == "tolerance_adjusted"
+    with pytest.raises(ValueError, match="confidence"):
+        _run([{k: v for k, v in rows[0].items() if k != "confidence"}], settings)
 
 
 def test_length_growth_options(settings):
