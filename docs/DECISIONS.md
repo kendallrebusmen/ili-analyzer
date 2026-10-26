@@ -165,14 +165,32 @@ Interpretations of `docs/SPEC.md` and choices the spec leaves open. Newest at th
   - At 80 % certainty roughly 10 % of genuine matches carry the flag (confidence drops one band). This affects the review queue, not precision/recall.
 - **Assignment.** `linear_sum_assignment` per connected component of the candidate graph (equivalent to per joint, and handles near-weld pairs).
 - **Vendor cluster reports** (`vendor_cluster_id` set) are excluded from the 1:1 pass, so one pit cannot take the report. They are matched in the cluster pass.
+  - **Pits claimed by a report are withheld from 1:1 too.** A metal-loss feature whose box interacts with an opposite-run vendor report's box goes to the cluster pass. The test is the interaction rule (edge gaps ≤ `axial_spacing_in` / `circ_spacing_in` via the current-run OD, same surface), on the previous-run axis. Without this, a nearby individual feature could take a member pit one-to-one.
 - **Metal loss only.** Interaction grouping and cluster matching apply to metal_loss (spec §10.6 frames the interaction rule as clustering metal loss).
 - **Cluster pass.** Groups come from the interaction rule (edge gaps ≤ `axial_spacing_in` / `circ_spacing_in`, same surface). Group pairs need at least one multi side (≥ 2 members or a vendor report). Box gaps are scored with the same formula.
   - After the group assignment, a vendor cluster report absorbs every leftover opposite-run metal-loss group within tolerance of its envelope.
+  - **Absorbed groups keep their own evidence.** Each absorbed group is scored by its box gap to the host's original (pre-absorption) opposite envelope.
+    - The match score is the max over the group pair and every absorbed group. `depth_change_pct` and `implausible` (and so the depth penalty in that score) come from the final merged envelopes, because one member pit's depth says nothing against a whole envelope's maximum.
+    - The tolerances are unchanged.
+  - **`absorbed` column** (after `n_curr`). It is True on a cluster match that absorbed at least one group. Such a match always needs review and is capped at `medium` confidence. The summary counts `n_absorbed`.
+- **`axial_diff_in` / `clock_diff_min`.** On `matched_1to1` rows these are centre-to-centre distances. On `matched_cluster` rows they are envelope box gaps (0 on overlap). An absorbed cluster shows the largest gap among the group pair and its absorbed groups.
   - Tool noise of ~1–2 in / ±25 min splits individually reported pits beyond the 1 in interaction spacing. The vendor asserts one envelope holds them. `interaction_rule` is the IMP criterion and was not widened.
 - **OD for the interaction rule** comes from `pipe_properties` at the feature's current-run position. Up to `anchor_tol_ft` outside the table uses the nearest row; beyond that is an error.
+  - OD is looked up only for features in matched weld-map rows, the only ones that use it. A run covering more line than the other, or than the pipe table, is fine.
+  - An empty pipe table, a row without `od_in`, or a weld map missing a required column is a `ValueError`.
 - **Missing hints**, in order: `in_repaired_section` (removed row in a repair, or position inside a repairs span), `near_threshold` (depth < reporting threshold + depth tolerance), `unexplained`.
-- **Confidence** comes from score bands for matches only. `needs_review` = low confidence or unexplained missing; `review_status` starts `pending`. A deep feature that is `new` is not flagged in M4.
+- **Confidence** comes from score bands for matches only. `needs_review` = low confidence, unexplained missing, or an absorbed cluster; `review_status` starts `pending`. A deep feature that is `new` is not flagged in M4.
 - **Scoring** (`validation.score_matching`): precision/recall over (prev id, curr id) links. A cluster counts every prev × curr pairing. Confusion is per run and truth class. Acceptance additionally requires every truth `matched_cluster` id predicted `matched_cluster`.
-- **Results.** Default 20-mile dataset: precision 1.000, recall 0.990 (511/516 links, no false links). Seeds 1–5 at 5 miles: precision 1.000, recall 0.994–0.998.
+  - **The table must account for every reported anomaly exactly once.** Each run's reported ids are taken from the truth (`{run}_status` reported / reported_in_cluster, anomaly types).
+  - The score counts four failures:
+    - `n_unreported`: a reported id that is absent from the table.
+    - `n_duplicated`: an id that appears in more than one row.
+    - `n_wrong_side`: a row whose ids do not fit its type. 1:1 needs exactly one id on each side, a cluster needs both sides non-empty, `new` is curr-only and `missing` is prev-only.
+    - `n_duplicate_links`: the same link produced by more than one row.
+  - `passes` needs the precision/recall targets, all four counts at 0, and at least one truth link.
+- **Results.**
+  - Default 20-mile dataset: precision 1.000, recall 0.990 (511/516 links, no false links). All four table checks are 0. There are 3 absorbed clusters, and 42 rows need review.
+  - Seeds 1–5 at 5 miles: precision 1.000, recall 0.994–0.998, table checks 0.
+  - Dense stress case (5 mi, 5,000 metal-loss features, 60 cluster sites): precision 0.996, recall 0.992.
   - The remaining misses are true 1:1 pairs whose clocks differ by 47–74 min, just over `clock_tol_min` = 45 (PLACEHOLDER). Left for engineer sign-off, not tuned.
   - No settings changed in M4.
