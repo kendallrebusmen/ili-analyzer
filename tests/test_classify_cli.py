@@ -47,6 +47,22 @@ def test_cli_writes_outputs(synth, tmp_path, capsys):
     assert summary["curr_run_id"] == gs["curr_run_id"] and summary["prev_run_id"] == gs["prev_run_id"]
     printed = capsys.readouterr().out
     assert "DRAFT" in printed and "requires review" in printed and "overdue" in printed
+    # the immediate list: one line per immediate feature (match id, feature id, rule, action note)
+    immediate = table[table.governing_category == "immediate"]
+    assert len(immediate) > 0 and f"immediate ({len(immediate)}):" in printed
+    for r in immediate.itertuples(index=False):
+        assert f"  {r.match_id}  {r.curr_feature_id}  {r.governing_rule}  {r.action_note}" in printed
+    # every review reason, and the could-be-more-severe counts by worst category
+    reasons = summary["counts_by_review_reason"]
+    assert ("requires review: " + str(summary["n_requires_review"]) + " ("
+            + ", ".join(f"{k} {v}" for k, v in reasons.items()) + ")") in printed
+    more = summary["could_be_more_severe_by_worst_category"]
+    assert reasons.get("could_be_more_severe", 0) == sum(more.values())
+    assert (f"could be more severe: {sum(more.values())} (worst case: immediate {more['immediate']}, "
+            f"60_day {more['60_day']}, 180_day {more['180_day']}, imp_scheduled {more['imp_scheduled']})") in printed
+    more_rows = table.review_reasons.fillna("").str.split(";").map(lambda x: "could_be_more_severe" in x)
+    assert (table.worst_case_category[more_rows].map(classify.CATEGORY_PRIORITY.index)
+            < table.governing_category[more_rows].map(classify.CATEGORY_PRIORITY.index)).all()
     assert "!!!!" in printed and summary["discovery_warning"] in printed
     assert summary["discovery_date_source"] == "latest_permissible"
 

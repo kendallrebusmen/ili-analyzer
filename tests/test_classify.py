@@ -134,7 +134,11 @@ def test_imp_scheduled_and_evaluate_defaults(settings, criteria):
     assert (m["governing_category"], m["governing_rule"], m["due_date"]) == ("evaluate", "EVALUATE", None)
     # Review Focus #5: unknown pressures leave IMM-2 and D180-4 not evaluable, flagged (never a silent pass)
     assert m["rules_not_evaluable"] == "IMM-2;D180-4;REMAINING_LIFE"
-    assert m["requires_review"] is True and m["review_reasons"] == "rl_missing;rule_not_evaluable"
+    assert m["requires_review"] is True
+    assert m["review_reasons"] == "rl_missing;rule_not_evaluable;could_be_more_severe"
+    # IMM-2 unknown: the worst case is immediate, due at discovery
+    assert (m["worst_case_category"], m["worst_case_rule"], m["worst_case_due_date"]) == \
+        ("immediate", "IMM-2", DISCOVERED)
 
 
 def test_unknown_that_cannot_change_outcome_does_not_flag(settings, criteria):
@@ -153,7 +157,9 @@ def test_unknown_that_could_trigger_flags(settings, criteria):
     res = go([base("A", depth_pct_assessed=60.0, **unknown)], settings, criteria)
     r = rec(res, "A")
     assert r["rules_not_evaluable"] == "D180-6" and r["triggered_rules"] is None
-    assert r["requires_review"] is True and r["review_reasons"] == "rule_not_evaluable"
+    assert r["requires_review"] is True and r["review_reasons"] == "rule_not_evaluable;could_be_more_severe"
+    assert (r["worst_case_category"], r["worst_case_rule"], r["worst_case_due_date"]) == \
+        ("180_day", "D180-6", DISCOVERED + timedelta(days=180))
     # Unknown is never treated as triggered: the feature is not raised to 180_day by D180-6.
     assert r["governing_category"] == "evaluate" and r["due_date"] is None
     assert res.summary["n_not_evaluable_by_rule"] == {"D180-6": 1}
@@ -168,11 +174,17 @@ def test_not_evaluable_more_severe_rule_neither_raises_nor_lowers(settings, crit
     a, b = rec(res, "A"), rec(res, "B")
     assert (a["governing_category"], a["governing_rule"], a["triggered_rules"]) == ("180_day", "D180-4", "D180-4")
     assert a["rules_not_evaluable"] == "IMM-2" and a["requires_review"] is True
-    assert a["review_reasons"] == "rule_not_evaluable"
+    assert a["review_reasons"] == "rule_not_evaluable;could_be_more_severe"
+    assert (a["worst_case_category"], a["worst_case_rule"], a["worst_case_due_date"]) == \
+        ("immediate", "IMM-2", DISCOVERED)
     assert a["due_date"] == DISCOVERED + timedelta(days=180) and a["action_note"] is None
     # nor does an unknown lower a known category
     assert (b["governing_category"], b["governing_rule"]) == ("immediate", "IMM-1")
     assert b["rules_not_evaluable"] == "IMM-2" and b["requires_review"] is True
+    # the not-evaluable IMM-2 cannot outrank immediate: no could_be_more_severe
+    assert b["review_reasons"] == "rule_not_evaluable"
+    assert (b["worst_case_category"], b["worst_case_rule"], b["worst_case_due_date"]) == \
+        ("immediate", "IMM-1", DISCOVERED)
 
 
 def test_rule_review_and_upstream_reasons(settings, criteria):
@@ -372,7 +384,8 @@ def test_columns_order_and_summary(settings, criteria):
     assert list(res.table.columns) == CLASSIFICATION_COLUMNS == [
         *FEATURE_VARIABLE_COLUMNS, "rule_set", "triggered_rules", "rules_not_evaluable", "governing_category",
         "governing_rule", "requires_review", "review_reasons", "discovery_date", "discovery_date_source",
-        "due_date", "due_date_basis", "action_note"]
+        "due_date", "due_date_basis", "worst_case_category", "worst_case_rule", "worst_case_due_date",
+        "action_note"]
     assert list(res.table.match_id) == ["IM", "D60", "D180", "IMP", "EV", "NE"]
     s = res.summary
     assert s["criteria_version"] == criteria.version and s["criteria_sha256"] == "ab" * 32
@@ -492,3 +505,96 @@ def test_summary_traceability(settings, criteria):
     # library callers that do not say: unknown, not guessed
     s = classify(frame(_five()), criteria, settings, ASSESSED).summary
     assert s["criteria_path"] is None and s["crossings_file_given"] is None
+
+
+# --- unknown clock: top/bottom case split, worst case (final review I1) ---------------------------------
+
+
+def _row(res, m):
+    r = rec(res, m)
+    return (r["governing_category"], r["governing_rule"], r["due_date"], r["worst_case_category"],
+            r["worst_case_rule"], r["worst_case_due_date"])
+
+
+def test_unknown_clock_dent_governs_at_the_guaranteed_floor(settings, criteria):
+    """A dent with a blank clock is top or bottom of pipe. IMM-3/D60-2 (metal loss) and IMM-4/D180-3 (> 6 %)
+    are complementary on top_of_pipe, so the category is certain to be at least the less severe outcome:
+    that floor governs, with a due date; the more severe outcome is the worst case and flags review."""
+    unknown_clock = dict(clock_min=None, top_of_pipe=None)
+    rows = [base("ML", "dent", dent_metal_loss=True, **unknown_clock),  # probe M00179
+            base("DEEP", "dent", **dent_pct(6.56), **unknown_clock),  # probe M00372
+            base("NML", "dent", could_affect_hca=False, segment_id="SEG-02", dent_metal_loss=True, **unknown_clock)]
+    res = go(rows, settings, criteria)
+    d60, d180 = DISCOVERED + timedelta(days=60), DISCOVERED + timedelta(days=180)
+    assert _row(res, "ML") == ("60_day", "D60-2", d60, "immediate", "IMM-3", DISCOVERED)
+    assert _row(res, "DEEP") == ("180_day", "D180-3", d180, "immediate", "IMM-4", DISCOVERED)
+    assert _row(res, "NML") == ("60_day", "NH-D60-2", d60, "immediate", "NH-IMM-3", DISCOVERED)
+    ml, deep = rec(res, "ML"), rec(res, "DEEP")
+    assert (ml["triggered_rules"], ml["rules_not_evaluable"]) == ("D60-2", "IMM-3")
+    assert (deep["triggered_rules"], deep["rules_not_evaluable"]) == ("D180-3", "IMM-4;D60-1;D180-2")
+    for r in (ml, deep):
+        assert r["requires_review"] is True and r["review_reasons"] == "rule_not_evaluable;could_be_more_severe"
+        assert r["due_date_basis"] == "regulatory" and r["action_note"] is None
+    assert rec(res, "NML")["review_reasons"] == "rule_review;rule_not_evaluable;could_be_more_severe;nh_placeholder"
+    s = res.summary
+    assert s["could_be_more_severe_by_worst_category"] == {"immediate": 3, "60_day": 0, "180_day": 0,
+                                                           "imp_scheduled": 0, "evaluate": 0}
+    assert s["counts_by_review_reason"] == {"could_be_more_severe": 3, "rule_not_evaluable": 3,
+                                            "nh_placeholder": 1, "rule_review": 1}
+    assert s["counts_by_category"]["immediate"] == 0 and s["counts_by_rule"] == {"D60-2": 1, "D180-3": 1,
+                                                                                 "NH-D60-2": 1}
+
+
+def test_unknown_clock_that_cannot_matter_is_not_flagged(settings, criteria):
+    unknown_clock = dict(clock_min=None, top_of_pipe=None)
+    # shallow, no metal loss: evaluate whether top or bottom; nothing unknown, nothing flagged
+    # near a weld and 2.5 %: D180-1 either way (tie: the bottom case governs); D180-2 (top only) is not
+    # evaluable but cannot outrank 180_day
+    rows = [base("SHALLOW", "dent", **unknown_clock),
+            base("TIE", "dent", near_girth_weld=True, **dent_pct(2.5), **unknown_clock)]
+    res = go(rows, settings, criteria)
+    sh, tie = rec(res, "SHALLOW"), rec(res, "TIE")
+    assert _row(res, "SHALLOW") == ("evaluate", "EVALUATE", None, "evaluate", "EVALUATE", None)
+    assert sh["rules_not_evaluable"] is None and sh["review_reasons"] is None and sh["requires_review"] is False
+    d180 = DISCOVERED + timedelta(days=180)
+    assert _row(res, "TIE") == ("180_day", "D180-1", d180, "180_day", "D180-1", d180)
+    assert (tie["triggered_rules"], tie["rules_not_evaluable"]) == ("D180-1", "D180-2")
+    assert tie["review_reasons"] == "rule_review;rule_not_evaluable"
+
+
+def test_known_clock_is_not_split(settings, criteria):
+    rows = [base("TOP", "dent", clock_min=0, top_of_pipe=True, **dent_pct(6.56)),
+            base("BOT", "dent", clock_min=360, top_of_pipe=False, **dent_pct(6.56)),
+            base("TOPML", "dent", clock_min=0, top_of_pipe=True, dent_metal_loss=True)]
+    res = go(rows, settings, criteria)
+    assert _row(res, "TOP") == ("immediate", "IMM-4", DISCOVERED, "immediate", "IMM-4", DISCOVERED)
+    d180 = DISCOVERED + timedelta(days=180)
+    assert _row(res, "BOT") == ("180_day", "D180-3", d180, "180_day", "D180-3", d180)
+    assert _row(res, "TOPML") == ("immediate", "IMM-3", DISCOVERED, "immediate", "IMM-3", DISCOVERED)
+    assert rec(res, "TOP")["triggered_rules"] == "IMM-4;D60-1;D180-2"
+    for m in ("TOP", "BOT", "TOPML"):
+        assert rec(res, m)["rules_not_evaluable"] is None and rec(res, m)["review_reasons"] is None
+
+
+def test_placeholder_not_evaluable_below_governing_is_not_more_severe(settings, criteria):
+    """A rule left unknown by a null PLACEHOLDER (seam position, weld proximity) whose category is below the
+    governing one is listed (rule_not_evaluable) but is not could_be_more_severe; one above it is."""
+    rows = [base("IM", depth_pct_assessed=85.0, seam_interaction=None),  # D180-8 unknown under immediate
+            base("D60", "dent", clock_min=0, top_of_pipe=True, near_girth_weld=None, **dent_pct(4.0)),  # D180-1
+            base("EV", seam_interaction=None),  # D180-8 unknown above evaluate
+            base("IMP", seam_interaction=None, dig_required_by_remaining_life=True)]  # and above imp_scheduled
+    res = go(rows, settings, criteria)
+    im, d60, ev, imp = (rec(res, m) for m in ("IM", "D60", "EV", "IMP"))
+    assert im["rules_not_evaluable"] == "D180-8" and im["review_reasons"] == "rule_not_evaluable"
+    assert (im["worst_case_category"], im["worst_case_rule"]) == ("immediate", "IMM-1")
+    assert d60["rules_not_evaluable"] == "D180-1" and d60["review_reasons"] == "rule_not_evaluable"
+    assert (d60["worst_case_category"], d60["worst_case_rule"]) == ("60_day", "D60-1")
+    d180 = DISCOVERED + timedelta(days=180)
+    assert (ev["worst_case_category"], ev["worst_case_rule"], ev["worst_case_due_date"]) == ("180_day", "D180-8",
+                                                                                             d180)
+    assert ev["review_reasons"] == "rule_not_evaluable;could_be_more_severe"
+    # imp_scheduled due on the repair-by date; the 180-day worst case is the earlier of the two
+    assert (imp["governing_category"], imp["due_date"]) == ("imp_scheduled", REPAIR_BY)
+    assert (imp["worst_case_category"], imp["worst_case_due_date"]) == ("180_day", d180)
+    assert imp["review_reasons"] == "rule_not_evaluable;could_be_more_severe"
+    assert res.summary["could_be_more_severe_by_worst_category"]["180_day"] == 2

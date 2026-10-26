@@ -422,6 +422,9 @@ GOVERNING_REMAINING_LIFE, GOVERNING_EVALUATE = "REMAINING_LIFE", "EVALUATE"
 RULE_SET_HCA, RULE_SET_NON_HCA, RULE_SET_HCA_ASSUMED = "hca", "non_hca", "hca_assumed"
 # Review reasons classification adds after the upstream ones, in this order.
 REVIEW_RULE, REVIEW_NOT_EVALUABLE = "rule_review", "rule_not_evaluable"
+# The worst case (a not-evaluable rule, or the other side of an unknown top-of-pipe split) outranks the
+# governing category: the feature could be more severe than it is classified.
+REVIEW_COULD_BE_MORE_SEVERE = "could_be_more_severe"
 REVIEW_HCA_UNKNOWN, REVIEW_NH_PLACEHOLDER = "hca_unknown", "nh_placeholder"
 REVIEW_DUE_DATE, REVIEW_OVERDUE = "due_date_unknown", "overdue_at_discovery"
 DISCOVERY_ENTERED, DISCOVERY_LATEST = "entered", "latest_permissible"
@@ -433,7 +436,7 @@ DISCOVERY_WARNING = ("Discovery date not entered: using the latest permissible d
 CLASSIFICATION_COLUMNS = [
     *FEATURE_VARIABLE_COLUMNS, "rule_set", "triggered_rules", "rules_not_evaluable", "governing_category",
     "governing_rule", "requires_review", "review_reasons", "discovery_date", "discovery_date_source",
-    "due_date", "due_date_basis", "action_note",
+    "due_date", "due_date_basis", "worst_case_category", "worst_case_rule", "worst_case_due_date", "action_note",
 ]
 
 
@@ -498,6 +501,28 @@ def _join(items: list[str]):
     return REASON_SEP.join(items) if items else None
 
 
+def _evaluate(compiled, d: dict, applies: str) -> tuple[list, list[str]]:
+    """(triggered rules, ids of not-evaluable rules), both in criteria-file order, of the rules that apply to
+    the feature (``applies_to`` ``all`` or ``applies``, ``feature_types`` holding its type)."""
+    triggered, unknown = [], []
+    for rule, cond, types in compiled:
+        if rule.applies_to not in ("all", applies) or d["feature_type"] not in types:
+            continue
+        value = cond.evaluate(d)
+        if value is True:
+            triggered.append(rule)
+        elif value is None:
+            unknown.append(rule.id)
+    return triggered, unknown
+
+
+def _outcome(triggered: list, default: tuple[str, str], rank: dict) -> tuple[str, str]:
+    """(category, governing rule): the highest-priority triggered category, or ``default`` when that is
+    higher; the rule is the first triggered one in file order within it, else the default's pseudo-rule."""
+    category = min([r.category for r in triggered] + [default[0]], key=rank.__getitem__)
+    return category, next((r.id for r in triggered if r.category == category), default[1])
+
+
 def classify(variables: pd.DataFrame, criteria: RepairCriteria, settings: Settings, assessment_date,
              discovery_date=None, criteria_sha256: str | None = None, criteria_path: str | None = None,
              crossings_file_given: bool | None = None) -> ClassificationResult:
@@ -516,8 +541,17 @@ def classify(variables: pd.DataFrame, criteria: RepairCriteria, settings: Settin
       category (an unknown is neither a trigger nor a pass): it is listed and requires review. A
       metal-loss feature with an unknown dig flag is never ``imp_scheduled`` by guess; ``REMAINING_LIFE``
       is listed as not evaluable.
+    - **Unknown top of pipe** (blank clock). The rules are evaluated twice, with ``top_of_pipe`` True and
+      False. The less severe outcome (ties: the bottom case) is a guaranteed floor and governs, with its
+      rule and due date; its triggered rules are ``triggered_rules``, and every other rule the Kleene
+      evaluation left unknown stays in ``rules_not_evaluable``. The more severe outcome feeds the worst case.
+    - **Worst case** (every feature). ``worst_case_category``: the most severe of the governing category,
+      the category of every not-evaluable rule (``REMAINING_LIFE``: ``imp_scheduled``) and the other side
+      of a top-of-pipe split; ``worst_case_rule``: the governing rule when the worst case is no worse, else
+      the first such rule in file order; ``worst_case_due_date``: ``_due_date`` of the worst category.
     - **Review.** ``review_reasons``: the upstream reasons, then ``rule_review`` (a triggered rule has
-      ``requires_review``), ``rule_not_evaluable``, ``hca_unknown``, ``nh_placeholder`` (every ``non_hca``
+      ``requires_review``), ``rule_not_evaluable``, ``could_be_more_severe`` (the worst case outranks the
+      governing category), ``hca_unknown``, ``nh_placeholder`` (every ``non_hca``
       feature, rule fired or not: the NH set is a PLACEHOLDER pending IMP criteria), ``due_date_unknown``,
       ``overdue_at_discovery`` (a due date before the discovery date, any category), without repeats
       (None when there are none). ``requires_review``: the upstream flag (unknown counts as True) or any
@@ -542,32 +576,49 @@ def classify(variables: pd.DataFrame, criteria: RepairCriteria, settings: Settin
     compiled = [(r, compile_condition(r.condition, names), frozenset(t.value for t in r.feature_types))
                 for r in criteria.rules]  # once per run
     rank = {c: k for k, c in enumerate(CATEGORY_PRIORITY)}
+    rule_category = {r.id: r.category for r in criteria.rules} | {GOVERNING_REMAINING_LIFE: "imp_scheduled"}
     rows = variables.reset_index(drop=True)
     out = {c: [] for c in CLASSIFICATION_COLUMNS[len(FEATURE_VARIABLE_COLUMNS):]}
     for k, d in enumerate(variable_dicts(rows)):
         upstream = rows.upstream_review_reasons.iloc[k]
         reasons = [r for r in upstream.split(REASON_SEP) if r] if isinstance(upstream, str) else []
         rule_set, applies, extra = _rule_set(d["could_affect_hca"], reasons)
-        triggered, unknown = [], []
-        for rule, cond, types in compiled:
-            if rule.applies_to not in ("all", applies) or d["feature_type"] not in types:
-                continue
-            value = cond.evaluate(d)
-            if value is True:
-                triggered.append(rule)
-            elif value is None:
-                unknown.append(rule.id)
         dig = d["dig_required_by_remaining_life"]
+        default = ("imp_scheduled", GOVERNING_REMAINING_LIFE) if dig is True else ("evaluate", GOVERNING_EVALUATE)
+        triggered, unknown = _evaluate(compiled, d, applies)  # Kleene, on the values as known
+        other_case = None
+        if d["top_of_pipe"] is None:
+            # Unknown clock: top and bottom are complementary (IMM-3/D60-2, IMM-4/D180-3), so the feature is
+            # at least the less severe of the two outcomes. Evaluate both; the floor case (ties: bottom)
+            # governs, the other case feeds the worst case. A rule the floor case fires is triggered; every
+            # other rule the Kleene evaluation left unknown stays not evaluable.
+            cases = []
+            for top in (False, True):
+                case_triggered, _ = _evaluate(compiled, {**d, "top_of_pipe": top}, applies)
+                cases.append((*_outcome(case_triggered, default, rank), case_triggered))
+            floor = max(cases, key=lambda c: rank[c[0]])  # least severe; the first (bottom) on a tie
+            other_case = cases[1] if floor is cases[0] else cases[0]
+            fired = {r.id for r in floor[2]}
+            triggered, unknown = floor[2], [i for i in unknown if i not in fired]
         if d["feature_type"] == FeatureType.metal_loss.value and dig is None:
             unknown.append(GOVERNING_REMAINING_LIFE)
-        default = ("imp_scheduled", GOVERNING_REMAINING_LIFE) if dig is True else ("evaluate", GOVERNING_EVALUATE)
-        category = min([r.category for r in triggered] + [default[0]], key=rank.__getitem__)
-        governing = next((r.id for r in triggered if r.category == category), default[1])
+        category, governing = _outcome(triggered, default, rank)
 
-        due, basis = _due_date(category, discovered, cfg.due_days,
-                               _as_date(rows.repair_by_date.iloc[k], "repair_by_date"))
+        # Worst case: the most severe of the governing category, every not-evaluable rule's category and the
+        # other side of a top-of-pipe split. Its rule is the governing rule when it is no worse, else the
+        # first in file order of that category.
+        candidates = [(rule_category[i], i) for i in unknown]
+        if other_case is not None:
+            candidates.append(other_case[:2])
+        worst = min([category] + [c for c, _ in candidates], key=rank.__getitem__)
+        worst_rule = governing if worst == category else next(i for c, i in candidates if c == worst)
+
+        repair_by = _as_date(rows.repair_by_date.iloc[k], "repair_by_date")
+        due, basis = _due_date(category, discovered, cfg.due_days, repair_by)
+        worst_due = due if worst == category else _due_date(worst, discovered, cfg.due_days, repair_by)[0]
         reasons += [REVIEW_RULE] * any(r.requires_review for r in triggered)
-        reasons += [REVIEW_NOT_EVALUABLE] * bool(unknown) + extra
+        reasons += [REVIEW_NOT_EVALUABLE] * bool(unknown)
+        reasons += [REVIEW_COULD_BE_MORE_SEVERE] * (rank[worst] < rank[category]) + extra
         reasons += [REVIEW_NH_PLACEHOLDER] * (rule_set == RULE_SET_NON_HCA)
         reasons += [REVIEW_DUE_DATE] * (category == "imp_scheduled" and due is None)
         reasons += [REVIEW_OVERDUE] * (due is not None and due < discovered)
@@ -579,6 +630,7 @@ def classify(variables: pd.DataFrame, criteria: RepairCriteria, settings: Settin
             ("governing_rule", governing), ("requires_review", upstream_flag is not False or bool(reasons)),
             ("review_reasons", _join(reasons)), ("discovery_date", discovered),
             ("discovery_date_source", source), ("due_date", due), ("due_date_basis", basis),
+            ("worst_case_category", worst), ("worst_case_rule", worst_rule), ("worst_case_due_date", worst_due),
             ("action_note", IMMEDIATE_ACTION_NOTE if category == "immediate" else None),
         ):
             out[col].append(value)
@@ -596,6 +648,17 @@ def _count_ids(joined, order: list[str]) -> dict[str, int]:
     """Occurrences of each id in the ``;``-joined cells, in ``order``, only ids that occur."""
     hits = [x for cell in joined if isinstance(cell, str) for x in cell.split(REASON_SEP)]
     return {i: hits.count(i) for i in order if i in hits}
+
+
+def _has_reason(joined, reason: str) -> np.ndarray:
+    return np.array([isinstance(c, str) and reason in c.split(REASON_SEP) for c in joined], dtype=bool)
+
+
+def _reason_counts(joined) -> dict[str, int]:
+    """Features per review reason, every reason, most frequent first (ties by name)."""
+    hits = [x for cell in joined if isinstance(cell, str) for x in cell.split(REASON_SEP) if x]
+    counts = {r: hits.count(r) for r in set(hits)}
+    return dict(sorted(counts.items(), key=lambda kv: (-kv[1], kv[0])))
 
 
 def _optional_float(value) -> float | None:
@@ -616,6 +679,11 @@ def _classification_summary(table: pd.DataFrame, criteria: RepairCriteria, setti
         "counts_by_category": {c: int((table.governing_category == c).sum()) for c in CATEGORY_PRIORITY},
         "counts_by_rule": _count_ids(table.triggered_rules, ids),
         "n_requires_review": int(table.requires_review.sum()),
+        "counts_by_review_reason": _reason_counts(table.review_reasons),
+        "could_be_more_severe_by_worst_category": {
+            c: int(((table.worst_case_category == c).to_numpy(bool)
+                    & _has_reason(table.review_reasons, REVIEW_COULD_BE_MORE_SEVERE)).sum())
+            for c in CATEGORY_PRIORITY},
         "n_overdue_at_discovery": int(sum(d is not None and d < discovered for d in table.due_date)),
         "counts_by_due_date_basis": {b: int((table.due_date_basis == b).sum()) for b in DUE_DATE_BASES},
         "n_not_evaluable_by_rule": _count_ids(table.rules_not_evaluable, [*ids, GOVERNING_REMAINING_LIFE]),
@@ -645,7 +713,6 @@ def _classification_summary(table: pd.DataFrame, criteria: RepairCriteria, setti
 # ---------------------------------------------------------------------------
 
 OUTPUT_FILES = ("classification.csv", "classification_summary.json")
-TOP_REASONS = 8
 BANNER_RULE = "!" * 78
 
 
@@ -694,10 +761,11 @@ def _print_report(result: ClassificationResult, paths: dict[str, Path]) -> None:
     print(f"immediate ({len(immediate)}):")
     for r in immediate.itertuples(index=False):
         print(f"  {r.match_id}  {r.curr_feature_id}  {r.governing_rule}  {r.action_note}")
-    counts = _count_ids(t.review_reasons, sorted({x for c in t.review_reasons if isinstance(c, str)
-                                                  for x in c.split(REASON_SEP)}))
-    top = sorted(counts.items(), key=lambda kv: -kv[1])[:TOP_REASONS]
-    print(f"requires review: {s['n_requires_review']} (" + ", ".join(f"{k} {v}" for k, v in top) + ")")
+    print(f"requires review: {s['n_requires_review']} ("
+          + ", ".join(f"{k} {v}" for k, v in s["counts_by_review_reason"].items()) + ")")
+    more = s["could_be_more_severe_by_worst_category"]
+    print(f"could be more severe: {sum(more.values())} (worst case: "
+          + ", ".join(f"{k} {v}" for k, v in more.items() if k != "evaluate") + ")")
     print(f"overdue at discovery: {s['n_overdue_at_discovery']}")
     print(f"wrote {paths['classification.csv'].parent}")
 
