@@ -4,7 +4,7 @@ import pytest
 
 from ili.config import load_settings
 from ili.match import (
-    NONCANDIDATE_COST, PositionMap, assign_one_to_one, candidates, depth_change_tol_pct, pair_metrics, place,
+    PositionMap, assign_one_to_one, candidates, depth_change_tol_pct, pair_metrics, place,
 )
 from tests.test_match_place import _std, _wm
 
@@ -87,11 +87,12 @@ def test_assignment_is_one_to_one_and_prefers_lower_total_cost():
 
 
 def test_assignment_drops_noncandidate_pairs_and_is_deterministic():
-    c = pd.DataFrame({"prev_i": [0, 1, 1], "curr_i": [0, 0, 1], "score": [0.5, 0.5, 0.5]})
+    # Hall violation: p0 and p1 both only fit c0, so one of them must go unmatched
+    c = pd.DataFrame({"prev_i": [0, 1, 2, 2, 2], "curr_i": [0, 0, 0, 1, 2],
+                      "score": [0.1, 0.2, 0.3, 0.1, 0.5]})
     got = assign_one_to_one(c)
-    assert len(got) == 2 and not got.duplicated("prev_i").any() and not got.duplicated("curr_i").any()
+    assert sorted(zip(got.prev_i, got.curr_i)) == [(0, 0), (2, 1)]
     assert got.equals(assign_one_to_one(c))
-    assert NONCANDIDATE_COST == 1e9
 
 
 def test_cross_weld_candidate_only_near_weld():

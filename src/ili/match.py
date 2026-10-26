@@ -215,8 +215,9 @@ def assign_one_to_one(cands: pd.DataFrame) -> pd.DataFrame:
     _, label = connected_components(graph, directed=False)
     score = c.score.to_numpy(float)
     chosen = []
-    for comp in np.unique(label[pinv]):
-        rows = np.flatnonzero(label[pinv] == comp)
+    comp = label[pinv]
+    order = np.argsort(comp, kind="stable")  # rows grouped by component once, in sorted order within each
+    for rows in np.split(order, np.flatnonzero(np.diff(comp[order])) + 1):
         r_ids, ri = np.unique(pinv[rows], return_inverse=True)
         c_ids, cj = np.unique(cinv[rows], return_inverse=True)
         cost = np.full((len(r_ids), len(c_ids)), NONCANDIDATE_COST)
