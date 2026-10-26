@@ -777,9 +777,25 @@ _TABLE_FLAGS = (
 _TABLE_INTS = ("n_prev", "n_curr", "prev_wm_row", "curr_wm_row", "prev_clock_min", "curr_clock_min")
 
 
+_FLAG_TEXT = {"true": True, "false": False}
+
+
+def parse_flag_column(values: pd.Series, path, column: str) -> pd.Series:
+    """A flag column read as text, as an object Series of True/False/None. ``true``/``false`` in any case
+    (pandas writes ``True``/``False``, Excel re-saves them as ``TRUE``/``FALSE``), surrounding blanks
+    ignored; blank is None (unknown). Any other text is a ValueError naming the file and column: a flag
+    is never silently read as unknown."""
+    key = values.astype(str).str.strip().str.casefold()
+    bad = values[(key != "") & ~key.isin(list(_FLAG_TEXT))]
+    if not bad.empty:
+        raise ValueError(f"{path}: column {column} has {bad.iloc[0]!r}; expected True, False or blank")
+    return pd.Series([_FLAG_TEXT.get(k) for k in key], index=values.index, dtype=object)
+
+
 def load_match_table(path: Path) -> pd.DataFrame:
     """Read a ``match_table.csv`` back with its types: ids and labels stay text (empty is None),
-    flags are True/False/None, counts and clock/row numbers are Int64, the rest float."""
+    flags are True/False/None (``parse_flag_column``), counts and clock/row numbers are Int64, the rest
+    float."""
     header = pd.read_csv(path, nrows=0).columns
     text = [c for c in _TABLE_TEXT if c in header]
     flags = [c for c in _TABLE_FLAGS if c in header]
@@ -789,7 +805,7 @@ def load_match_table(path: Path) -> pd.DataFrame:
     for c in text:
         df[c] = df[c].astype(object).where(df[c] != "", None)
     for c in flags:
-        df[c] = df[c].map({"True": True, "False": False}).astype(object).where(df[c] != "", None)
+        df[c] = parse_flag_column(df[c], path, c)
     for c in ints:
         df[c] = df[c].astype("Int64")
     return df
