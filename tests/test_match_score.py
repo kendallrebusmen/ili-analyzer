@@ -38,6 +38,9 @@ def small_run():
     return match_anomalies(r.prev_std, r.curr_std, wm, SETTINGS, pipe, repairs).match_table, r.ground_truth
 
 
+TABLE_CHECKS = ("n_unreported", "n_duplicated", "n_wrong_side", "n_duplicate_links")
+
+
 def _assert_cluster_features_matched_as_clusters(score: dict, truth: pd.DataFrame) -> int:
     """Every truth matched_cluster anomaly feature id, in both runs (vendor cluster reports and the
     individually reported pits opposite them), sits in a matched_cluster row. Returns how many."""
@@ -56,6 +59,7 @@ def test_default_dataset_meets_acceptance(default_line):
     assert score["precision"] >= 0.98, score["false_links"]
     assert score["recall"] >= 0.95, score["missed_links"]
     assert score["passes"] is True
+    assert {k: score[k] for k in TABLE_CHECKS} == dict.fromkeys(TABLE_CHECKS, 0)
     assert _assert_cluster_features_matched_as_clusters(score, truth) > 0
 
 
@@ -69,6 +73,7 @@ def test_acceptance_across_seeds(seed):
     assert score["precision"] >= 0.98, score["false_links"]
     assert score["recall"] >= 0.95, score["missed_links"]
     assert score["passes"] is True
+    assert {k: score[k] for k in TABLE_CHECKS} == dict.fromkeys(TABLE_CHECKS, 0)
     assert _assert_cluster_features_matched_as_clusters(score, r.ground_truth) > 0
 
 
@@ -117,8 +122,11 @@ def test_score_unknown_id_is_value_error(small_run):
 # ---- hand-built case -------------------------------------------------------------------------
 
 def _truth(rows):
-    """Rows: (feature_type, prev_feature_id, curr_feature_id, truth_class)."""
-    return pd.DataFrame(rows, columns=["feature_type", "prev_feature_id", "curr_feature_id", "truth_class"])
+    """Rows: (feature_type, prev_feature_id, curr_feature_id, truth_class); an id present is reported."""
+    df = pd.DataFrame(rows, columns=["feature_type", "prev_feature_id", "curr_feature_id", "truth_class"])
+    for run in ("prev", "curr"):
+        df[f"{run}_status"] = df[f"{run}_feature_id"].notna().map({True: "reported", False: "below_threshold"})
+    return df
 
 
 def _table(rows):
@@ -202,3 +210,59 @@ def test_ids_compared_as_strings():
     assert score_matching(_table([("matched_1to1", "007", "08")]), truth)["n_correct_links"] == 1
     with pytest.raises(ValueError, match="'7'"):
         score_matching(_table([("matched_1to1", "7", "08")]), truth)
+
+
+
+# ---- the table must account for every reported anomaly exactly once ---------------------------
+
+def test_small_run_table_checks_are_zero(small_run):
+    s = score_matching(*small_run)
+    assert {k: s[k] for k in TABLE_CHECKS} == dict.fromkeys(TABLE_CHECKS, 0) and s["passes"] is True
+
+
+def test_dropping_unmatched_rows_fails(small_run):
+    table, truth = small_run
+    unmatched = table.match_type.isin(["missing", "new"])
+    s = score_matching(table[~unmatched], truth)
+    assert s["n_unreported"] == int(unmatched.sum()) > 0
+    assert (s["precision"], s["recall"]) == pytest.approx((score_matching(table, truth)["precision"],
+                                                           score_matching(table, truth)["recall"]))
+    assert s["passes"] is False
+
+
+def test_duplicated_rows_fail(small_run):
+    table, truth = small_run
+    one = table[table.match_type == "matched_1to1"]
+    s = score_matching(pd.concat([table, one]), truth)
+    assert s["n_duplicated"] == 2 * len(one) and s["n_duplicate_links"] == len(one)
+    assert s["n_unreported"] == 0 and s["passes"] is False
+
+
+def test_new_relabelled_missing_fails(small_run):
+    table, truth = small_run
+    bad = table.copy()
+    new = bad.match_type == "new"
+    bad.loc[new, "match_type"] = "missing"
+    s = score_matching(bad, truth)
+    assert s["n_wrong_side"] == int(new.sum()) > 0 and s["passes"] is False
+
+
+def test_empty_table_against_empty_truth_fails():
+    s = score_matching(_table([]), _truth([]))
+    assert s["n_true_links"] == 0 and s["passes"] is False
+
+
+def test_hand_built_table_checks():
+    table = _table([
+        ("matched_1to1", "A1", "B1"),
+        ("matched_1to1", "A1", "B1"),          # duplicated row: A1, B1 twice and the link twice
+        ("matched_1to1", "A2;A5", "B2"),       # two prev ids on a 1:1 row
+        ("matched_cluster", "A3;A4", None),    # cluster with no curr side
+        ("missing", None, "B6"),               # missing with only a curr id
+        ("unmatched", None, "B3"),             # not a match type
+    ])
+    s = score_matching(table, HAND_TRUTH)
+    assert (s["n_unreported"], s["n_duplicated"], s["n_wrong_side"], s["n_duplicate_links"]) == (0, 2, 4, 1)
+    assert s["passes"] is False
+    s = score_matching(_table([("matched_1to1", "A1", "B1"), ("matched_1to1", "A2", "B2")]), HAND_TRUTH)
+    assert s["n_unreported"] == 3 + 2  # A3, A4, A5 and B3, B6 are reported but absent

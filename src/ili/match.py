@@ -818,11 +818,13 @@ def main(argv: list[str] | None = None) -> int:
           f"delta t {s['delta_t_years']:.2f} years")
     print("matches: " + ", ".join(f"{k} {v}" for k, v in s["counts_by_match_type"].items()))
     print("confidence: " + ", ".join(f"{k} {v}" for k, v in s["counts_by_confidence"].items()))
-    print(f"needs review: {s['n_needs_review']}")
+    print(f"needs review: {s['n_needs_review']} (absorbed clusters: {s['n_absorbed']})")
     if score is not None:
         print(f"precision {score['precision']:.4f}, recall {score['recall']:.4f} vs ground truth "
               f"({score['n_correct_links']}/{score['n_true_links']} links, "
               f"{len(score['false_links'])} false, passes: {score['passes']})")
+        print(f"table check: {score['n_unreported']} unreported, {score['n_duplicated']} duplicated, "
+              f"{score['n_wrong_side']} wrong side, {score['n_duplicate_links']} duplicate links")
     print(f"wrote {paths['match_table.csv'].parent}")
     return 0
 
