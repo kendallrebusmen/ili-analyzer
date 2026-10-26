@@ -1,7 +1,9 @@
 import hashlib
 import json
+from pathlib import Path
 
 import pandas as pd
+import yaml
 from conftest import MAP_A, MAP_B
 
 from ili import classify, config, remaining_life
@@ -64,3 +66,70 @@ def test_cli_bad_discovery_date_exit_2(synth, tmp_path, capsys):
     assert classify.main(_classify_args(std, folder, data, out, "--discovery-date", "not-a-date")) == 2
     assert "error:" in capsys.readouterr().err
     assert not (folder / "classification.csv").exists()
+
+
+def _settings_file(tmp_path, **classification):
+    raw = yaml.safe_load(config.DEFAULT_SETTINGS.read_text(encoding="utf-8"))
+    raw["classification"].update(classification)
+    path = tmp_path / "settings.yaml"
+    path.write_text(yaml.safe_dump(raw), encoding="utf-8")
+    return path
+
+
+def test_cli_uses_criteria_file_from_settings(synth, tmp_path, capsys):
+    """Without --criteria the settings' classification.criteria_file is used (relative: from the project
+    root); the summary records the path and the sha256 of the file actually read."""
+    data, out, std, folder = _through_rl(synth, tmp_path, capsys)
+    assert classify.main(_classify_args(std, folder, data, out)) == 0
+    summary = json.loads((folder / "classification_summary.json").read_text(encoding="utf-8"))
+    assert Path(summary["criteria_path"]) == config.PROJECT_ROOT / "config" / "repair_criteria.yaml"
+
+    other = tmp_path / "other_criteria.yaml"
+    other.write_text(config.DEFAULT_CRITERIA.read_text(encoding="utf-8").replace(
+        'version: "', 'version: "OTHER - ', 1), encoding="utf-8")
+    settings = _settings_file(tmp_path, criteria_file=str(other))
+    capsys.readouterr()
+    assert classify.main(_classify_args(std, folder, data, out, "--settings", str(settings))) == 0, \
+        capsys.readouterr().err
+    summary = json.loads((folder / "classification_summary.json").read_text(encoding="utf-8"))
+    assert summary["criteria_path"] == str(other)
+    assert summary["criteria_sha256"] == hashlib.sha256(other.read_bytes()).hexdigest()
+    assert summary["criteria_sha256"] != hashlib.sha256(config.DEFAULT_CRITERIA.read_bytes()).hexdigest()
+    assert summary["criteria_version"].startswith("OTHER - ")
+
+    # --criteria overrides the setting
+    assert classify.main(_classify_args(std, folder, data, out, "--settings", str(settings),
+                                        "--criteria", str(config.DEFAULT_CRITERIA))) == 0
+    summary = json.loads((folder / "classification_summary.json").read_text(encoding="utf-8"))
+    assert summary["criteria_path"] == str(config.DEFAULT_CRITERIA)
+    assert summary["criteria_sha256"] == hashlib.sha256(config.DEFAULT_CRITERIA.read_bytes()).hexdigest()
+
+
+def test_cli_summary_records_every_input_setting(synth, tmp_path, capsys):
+    data, out, std, folder = _through_rl(synth, tmp_path, capsys)
+    settings = _settings_file(tmp_path, girth_weld_proximity_in=12.0, crossing_proximity_ft=50.0,
+                              seam_clock_min=90.0, seam_clock_tol_min=15.0, general_corrosion_min_dim_in=6.0,
+                              widespread_circ_min_width_frac=0.5, due_days={"60_day": 45, "180_day": 150},
+                              discovery_max_days=120)
+    args = _classify_args(std, folder, data, out, "--settings", str(settings))
+    i = args.index("--crossings")
+    del args[i:i + 2]  # no crossings file
+    assert classify.main(args) == 0, capsys.readouterr().err
+    text = (folder / "classification_summary.json").read_text(encoding="utf-8")
+    summary = json.loads(text)
+    run_date = str(pd.read_csv(std / "2026_vendorB.csv", usecols=["run_date"]).run_date.iloc[0])[:10]
+    assert summary["assessment_date"] == run_date
+    assert {k: summary[k] for k in (
+        "girth_weld_proximity_in", "crossing_proximity_ft", "seam_clock_min", "seam_clock_tol_min",
+        "general_corrosion_min_dim_in", "widespread_circ_min_width_frac", "due_days", "discovery_max_days",
+        "crossings_file_given", "depth_basis", "depth_tolerance_pct_wt")} == {
+        "girth_weld_proximity_in": 12.0, "crossing_proximity_ft": 50.0, "seam_clock_min": 90.0,
+        "seam_clock_tol_min": 15.0, "general_corrosion_min_dim_in": 6.0, "widespread_circ_min_width_frac": 0.5,
+        "due_days": {"60_day": 45, "180_day": 150}, "discovery_max_days": 120, "crossings_file_given": False,
+        "depth_basis": "reported_plus_tolerance", "depth_tolerance_pct_wt": 10.0}
+    assert "NaN" not in text and "Infinity" not in text
+    # the default settings: PLACEHOLDERs null, crossings given
+    assert classify.main(_classify_args(std, folder, data, out)) == 0
+    summary = json.loads((folder / "classification_summary.json").read_text(encoding="utf-8"))
+    assert summary["crossings_file_given"] is True and summary["seam_clock_min"] is None
+    assert summary["girth_weld_proximity_in"] is None and summary["discovery_max_days"] == 180

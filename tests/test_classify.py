@@ -471,3 +471,24 @@ def test_synthetic_severe_features_are_immediate(synth):
     s = res.summary
     assert s["n_features"] == len(v) == sum(s["counts_by_category"].values())
     assert s["discovery_date_source"] == "latest_permissible" and s["discovery_warning"] == WARNING
+
+
+def test_summary_traceability(settings, criteria):
+    res = classify(frame(_five()), criteria, settings, ASSESSED, discovery_date=DISCOVERED, criteria_sha256="cd" * 32,
+                   criteria_path="config/x.yaml", crossings_file_given=True)
+    s = res.summary
+    cfg = settings.classification
+    assert s["criteria_path"] == "config/x.yaml" and s["criteria_sha256"] == "cd" * 32
+    assert s["assessment_date"] == "2026-06-15" and s["discovery_date"] == "2026-07-01"
+    for name in ("girth_weld_proximity_in", "crossing_proximity_ft", "seam_clock_min", "seam_clock_tol_min",
+                 "general_corrosion_min_dim_in", "widespread_circ_min_width_frac"):
+        assert s[name] == getattr(cfg, name)
+    assert s["due_days"] == {"60_day": 60, "180_day": 180} and s["discovery_max_days"] == 180
+    assert s["crossings_file_given"] is True
+    assert s["depth_basis"] == settings.strength.depth_basis
+    assert s["depth_tolerance_pct_wt"] == settings.tool.depth_tolerance_pct_wt
+    import json
+    assert json.loads(json.dumps(s, allow_nan=False)) == s
+    # library callers that do not say: unknown, not guessed
+    s = classify(frame(_five()), criteria, settings, ASSESSED).summary
+    assert s["criteria_path"] is None and s["crossings_file_given"] is None

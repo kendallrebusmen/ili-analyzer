@@ -32,7 +32,7 @@ import numpy as np
 import pandas as pd
 
 from ili.align_welds import DRAFT_LABEL, comparison_dir
-from ili.config import (DEFAULT_CRITERIA, DEFAULT_SETTINGS, PROJECT_ROOT, RepairCriteria, Settings, load_repair_criteria,
+from ili.config import (DEFAULT_SETTINGS, PROJECT_ROOT, RepairCriteria, Settings, load_repair_criteria,
                         load_settings)
 from ili.growth import PCT_PER_FRACTION, REASON_SEP
 from ili.ingest import load_standardized
@@ -499,7 +499,8 @@ def _join(items: list[str]):
 
 
 def classify(variables: pd.DataFrame, criteria: RepairCriteria, settings: Settings, assessment_date,
-             discovery_date=None, criteria_sha256: str | None = None) -> ClassificationResult:
+             discovery_date=None, criteria_sha256: str | None = None, criteria_path: str | None = None,
+             crossings_file_given: bool | None = None) -> ClassificationResult:
     """Classify every row of a ``feature_variables`` table (spec 6.8). Columns ``CLASSIFICATION_COLUMNS``.
 
     - **Rules.** A rule applies when its ``applies_to`` is ``all`` or matches the feature's rule set
@@ -528,7 +529,11 @@ def classify(variables: pd.DataFrame, criteria: RepairCriteria, settings: Settin
       when unknown); ``evaluate`` None. ``action_note``: ``IMMEDIATE_ACTION_NOTE`` for ``immediate``,
       else None.
 
-    ``criteria_sha256`` (the criteria file's hash, computed by the caller) is recorded in the summary.
+    The summary (``_classification_summary``) records, for traceability, the criteria file's version and
+    ``criteria_sha256`` / ``criteria_path`` (both given by the caller), the assessment and discovery dates,
+    every ``classification`` setting, whether a crossings file was given (``crossings_file_given``, from the
+    caller; None when unknown) and the depth basis of the assessed depths (``strength.depth_basis``,
+    ``tool.depth_tolerance_pct_wt``).
     """
     _require_columns(variables, FEATURE_VARIABLE_COLUMNS, "feature variables")
     cfg = settings.classification
@@ -582,8 +587,9 @@ def classify(variables: pd.DataFrame, criteria: RepairCriteria, settings: Settin
     for col, values in out.items():
         table[col] = pd.Series(values, dtype=bool if col == "requires_review" else object, index=table.index)
     table = table[CLASSIFICATION_COLUMNS]
-    return ClassificationResult(table, _classification_summary(table, criteria, criteria_sha256, discovered,
-                                                               source, settings))
+    return ClassificationResult(table, _classification_summary(
+        table, criteria, settings, discovered, source, assessment=_as_date(assessment_date, "assessment date"),
+        criteria_sha256=criteria_sha256, criteria_path=criteria_path, crossings_file_given=crossings_file_given))
 
 
 def _count_ids(joined, order: list[str]) -> dict[str, int]:
@@ -592,13 +598,20 @@ def _count_ids(joined, order: list[str]) -> dict[str, int]:
     return {i: hits.count(i) for i in order if i in hits}
 
 
-def _classification_summary(table: pd.DataFrame, criteria: RepairCriteria, criteria_sha256: str | None,
-                            discovered: date, source: str, settings: Settings) -> dict:
+def _optional_float(value) -> float | None:
+    return None if value is None else float(value)
+
+
+def _classification_summary(table: pd.DataFrame, criteria: RepairCriteria, settings: Settings, discovered: date,
+                            source: str, *, assessment: date, criteria_sha256: str | None,
+                            criteria_path: str | None, crossings_file_given: bool | None) -> dict:
+    """JSON-safe summary: criteria identity, counts, dates, and every input setting (traceability)."""
     cfg = settings.classification
     ids = [r.id for r in criteria.rules]
     return {
         "criteria_version": criteria.version,
         "criteria_sha256": criteria_sha256,
+        "criteria_path": criteria_path,
         "n_features": int(len(table)),
         "counts_by_category": {c: int((table.governing_category == c).sum()) for c in CATEGORY_PRIORITY},
         "counts_by_rule": _count_ids(table.triggered_rules, ids),
@@ -606,12 +619,24 @@ def _classification_summary(table: pd.DataFrame, criteria: RepairCriteria, crite
         "n_overdue_at_discovery": int(sum(d is not None and d < discovered for d in table.due_date)),
         "counts_by_due_date_basis": {b: int((table.due_date_basis == b).sum()) for b in DUE_DATE_BASES},
         "n_not_evaluable_by_rule": _count_ids(table.rules_not_evaluable, [*ids, GOVERNING_REMAINING_LIFE]),
+        "assessment_date": assessment.isoformat(),
         "discovery_date": discovered.isoformat(),
         "discovery_date_source": source,
         "discovery_warning": (DISCOVERY_WARNING.format(days=cfg.discovery_max_days)
                               if source == DISCOVERY_LATEST else None),
-        "discovery_max_days": int(cfg.discovery_max_days),
+        # every classification setting (criteria_file is criteria_path above)
+        "girth_weld_proximity_in": _optional_float(cfg.girth_weld_proximity_in),
+        "crossing_proximity_ft": _optional_float(cfg.crossing_proximity_ft),
+        "seam_clock_min": _optional_float(cfg.seam_clock_min),
+        "seam_clock_tol_min": _optional_float(cfg.seam_clock_tol_min),
+        "general_corrosion_min_dim_in": _optional_float(cfg.general_corrosion_min_dim_in),
+        "widespread_circ_min_width_frac": _optional_float(cfg.widespread_circ_min_width_frac),
         "due_days": {k: int(v) for k, v in cfg.due_days.items()},
+        "discovery_max_days": int(cfg.discovery_max_days),
+        "crossings_file_given": None if crossings_file_given is None else bool(crossings_file_given),
+        # the basis of depth_pct_assessed (the same as M6)
+        "depth_basis": settings.strength.depth_basis,
+        "depth_tolerance_pct_wt": float(settings.tool.depth_tolerance_pct_wt),
     }
 
 
@@ -647,7 +672,8 @@ def _parser() -> argparse.ArgumentParser:
     ap.add_argument("--pipe", type=Path, required=True, help="pipe_properties.csv")
     ap.add_argument("--segments", type=Path, required=True, help="hca_segments.csv")
     ap.add_argument("--crossings", type=Path, default=None, help="foreign_crossings.csv (optional)")
-    ap.add_argument("--criteria", type=Path, default=DEFAULT_CRITERIA, help="repair criteria YAML")
+    ap.add_argument("--criteria", type=Path, default=None,
+                    help="repair criteria YAML (default: classification.criteria_file of the settings)")
     ap.add_argument("--discovery-date", default=None, help="discovery date, YYYY-MM-DD (default: latest permissible)")
     ap.add_argument("--settings", type=Path, default=DEFAULT_SETTINGS, help="settings YAML")
     ap.add_argument("--out", type=Path, default=PROJECT_ROOT / "outputs", help="output directory")
@@ -676,13 +702,24 @@ def _print_report(result: ClassificationResult, paths: dict[str, Path]) -> None:
     print(f"wrote {paths['classification.csv'].parent}")
 
 
+def criteria_path(given: Path | None, settings: Settings) -> Path:
+    """The criteria file to use: ``--criteria`` as given, else the settings' ``classification.criteria_file``,
+    resolved against ``config.PROJECT_ROOT`` when relative (so the run does not depend on the working
+    directory)."""
+    if given is not None:
+        return Path(given)
+    path = Path(settings.classification.criteria_file)
+    return path if path.is_absolute() else PROJECT_ROOT / path
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
         # every input is read before anything is written, so a bad input leaves no partial outputs
         settings = load_settings(args.settings)
-        criteria = load_repair_criteria(args.criteria)
-        digest = hashlib.sha256(Path(args.criteria).read_bytes()).hexdigest()
+        crit_path = criteria_path(args.criteria, settings)
+        criteria = load_repair_criteria(crit_path)
+        digest = hashlib.sha256(crit_path.read_bytes()).hexdigest()
         curr = load_standardized(args.curr)
         matches = load_match_table(args.matches)
         remaining = load_remaining_life_table(args.remaining_life)
@@ -698,7 +735,8 @@ def main(argv: list[str] | None = None) -> int:
             raise ValueError(f"{args.curr}: the current run has no run date")
         assessed = run_dates.iloc[0]
         variables = feature_variables(matches, remaining, curr, pipe, segments, crossings, settings)
-        result = classify(variables, criteria, settings, assessed, args.discovery_date, criteria_sha256=digest)
+        result = classify(variables, criteria, settings, assessed, args.discovery_date, criteria_sha256=digest,
+                          criteria_path=str(crit_path), crossings_file_given=crossings is not None)
         result = replace(result, summary={"prev_run_id": prev_id, "curr_run_id": curr_id, **result.summary})
         paths = write_classification(result, args.out)
     except (ValueError, OSError) as exc:
