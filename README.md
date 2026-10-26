@@ -67,6 +67,15 @@ py -3.13 -m venv .venv
     --pipe data\synthetic\reference\pipe_properties.csv `
     --segments data\synthetic\reference\hca_segments.csv `
     --truth data\synthetic\ground_truth.csv
+
+# Remaining strength and life -> outputs/<prev>_vs_<curr>/remaining_life.csv, reinspection_intervals.csv, remaining_life_summary.json
+.\.venv\Scripts\python.exe -m ili.remaining_life `
+    --curr outputs\standardized\2026_vendorB.csv `
+    --growth outputs\2021_vendorA_vs_2026_vendorB\growth.csv `
+    --pipe data\synthetic\reference\pipe_properties.csv `
+    --mop data\synthetic\reference\mop_profile.csv `
+    --segments data\synthetic\reference\hca_segments.csv `
+    --next-inspection data\synthetic\reference\next_inspection.csv
 ```
 
 The run date is the third `--run` value. It can be left out when the vendor map says where the file states it (vendor B's title row). The run id is `<run year>_<run_label from the vendor map>`.

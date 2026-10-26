@@ -99,3 +99,12 @@ def test_growth_governing_rejects_empty_list(tmp_path):
     path = _write_settings(tmp_path, lambda r: r["growth"]["governing"].update(new=[]))
     with pytest.raises(ValueError, match="new"):
         load_settings(path)
+
+
+def test_strength_length_basis_loads(tmp_path):
+    assert load_settings().strength.length_basis == "reported"
+    path = _write_settings(tmp_path, lambda r: r["strength"].update(length_basis="reported_plus_tolerance"))
+    assert load_settings(path).strength.length_basis == "reported_plus_tolerance"
+    bad = _write_settings(tmp_path, lambda r: r["strength"].update(length_basis="bogus"))
+    with pytest.raises(ValidationError):
+        load_settings(bad)

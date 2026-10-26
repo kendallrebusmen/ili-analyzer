@@ -52,10 +52,12 @@ growth:
 strength:
   method: modified_b31g             # modified_b31g | original_b31g
   depth_basis: reported_plus_tolerance   # reported | reported_plus_tolerance
+  length_basis: reported            # reported | reported_plus_tolerance; PLACEHOLDER (spec 6.6: "length can optionally be adjusted the same way")
   design_factor: 0.72               # PLACEHOLDER
 
 remaining_life:
   horizon_yr: 30
+  time_step_yr: 0.05                # fallback grid step for the crossing search, years; numerical, not an engineering value
   rl_factor: 0.5                    # PLACEHOLDER
   default_next_assessment_yr: {hca: 5, non_hca: 10}
   hca_max_interval_months: 68

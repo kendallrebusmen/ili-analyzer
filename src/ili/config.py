@@ -95,6 +95,7 @@ class GrowthCfg(_Strict):
 class StrengthCfg(_Strict):
     method: Literal["modified_b31g", "original_b31g"]
     depth_basis: Literal["reported", "reported_plus_tolerance"]
+    length_basis: Literal["reported", "reported_plus_tolerance"]
     design_factor: float
 
 
@@ -104,7 +105,8 @@ class NextAssessmentYears(_Strict):
 
 
 class RemainingLifeCfg(_Strict):
-    horizon_yr: float
+    horizon_yr: float = Field(gt=0)
+    time_step_yr: float = Field(gt=0)  # crossing-search grid step (numerical setting)
     rl_factor: float
     default_next_assessment_yr: NextAssessmentYears
     hca_max_interval_months: float

@@ -238,3 +238,51 @@ Interpretations of `docs/SPEC.md` and choices the spec leaves open. Newest at th
   - Features in pipe the previous run never covered (runs of different extent) are labelled `new`. Their rate is conservative, but the label is not.
   - `fixed_length` segments start at the current run's first girth weld. Features before it or after the last weld have no segment and are now flagged `incomplete_rule`.
   - M4's `lookup_od` no longer raises on a NaN `od_in` in a row that no position uses.
+
+## M6: remaining strength and remaining life (2026-10-26)
+
+- **B31G formulas** are transcribed from spec §6.6 as named constants.
+  - Original: flow stress 1.1·SMYS, 2/3, 0.8, z ≤ 20, else S_flow(1 − d/t).
+  - Modified: flow stress SMYS + 10 000 psi, 0.85, 0.6275/0.003375 for z ≤ 50, else 0.032z + 3.3.
+- **Reference case reproduced exactly.** Modified: z 5.0196, M 2.0161, S_F 45 172 psi, P_F 1 771.5 psig. Original: M 2.2396, S_F 44 801 psi, P_F 1 756.9 psig. Reviewers' scratch transcriptions of §6.6 (not in the repo) matched `ili.strength` to ≤ 2.5e-16 (relative failure stress) over 20 000 random cases of both methods.
+- **Original B31G jump at z = 20** (e.g. P_F 1 627 → 1 122 psig at d/t 0.5) is the spec formula, kept and not smoothed. The integrity engineer should hand-check against ASME B31G-2012.
+- **d/t clipping.** d/t is clipped to [0, 1] inside the failure-stress functions, so projections past the wall stay finite. The 80 %-of-wall flag uses the unclipped assessed d/t.
+- **Assessed state.** Assessed depth = reported + tool depth tolerance (% wall), capped at 100 %. The length basis is `strength.length_basis` (default reported, PLACEHOLDER). RSTRENG is a stub interface and not selectable.
+- **Solver.** The margins (0.80·t − depth, P_F − MOP, P_safe − MOP) are non-increasing in time (checked numerically, including both B31G jumps).
+  - A grid of `remaining_life.time_step_yr` (0.05 yr) finds the first crossing interval. `brentq` (xtol 1e-6 yr) refines it, with a step-back so a time is never later than the true crossing. A `brentq` failure falls back to the interval start.
+  - A margin of exactly 0 counts as met (spec says P_F < MOP; measure-zero, conservative).
+  - Exact-zero plateaus. The margin can be exactly 0 over a stretch: P_F is constant once d/t is clipped at 1, or after the Original B31G z = 20 jump with no depth growth. `brentq` can stop anywhere on such a plateau (it returns the grid END when that margin is 0), up to one grid step late (probe: true crossing 1.013 yr, solver 1.050). When the END margin is exactly 0, or `brentq` returns a point with margin exactly 0, the solver bisects on `margin <= 0` within the interval down to the xtol and returns the lower end, which is never later than the first time the criterion is met.
+  - Criteria met today are evaluated without growth, so a feature failing today gets RL 0 and a dig even if its growth rate or another input is missing.
+- **Conventions.**
+  - Not reached within `horizon_yr`: RL = horizon, `rl_governing` = `beyond_horizon`.
+  - Any criterion NaN and none already met: RL NaN, `rl_not_evaluated`, `needs_review`.
+  - Negative growth is projected as 0.
+  - A NaN MOP, OD or SMYS in a used reference row gives `rl_not_evaluated` (flagged, not raised; M5 raises on a NaN wall).
+  - MOP, OD or SMYS ≤ 0 is treated as missing (NaN), as is a negative length (z = L²/(D·t) would fall then rise, so the margins would not be monotone). Before, a MOP of 0 made the pressure criteria never met: RL = horizon, `beyond_horizon`, unflagged. Now the pressure criteria are NaN, the row is `rl_not_evaluated`, and τ_80 (depth and wall only) is kept, so the upper-bound rule below applies. The τ = 0 strength columns are computed from the same usable values; the input columns keep the values as read. Only a wall ≤ 0 makes every criterion NaN.
+  - A negative reported depth is clipped to 0 before the depth tolerance is added.
+- **Repair-by and dig.** Repair-by = current run date + RL × `rl_factor` (days floored). Dig required = RL × `rl_factor` < years to the next assessment (strict).
+- **RL upper bound when RL is NaN.** RL = min of the criterion times, so any finite criterion time bounds it from above even when another criterion is NaN. Before, a NaN pressure criterion (e.g. a NaN MOP) made RL NaN and forced the dig flag False even when τ_80 was finite and small; with the 1 200 psig MOP zone of the default data set to NaN, 261 rows had NaN RL, 0 digs, and 192 provably needed one.
+  - Column `rl_upper_bound_yr` (right after `rl_governing`): RL when finite (including `beyond_horizon`), else the smallest finite criterion time, blank when no criterion time is finite.
+  - Dig: when RL is NaN, `rl_upper_bound_yr` × `rl_factor` < years to the next assessment. The NaN-MOP case above now gives 192 digs among the 261 NaN-RL rows. A row without a bound keeps dig False. Either way the row keeps `rl_not_evaluated`.
+  - Repair-by stays None for a NaN RL: a bound is not an RL.
+- **Next assessment source** per feature:
+  - `planned`: the segment's date in `next_inspection.csv`.
+  - `capped`: an HCA planned date beyond 68 months, cut to 68.
+  - `default_hca`: 5 years, capped at 68 months.
+  - `default_non_hca`: 10 years.
+  - `default_no_segment`: the HCA default, flagged `no_segment` (the conservative choice).
+  - A planned date on or before the run date, or a `next_inspection` segment id not in the segments table, is an error.
+- **Intervals.** Per segment, min(RL × `rl_factor`, regulatory max) with the max 68/12 yr (HCA) or 10 yr (non-HCA).
+  - The segment min uses RL × `rl_factor` for features with an RL and `rl_upper_bound_yr` × `rl_factor` for NaN-RL features with a bound. The segment keeps `needs_review` whenever `n_rl_not_evaluated` > 0.
+  - A segment where no feature has an RL or a bound gets no interval (NaN) and `needs_review`. An empty segment gets the regulatory max.
+  - Features outside every segment appear in no interval row (only the `no_segment` reason count).
+- **Review reasons** appended to M5's: `rl_not_evaluated`, `exceeds_80pct`, `no_segment`. An unreadable M5 flag counts as needs review.
+- **CLI.** Run ids come from `growth_summary.json` beside `--growth`. Without it, `--curr`'s run id is used for the current run and the previous is None, with a warning on stderr (`growth_summary.json not found beside <path>; previous run id unknown`). A `growth_summary.json` that is not a JSON object is an error (exit 2). The run date comes from `--curr`. All inputs are read before any output is written.
+- **Summary parameters.** `remaining_life_summary.json` records every setting the results depend on: `method`, `design_factor`, `depth_basis`, `length_basis`, the tool's `depth_tolerance_pct_wt`, `depth_certainty` and `length_tolerance_in`, `time_step_yr`, `horizon_yr`, `rl_factor`, `hca_max_interval_months` and `default_next_assessment_yr`.
+- **Results (default 20-mile dataset, modified B31G, RL factor 0.5, horizon 30 yr).**
+  - 543 features. By `rl_governing`: `tau_80` 161, `tau_burst` 1, `tau_safe` 381, `beyond_horizon` 0, none not evaluated (so `rl_upper_bound_yr` equals `rl_yr` on every row). Unchanged by the final-review fixes: the default data has no NaN or ≤ 0 reference values and no exact-zero plateau.
+  - 10 exceed 80 % of wall. 480 need a dig. 44 need review (34 M5 `match_review`, 10 `exceeds_80pct`). Minimum RL 0.00 years (114 features have RL 0: 103 `tau_safe`, 10 `tau_80`, 1 `tau_burst`).
+  - Intervals: SEG-01 (HCA) 0.00 yr, SEG-02 0.00, SEG-03 (HCA) 0.00, SEG-04 0.00, against regulatory maxima 5.67 / 10 / 5.67 / 10 yr. Next assessments: 410 planned, 133 `default_hca`.
+- **Observation for the integrity engineer.** The high dig count is a property of the synthetic data and PLACEHOLDER settings, not a code defect.
+  - It is driven mainly by M5's conservative governing rates (≥ ~7.6 mpy, median ~9.6 mpy on a 0.25 in wall) with `rl_factor` 0.5 and next assessments 5–7 years out.
+  - MOP 1 440 psig (70.6 % SMYS) puts P_safe < MOP at τ = 0 for 32 % of features in that zone (8.7 % in the 1 200 psig zone), which drives the 0.0 intervals.
