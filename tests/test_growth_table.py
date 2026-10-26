@@ -17,7 +17,7 @@ FEATURE_COLUMNS = [
     "install_year",
     "raw_mpy", "tolerance_adjusted_mpy", "segment_percentile_mpy", "new_feature_mpy", "full_life_mpy",
     "default_rate_mpy",
-    "governing_mpy", "governing_method", "needs_review", "length_in", "length_rate_ipy",
+    "governing_mpy", "governing_method", "needs_review", "review_reasons", "length_in", "length_rate_ipy",
 ]
 SEGMENT_COLUMNS = [
     "segment_id", "start_ft", "end_ft", "n_features", "n_matched", "raw_mean_mpy", "raw_median_mpy",
@@ -119,7 +119,8 @@ def test_one_row_per_current_metal_loss(synth_growth):
     assert int(res.segments.n_features.sum()) == f.segment_id.notna().sum()
     s = res.summary
     assert sum(s["counts_by_history_class"].values()) == len(f)
-    assert sum(s["counts_by_governing_method"].values()) + s["n_needs_review"] == len(f)
+    assert sum(s["counts_by_governing_method"].values()) + s["counts_by_review_reason"]["no_governing"] == len(f)
+    assert s["n_needs_review"] == int(f.needs_review.sum()) == int(f.review_reasons.notna().sum())
     assert sum(s["raw_histogram"]["counts"]) == s["counts_by_history_class"]["matched"]
 
 
@@ -141,9 +142,10 @@ def test_segment_percentile_hand_built(settings):
     assert f.loc["N1", "governing_method"] == "segment_percentile"
     assert f.loc["N2", "segment_id"] == "SEG-B" and math.isnan(f.loc["N2", "segment_percentile_mpy"])
     assert f.loc["N3", "segment_id"] is None and math.isnan(f.loc["N3", "segment_percentile_mpy"])
-    for mid in ("N2", "N3"):  # the NaN percentile drops out; new_feature governs
+    for mid in ("N2", "N3"):  # the NaN percentile drops out; new_feature governs, flagged as incomplete
         assert f.loc[mid, "governing_mpy"] == pytest.approx(4.0)
         assert f.loc[mid, "governing_method"] == "new_feature"
+        assert f.loc[mid, "review_reasons"] == "incomplete_rule"
 
     # P90 is floored at min_rate_mpy
     floored = _run(SEG_A_MATCHED, _with_growth(settings, min_rate_mpy=8.0))
@@ -169,7 +171,8 @@ def test_segment_percentile_hand_built(settings):
         "raw": 0, "tolerance_adjusted": 3, "segment_percentile": 3, "new_feature": 2, "full_life": 0,
         "default_rate": 0,
     }
-    assert s["n_needs_review"] == 0
+    assert s["n_needs_review"] == 2
+    assert s["counts_by_review_reason"] == {"no_governing": 0, "incomplete_rule": 2, "below_min_rate": 0}
     assert s["pct_negative_raw"] == pytest.approx(20.0)
     assert s["raw_histogram"]["bin_edges_mpy"] == pytest.approx([float(e) for e in range(-2, 11)])
     assert s["raw_histogram"]["counts"] == [1, 0, 1, 1, 0, 1, 0, 0, 0, 0, 0, 1]
@@ -223,13 +226,16 @@ def test_governing_rule_by_class(settings):
     assert math.isnan(f.loc["N1", "raw_mpy"]) and math.isnan(f.loc["N1", "tolerance_adjusted_mpy"])
     assert f.loc["N1", "new_feature_mpy"] == pytest.approx(4.0)
     assert f.loc["N1", "full_life_mpy"] == pytest.approx(0.045 * 1000 / 51)
-    assert not f.needs_review.any()
+    # X1 has no percentile and H1 no default rate (null): each rule was maxed over fewer rates than listed
+    assert f.needs_review[f.needs_review].index.tolist() == ["X1", "H1"]
+    assert f.loc[["X1", "H1"], "review_reasons"].tolist() == ["incomplete_rule", "incomplete_rule"]
 
     # the configured list order decides ties; default_rate joins the max when set
     rule = settings.growth.governing.model_copy(update={"matched": ["tolerance_adjusted", "segment_percentile"]})
     f2 = _by_id(_run(rows, _with_growth(settings, governing=rule, default_rate_mpy=2.0)))
     assert f2.loc["T1", "governing_method"] == "tolerance_adjusted"
     assert f2.loc["H1", "governing_mpy"] == 2.0 and f2.loc["H1", "governing_method"] == "default_rate"
+    assert not f2.loc["H1", "needs_review"] and f2.loc["H1", "review_reasons"] is None
     assert f2.loc["N1", "default_rate_mpy"] == 2.0 and f2.loc["N1", "governing_method"] == "segment_percentile"
 
 
@@ -251,7 +257,8 @@ def test_missing_inputs_flag_review(settings):
         assert math.isnan(f.loc[mid, "governing_mpy"])
         assert f.loc[mid, "governing_method"] is None
         assert bool(f.loc[mid, "needs_review"]) is True
-    assert not f.loc["W1", "needs_review"]
+        assert f.loc[mid, "review_reasons"] == "no_governing;incomplete_rule"
+    assert not f.loc["W1", "needs_review"] and f.loc["W1", "review_reasons"] is None
     assert res.summary["n_needs_review"] == 2
     assert f.needs_review.dtype == bool
 
@@ -291,11 +298,43 @@ def test_missing_install_year_is_no_history(settings):
     assert math.isnan(f.loc["Y1", "install_year"]) and math.isnan(f.loc["Y1", "full_life_mpy"])
     assert f.loc["Y1", "history_class"] == "no_history"
     assert math.isnan(f.loc["Y1", "governing_mpy"]) and bool(f.loc["Y1", "needs_review"]) is True
+    assert f.loc["Y1", "review_reasons"] == "no_governing;incomplete_rule"
+    assert f.loc["Y2", "review_reasons"] is None  # full_life is not in the matched rule
     assert f.loc["Y2", "history_class"] == "matched" and math.isnan(f.loc["Y2", "full_life_mpy"])
     assert f.loc["Y3", "history_class"] == "new" and f.loc["Y3", "install_year"] == 1975
     # coverage is still a data error
     with pytest.raises(ValueError, match="outside the pipe properties table"):
         _run([_row("Y4", "new", 9000.0, d_curr=30.0)], settings, pipe=pipe)
+
+
+def test_review_reasons(settings):
+    # Governing is not floored: a rate below min_rate_mpy, or one maxed over fewer methods than the class's
+    # rule lists, is flagged so M6 cannot use it silently.
+    rows = SEG_A_MATCHED + [
+        _row("B1", "new", 2500.0, d_curr=6.0),            # outside every segment: new_feature (6 - 10) % -> -2.0
+        _row("B2", "new", 600.0, d_curr=6.0),             # SEG-B, no matched rows: same
+        _row("C1", "matched_1to1", 300.5, NAN, 40.0),     # prev depth missing: no_history, full_life 1.96
+    ]
+    f = _by_id(_run(rows, settings))
+    for mid in ("B1", "B2"):
+        assert f.loc[mid, "history_class"] == "new"
+        assert f.loc[mid, "governing_mpy"] == pytest.approx(-2.0)  # not floored ...
+        assert f.loc[mid, "governing_method"] == "new_feature"
+        assert bool(f.loc[mid, "needs_review"]) is True             # ... but flagged
+        assert f.loc[mid, "review_reasons"] == "incomplete_rule;below_min_rate"
+    assert f.loc["C1", "history_class"] == "no_history"
+    assert f.loc["C1", "governing_mpy"] == pytest.approx(100 / 51) and f.loc["C1", "governing_method"] == "full_life"
+    assert bool(f.loc["C1", "needs_review"]) is True
+    assert f.loc["C1", "review_reasons"] == "incomplete_rule"  # default_rate null
+    for mid in ("M1", "M2", "M3", "M4", "M5"):  # normal matched rows
+        assert not f.loc[mid, "needs_review"] and f.loc[mid, "review_reasons"] is None
+    # a governing rate below the floor with a complete rule: below_min_rate alone
+    low = _by_id(_run(SEG_A_MATCHED + [_row("B3", "new", 400.0, d_curr=6.0)], settings))
+    assert low.loc["B3", "governing_mpy"] == pytest.approx(7.2)  # the segment percentile governs: no flag
+    assert low.loc["B3", "review_reasons"] is None
+    only_new = settings.growth.governing.model_copy(update={"new": ["new_feature"]})
+    low = _by_id(_run(SEG_A_MATCHED + [_row("B3", "new", 400.0, d_curr=6.0)], _with_growth(settings, governing=only_new)))
+    assert low.loc["B3", "review_reasons"] == "below_min_rate"
 
 
 def test_length_growth_options(settings):

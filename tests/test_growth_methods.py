@@ -50,6 +50,8 @@ def test_new_feature(settings):
     out = growth.new_feature_rate(np.array([d, np.nan]), 0.25, 5.0, settings)
     assert out[0] == pytest.approx(4.0)
     assert math.isnan(out[1])
+    # below the reporting threshold the rate is negative, not floored (the growth table flags it)
+    assert growth.new_feature_rate(0.06 * 0.25, 0.25, 5.0, settings) == pytest.approx(-2.0)
 
 
 def test_full_life():

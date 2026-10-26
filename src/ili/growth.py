@@ -86,6 +86,10 @@ def default_rate(n: int, settings: Settings):
 
 METHODS = get_args(GrowthMethod)  # raw, tolerance_adjusted, segment_percentile, new_feature, full_life, default_rate
 HISTORY_CLASSES = ("matched", "new", "no_history")
+# Why a row needs review, in this order in ``review_reasons``: no governing rate; a method of its class's
+# governing rule is NaN; governing below ``min_rate_mpy`` (not floored, so flagged).
+REVIEW_REASONS = ("no_governing", "incomplete_rule", "below_min_rate")
+REASON_SEP = ";"
 MATCHED_TYPES = ("matched_1to1", "matched_cluster")
 NEW_TYPE = "new"
 GROWTH_FEATURE_TYPE = "metal_loss"
@@ -101,7 +105,7 @@ FEATURE_COLUMNS = [
     "wt_in", "d_prev_pct", "d_curr_pct", "d_prev_in", "d_curr_in", "dt_yr", "sigma_diff_pct", "k_sigma",
     "install_year",
     *(f"{m}_mpy" for m in METHODS),
-    "governing_mpy", "governing_method", "needs_review", "length_in", "length_rate_ipy",
+    "governing_mpy", "governing_method", "needs_review", "review_reasons", "length_in", "length_rate_ipy",
 ]
 SEGMENT_STAT_COLUMNS = [
     "segment_id", "start_ft", "end_ft", "n_features", "n_matched", "raw_mean_mpy", "raw_median_mpy",
@@ -184,6 +188,32 @@ def governing_rate(rates: pd.DataFrame, cls, settings: Settings) -> tuple[np.nda
     return gov, method
 
 
+def review_flags(rates: pd.DataFrame, cls, governing_mpy, settings: Settings) -> dict[str, np.ndarray]:
+    """Per ``REVIEW_REASONS`` name, a bool array of the rows it applies to. ``incomplete_rule``: any method
+    ``growth.governing`` lists for the row's class is NaN, so the max was taken over fewer rates than the
+    rule intends. ``below_min_rate``: governing < ``min_rate_mpy`` (governing itself is never floored)."""
+    cls = np.asarray(cls, dtype=object)
+    gov = np.asarray(governing_mpy, dtype=float)
+    incomplete = np.zeros(len(rates), dtype=bool)
+    for c in HISTORY_CLASSES:
+        rows = cls == c
+        for m in getattr(settings.growth.governing, c):
+            incomplete |= rows & np.isnan(rates[f"{m}_mpy"].to_numpy(float))
+    return {"no_governing": np.isnan(gov), "incomplete_rule": incomplete,
+            "below_min_rate": gov < settings.growth.min_rate_mpy}  # False for NaN
+
+
+def join_reasons(flags: dict[str, np.ndarray], n: int) -> tuple[np.ndarray, np.ndarray]:
+    """``needs_review`` (any flag) and ``review_reasons`` (flag names joined by ``;`` in the order given,
+    None when there are none)."""
+    names = list(flags)
+    reasons = np.full(n, None, dtype=object)
+    for k in range(n):
+        hit = [r for r in names if flags[r][k]]
+        reasons[k] = REASON_SEP.join(hit) if hit else None
+    return np.array([r is not None for r in reasons], dtype=bool), reasons
+
+
 def length_growth_rate(length_in, governing_mpy, d_curr_in, settings: Settings) -> np.ndarray:
     """Length growth (in/yr): ``none`` 0; ``fixed_rate`` length_rate_ipy; ``proportional``
     length * governing / 1000 / d_curr (aspect ratio kept), NaN where d_curr <= 0."""
@@ -248,6 +278,7 @@ def _summary(features: pd.DataFrame, dt_yr: float, prev_year: int, curr_year: in
     by_class = features.history_class.value_counts()
     by_method = features.governing_method.value_counts()
     pct_neg = _pct_negative(raw)
+    reasons = [r.split(REASON_SEP) if isinstance(r, str) else [] for r in features.review_reasons]
     return {
         "prev_run_id": prev_run_id, "curr_run_id": curr_run_id,
         "delta_t_years": float(dt_yr), "prev_year": int(prev_year), "curr_year": int(curr_year),
@@ -255,6 +286,7 @@ def _summary(features: pd.DataFrame, dt_yr: float, prev_year: int, curr_year: in
         "counts_by_history_class": {c: int(by_class.get(c, 0)) for c in HISTORY_CLASSES},
         "counts_by_governing_method": {m: int(by_method.get(m, 0)) for m in METHODS},
         "n_needs_review": int(features.needs_review.sum()),
+        "counts_by_review_reason": {r: sum(r in x for x in reasons) for r in REVIEW_REASONS},
         "pct_negative_raw": None if np.isnan(pct_neg) else pct_neg,
         "raw_histogram": raw_histogram(raw, settings.growth.diagnostic_bin_mpy),
     }
@@ -266,7 +298,9 @@ def compute_growth(match_table: pd.DataFrame, dt_yr: float, prev_year: int, curr
     """Every spec 6.5 method for each current-run metal-loss row of the M4 match table, the governing rate
     by ``growth.governing`` per history class, and length growth. ``prev_year``/``curr_year`` are the runs'
     calendar years; reference positions are ``curr_log_dist_ft``. A position outside the pipe table is a
-    ValueError (reference coverage is a data error)."""
+    ValueError (reference coverage is a data error). The governing rate is never floored; ``needs_review``
+    and ``review_reasons`` flag a row whose rate is missing, incomplete under its rule, or below
+    ``min_rate_mpy`` (``REVIEW_REASONS``)."""
     if not dt_yr > 0:
         raise ValueError("dt_yr must be positive")
     g = settings.growth
@@ -299,7 +333,8 @@ def compute_growth(match_table: pd.DataFrame, dt_yr: float, prev_year: int, curr
     f["default_rate_mpy"] = default_rate(n, settings)
     gov, method = governing_rate(f, cls, settings)
     f["governing_mpy"], f["governing_method"] = gov, pd.Series(method, dtype=object)  # object keeps None
-    f["needs_review"] = np.isnan(f.governing_mpy.to_numpy(float))
+    needs_review, reasons = join_reasons(review_flags(f, cls, gov, settings), n)
+    f["needs_review"], f["review_reasons"] = needs_review, pd.Series(reasons, dtype=object)
     f["length_in"] = rows.curr_length_in.to_numpy(float)
     f["length_rate_ipy"] = length_growth_rate(f.length_in, f.governing_mpy, d_curr, settings)
     f = f[FEATURE_COLUMNS]
@@ -378,7 +413,9 @@ def main(argv: list[str] | None = None) -> int:
     print("history: " + ", ".join(f"{k} {v}" for k, v in s["counts_by_history_class"].items()))
     print("governing method: " + ", ".join(f"{k} {v}" for k, v in s["counts_by_governing_method"].items()))
     pct = s["pct_negative_raw"]
-    print(f"needs review: {s['n_needs_review']}; negative raw growth: " + ("n/a" if pct is None else f"{pct:.1f}%"))
+    reasons = ", ".join(f"{k} {v}" for k, v in s["counts_by_review_reason"].items())
+    print(f"needs review: {s['n_needs_review']} ({reasons}); negative raw growth: "
+          + ("n/a" if pct is None else f"{pct:.1f}%"))
     if score is not None:
         g, r = score["governing"], score["raw"]
         print(f"conservatism {score['conservatism_rate']:.4f} vs ground truth "
