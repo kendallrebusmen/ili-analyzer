@@ -6,17 +6,22 @@ types its producer wrote. It refuses (``ValueError`` naming the files) a missing
 from different runs, a classification made with other criteria than the ones now on disk, and a dig
 file without the columns the report needs. ``input_hashes`` fingerprints every file read, for the
 report's methods appendix and the run manifest.
+
+The table builders below (dig list, pending reviews, match statistics, largest growth, back-test, and the
+configuration and criteria listings) take their values from those tables unchanged; none is recomputed.
+Missing values stay real (None / NaN) so the HTML and Excel writers can render them as empty cells.
 """
 from __future__ import annotations
 
 import hashlib
 import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
 import pandas as pd
 
-from ili.classify import load_classification_table
+from ili.classify import CATEGORY_PRIORITY, load_classification_table
 from ili.config import RepairCriteria, Settings, load_repair_criteria, load_settings
 from ili.growth import load_growth_table
 from ili.ingest import load_standardized
@@ -31,6 +36,18 @@ SUMMARY_FILES = {
     "classification": "classification_summary.json",
 }
 DIG_COLUMNS = ("feature_id", "field_depth_pct", "field_length_in", "dig_date")  # spec 5.2 digs.csv
+DIG_LIST_CATEGORIES = CATEGORY_PRIORITY[:-1]  # everything that goes on the dig list; "evaluate" does not
+DIG_LIST_COLUMNS = (
+    "governing_category", "governing_rule", "match_id", "prev_feature_id", "curr_feature_id", "feature_type",
+    "curr_log_dist_ft", "curr_us_gw_id", "curr_dist_from_us_gw_ft", "clock_min", "lat", "lon",
+    "prev_depth_pct", "curr_depth_pct", "depth_pct_assessed", "prev_length_in", "curr_length_in",
+    "dent_depth_pct_od",
+    "governing_mpy", "governing_method",
+    "p_fail", "p_safe", "mop_local",
+    "rl_yr", "rl_governing",
+    "triggered_rules", "due_date", "due_date_basis", "worst_case_category", "requires_review",
+    "review_reasons", "action_note",
+)
 _ID_COLUMNS = ("match_id", "curr_feature_id", "feature_id", "segment_id")
 
 
@@ -160,3 +177,126 @@ def load_report_inputs(comparison: Path, prev_std: Path, curr_std: Path, ingest_
 def input_hashes(inputs: ReportInputs) -> dict[str, str]:
     """``{str(path): sha256}`` for every file read, sorted by path so the order is stable."""
     return {str(p): _sha256(p) for p in sorted(set(inputs.paths.values()), key=str)}
+
+
+# --- tables (spec 6.10) -------------------------------------------------------------------------------
+
+
+def _lookup(source: pd.DataFrame, keys: pd.Series, columns: list[str]) -> pd.DataFrame:
+    """``source[columns]`` by ``match_id``, aligned to ``keys`` (NaN where a match id has no row)."""
+    by_id = source.drop_duplicates("match_id").set_index("match_id")[columns]
+    return by_id.reindex(keys.to_numpy()).set_axis(keys.index)
+
+
+def dig_list(inputs: ReportInputs) -> pd.DataFrame:
+    """The classification rows in ``DIG_LIST_CATEGORIES`` with the columns ``DIG_LIST_COLUMNS``, most severe
+    category first, then shortest remaining life (none last), earliest due date (none last), match id."""
+    cls = inputs.classification
+    out = cls[cls.governing_category.isin(DIG_LIST_CATEGORIES)].reset_index(drop=True)
+    keys = out.match_id
+    out = out.join(_lookup(inputs.match_table, keys, [
+        "prev_feature_id", "curr_log_dist_ft", "curr_us_gw_id", "curr_dist_from_us_gw_ft", "prev_depth_pct",
+        "curr_depth_pct", "prev_length_in", "curr_length_in"]))
+    out = out.join(_lookup(inputs.growth, keys, ["governing_mpy", "governing_method"]))
+    out = out.join(_lookup(inputs.remaining_life, keys, ["rl_yr", "rl_governing"]))
+    std = inputs.curr_std.drop_duplicates("feature_id").set_index("feature_id")
+    for col in ("lat", "lon"):
+        out[col] = out.curr_feature_id.map(std[col])
+    order = (out.assign(_rank=out.governing_category.map(DIG_LIST_CATEGORIES.index),
+                        _rl=out.rl_yr.astype(float), _due=pd.to_datetime(out.due_date))
+             .sort_values(["_rank", "_rl", "_due", "match_id"], na_position="last").index)
+    return out.loc[order, list(DIG_LIST_COLUMNS)].reset_index(drop=True)
+
+
+def pending_reviews(match_table: pd.DataFrame) -> pd.DataFrame:
+    """Matches a person still has to review (spec 6.10.3): ``needs_review`` and status ``pending``."""
+    mask = match_table.needs_review.fillna(False).astype(bool) & (match_table.review_status == "pending")
+    return match_table[mask].reset_index(drop=True)
+
+
+def match_stats(match_table: pd.DataFrame) -> pd.DataFrame:
+    """Counts by ``match_type`` (rows) and ``confidence`` (columns), plus an ``all`` column."""
+    totals = match_table.match_type.value_counts()
+    counts = pd.crosstab(match_table.match_type, match_table.confidence).reindex(totals.index, fill_value=0)
+    counts["all"] = totals  # includes rows with no confidence (unmatched features)
+    return counts
+
+
+def largest_growth(inputs: ReportInputs, n: int) -> pd.DataFrame:
+    """The ``n`` growth rows with the largest ``governing_mpy`` (ties by match id; no rate sorts last)."""
+    g = inputs.growth.sort_values(["governing_mpy", "match_id"], ascending=[False, True], na_position="last")
+    return g.head(n).reset_index(drop=True)
+
+
+@dataclass(frozen=True)
+class BacktestResult:
+    table: pd.DataFrame  # one row per dig found in the current run
+    n_within: int
+    pct_within: float  # of the rows in ``table``; NaN when there are none
+    unmatched_ids: list[str]  # dig feature ids not in the current run
+
+
+def backtest(digs: pd.DataFrame | None, curr_std: pd.DataFrame, settings: Settings) -> BacktestResult | None:
+    """Reported depth against field depth for each dig (spec 8). None without digs."""
+    if digs is None or digs.empty:
+        return None
+    found = digs.feature_id.isin(curr_std.feature_id)
+    unmatched = [str(i) for i in digs.feature_id[~found]]
+    std = curr_std.drop_duplicates("feature_id").set_index("feature_id")
+    dug = digs[found].reset_index(drop=True)
+    table = pd.DataFrame({"feature_id": dug.feature_id, "ili_depth_pct": dug.feature_id.map(std.depth_pct),
+                          "field_depth_pct": dug.field_depth_pct})
+    table["diff_pct"] = table.ili_depth_pct - table.field_depth_pct
+    table["within_tolerance"] = table.diff_pct.abs().round(9) <= settings.tool.depth_tolerance_pct_wt
+    n_within = int(table.within_tolerance.sum())
+    pct = 100.0 * n_within / len(table) if len(table) else float("nan")
+    return BacktestResult(table, n_within, pct, unmatched)
+
+
+_YAML_KEY = re.compile(r"^(\s*)([^\s#:-][^:]*?)\s*:(?:\s|$)")
+
+
+def _placeholder_paths(text: str) -> set[tuple[str, ...]]:
+    """Key paths whose line in the YAML text carries ``PLACEHOLDER`` (found by tracking the indentation path)."""
+    stack: list[tuple[int, str]] = []
+    found: set[tuple[str, ...]] = set()
+    for line in text.splitlines():
+        m = _YAML_KEY.match(line)
+        if m is None:
+            continue
+        indent, key = len(m.group(1)), m.group(2).strip("\"'")
+        while stack and stack[-1][0] >= indent:
+            stack.pop()
+        stack.append((indent, key))
+        if "PLACEHOLDER" in line:
+            found.add(tuple(k for _, k in stack))
+    return found
+
+
+def _leaves(node, path: tuple[str, ...] = ()):
+    if isinstance(node, dict) and node:
+        for k, v in node.items():
+            yield from _leaves(v, (*path, str(k)))
+    else:
+        yield path, node  # lists and None are leaves
+
+
+def config_rows(settings: Settings, settings_path: Path) -> pd.DataFrame:
+    """Every setting as ``key`` (dotted), ``value`` and ``placeholder``. A ``PLACEHOLDER`` comment on a key's
+    line marks that key and every leaf beneath it."""
+    marked = _placeholder_paths(Path(settings_path).read_text(encoding="utf-8"))
+    rows = [(".".join(path), value, any(path[:i] in marked for i in range(1, len(path) + 1)))
+            for path, value in _leaves(settings.model_dump())]
+    out = pd.DataFrame(rows, columns=["key", "value", "placeholder"])
+    out["value"] = out.value.astype(object)
+    return out
+
+
+def criteria_rows(criteria: RepairCriteria) -> pd.DataFrame:
+    """The repair rules in file order, with ``feature_types`` joined into one comma-separated string."""
+    return pd.DataFrame([
+        {"id": r.id, "category": r.category, "applies_to": r.applies_to,
+         "feature_types": ", ".join(getattr(t, "value", str(t)) for t in r.feature_types),
+         "condition": r.condition, "requires_review": r.requires_review, "description": r.description}
+        for r in criteria.rules
+    ], columns=["id", "category", "applies_to", "feature_types", "condition", "requires_review", "description"])
