@@ -9,7 +9,7 @@ import pytest
 from ili.align_welds import DRAFT_LABEL
 from ili.app_pages_results import SAVED_AFTER_RUN, explorer_rows
 from ili.review import FLAGS_FILE, load_flags
-from test_app_setup import _all_text, _app, ran  # noqa: F401  (ran is a fixture)
+from test_app_setup import _all_text, _app, isolated_outputs, ran  # noqa: F401  (fixtures)
 
 EXPLORER = "Growth and remaining life explorer"
 EXPORT = "Dig list and report export"
@@ -106,7 +106,8 @@ def test_export_buttons_present_after_report(ran, tmp_path):
     assert DRAFT_LABEL in _all_text(at)
     assert len(at.get("download_button")) == 3
     assert any(b.label == "Rerun the pipeline" for b in at.button)
-    assert not at.info
+    assert not at.info and not at.error
+    assert len(at.dataframe) >= 2 and len(at.dataframe[0].value) > 0  # the dig list, then the flags table
     for name in ("report.html", "dig_list.xlsx", "run_manifest.json"):
         assert name in _all_text(at)
     (work / "dig_list.xlsx").unlink()

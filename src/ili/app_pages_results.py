@@ -16,7 +16,8 @@ from ili.align_welds import DRAFT_LABEL
 from ili.app_pages_review import NEEDS_REVIEWER, rerun_button
 from ili.app_pages_setup import NO_DATA
 from ili.classify import criteria_path
-from ili.config import load_settings
+from ili.config import PROJECT_ROOT, load_settings
+from ili.pipeline import PipelineInputs
 from ili.report_charts import growth_vs_distance, rl_distribution
 from ili.report_data import dig_list, load_report_inputs
 from ili.review import FLAG_NAMES, FLAGS_FILE, append_flag, effective_flags, latest_flag_ids
@@ -142,19 +143,44 @@ def _flag_editor(path: Path, data) -> None:
     st.dataframe(flag_table(data), hide_index=True)
 
 
-def _report_view(path: Path, data, setup):
-    """The dig list and the report's log warnings, from the files the report reads; (None, error) on refusal."""
-    summary = data.match_summary
-    out = Path(setup.out)
+def _absolute(p):
+    """A recorded input path, resolved against the project root when relative (not the cwd)."""
+    return None if p is None else (Path(p) if Path(p).is_absolute() else PROJECT_ROOT / p)
+
+
+def _file_stamps(path: Path, setup) -> tuple:
+    """Modification times of the comparison folder's files and of the setup's input files: the cache key."""
+    inputs = [_absolute(getattr(setup, f)) for f in ("pipe", "mop", "segments", "crossings", "digs", "settings",
+                                                     "criteria")]
+    files = sorted(p for p in Path(path).iterdir() if p.is_file()) + [p for p in inputs if p is not None]
+    return tuple((str(p), p.stat().st_mtime_ns if p.is_file() else None) for p in files)
+
+
+def _compute_view(path: str, prev_id: str, curr_id: str, setup, stamps: tuple):
+    out = _absolute(setup.out)
     try:
-        settings = load_settings(setup.settings)
+        settings_path = _absolute(setup.settings)
+        settings = load_settings(settings_path)
         inputs = load_report_inputs(
-            path, out / "standardized" / f"{summary['prev_run_id']}.csv",
-            out / "standardized" / f"{summary['curr_run_id']}.csv", out, setup.pipe, setup.mop, setup.segments,
-            setup.crossings, setup.digs, setup.settings, criteria_path(setup.criteria, settings))
+            Path(path), out / "standardized" / f"{prev_id}.csv", out / "standardized" / f"{curr_id}.csv", out,
+            _absolute(setup.pipe), _absolute(setup.mop), _absolute(setup.segments), _absolute(setup.crossings),
+            _absolute(setup.digs), settings_path, criteria_path(_absolute(setup.criteria), settings))
         return dig_list(inputs), inputs.log_warnings, None
     except (ValueError, OSError, KeyError) as exc:
         return None, [], str(exc)
+
+
+try:  # cached on the files' modification times, like app_state; the setup object is not hashed
+    _compute_view = st.cache_data(show_spinner=False, hash_funcs={PipelineInputs: repr})(_compute_view)
+except Exception:  # pragma: no cover
+    pass
+
+
+def _report_view(path: Path, data, setup):
+    """The dig list and the report's log warnings; (None, [], error) when the report refuses the inputs."""
+    summary = data.match_summary
+    return _compute_view(str(path), summary["prev_run_id"], summary["curr_run_id"], setup,
+                         _file_stamps(path, setup))
 
 
 def _downloads(path: Path) -> None:

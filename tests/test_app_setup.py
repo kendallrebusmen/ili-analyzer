@@ -17,6 +17,14 @@ PAGES = ["Run setup", "Weld alignment", "Match review queue", "Growth and remain
 APP = str(ROOT / "app" / "streamlit_app.py")
 
 
+@pytest.fixture(autouse=True)
+def isolated_outputs(tmp_path, monkeypatch):
+    """No test sees the real outputs/ folder: an earlier comparison there would pre-fill the Run setup form."""
+    empty = tmp_path / "no_outputs"
+    empty.mkdir()
+    monkeypatch.setattr(app_state, "OUTPUTS_DIR", empty)
+
+
 @pytest.fixture(scope="module")
 def ran(synth, tmp_path_factory):
     _, data = synth
@@ -71,8 +79,7 @@ def test_run_setup_shows_failing_stderr(synth, tmp_path):
     assert at.error and "match failed" in at.error[0].value and "missing.csv" in at.error[0].value
 
 
-def test_run_setup_requires_inputs(tmp_path, monkeypatch):
-    monkeypatch.setattr(app_state, "OUTPUTS_DIR", tmp_path)  # no earlier comparison pre-fills the form
+def test_run_setup_requires_inputs():
     at = _app().run()
     at.button[0].click().run()
     assert at.error and "prev_tally" in at.error[0].value
@@ -88,8 +95,7 @@ def test_weld_alignment_page_shows_changed_sections(ran):
     assert DRAFT_LABEL in _all_text(at)
 
 
-def test_pages_without_data_show_neutral_text_and_draft(tmp_path, monkeypatch):
-    monkeypatch.setattr(app_state, "OUTPUTS_DIR", tmp_path)
+def test_pages_without_data_show_neutral_text_and_draft():
     at = _app().run()
     for page in PAGES[1:]:
         at.sidebar.radio(key="page").set_value(page).run()
@@ -103,8 +109,8 @@ def test_pages_with_data_show_tables_and_draft(ran):
     at = _app(comparison_dir=str(folder)).run()
     for page in PAGES[2:]:
         at.sidebar.radio(key="page").set_value(page).run()
-        assert not at.exception and not at.info
-        assert page != "Match review queue" or len(at.dataframe) == 1
+        assert not at.exception and not at.info and not at.error
+        assert len(at.dataframe) >= (2 if page == PAGES[4] else 1)
         assert DRAFT_LABEL in _all_text(at)
 
 

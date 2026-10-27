@@ -11,7 +11,7 @@ from ili.align_welds import DRAFT_LABEL
 from ili import app_pages_review
 from ili.app_pages_review import NO_SETUP, SAVED, nearby_features, review_queue
 from ili.review import REVIEWS_FILE, load_reviews
-from test_app_setup import _all_text, _app, ran  # noqa: F401  (ran is a fixture)
+from test_app_setup import _all_text, _app, isolated_outputs, ran  # noqa: F401  (fixtures)
 
 PAGE = "Match review queue"
 
