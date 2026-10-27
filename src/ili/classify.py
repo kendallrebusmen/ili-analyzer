@@ -9,8 +9,9 @@ Unknown is None, never a guessed value. A variable whose input is missing, or wh
 evaluable instead of silently passing or failing. Each variable family has its own helper below; each
 documents its rule, including where the result is decided from partial information (Kleene logic).
 
-``manual_immediate`` and ``field_crack_confirmed`` are manual and field entries that M9 will supply;
-until then they are False for every feature (no evaluator flag, no confirmed crack is on record).
+``manual_immediate`` and ``field_crack_confirmed`` are manual and field entries from the M9 flag log
+(``review.effective_flags``): True when the latest entry for the feature (any member of a cluster) is True,
+False otherwise (no evaluator flag, no confirmed crack is on record).
 
 ``classify`` then applies the repair-criteria rules to those records, picks each feature's governing
 category (``CATEGORY_PRIORITY``) and computes its due date from the discovery date (195.452(h)(2)).
@@ -23,6 +24,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import sys
 from dataclasses import dataclass, replace
 from datetime import date, timedelta
@@ -40,6 +42,7 @@ from ili.match import clock_diff_min, load_match_table, parse_flag_column
 from ili.reference import _require_columns, assign_segment, check_segments, lookup
 from ili.remaining_life import (PIPE_WHAT, RL_SEGMENT_COLUMNS, _as_date, _run_ids, _segment_hca,
                                 load_remaining_life_table)
+from ili.review import FLAG_COLUMNS, FLAGS_FILE, effective_flags, latest_flag_ids, load_flags_hashed
 from ili.rules import _kleene_and, _kleene_or, _normalize, compile_condition
 from ili.schema import ANOMALY_TYPES, FeatureType
 from ili.strength import assessed_depth_in
@@ -55,6 +58,8 @@ TOP_OF_PIPE_TO_MIN = 240  # 4:00
 # review; the feature is outside every segment (HCA rules assumed); a metal-loss row has no M6 row.
 REVIEW_MATCH, REVIEW_NO_SEGMENT, REVIEW_RL_MISSING = "match_review", "no_segment", "rl_missing"
 
+FLAG_STATUS_FILE = "flag_status.csv"
+FLAG_STATUS_COLUMNS = ["flag_id", "curr_feature_id", "flag", "applied_status", "reason"]
 VARIABLE_COLUMNS = tuple(VARIABLES)
 FEATURE_VARIABLE_COLUMNS = [
     "match_id", "curr_feature_id", "segment_id", *VARIABLE_COLUMNS,
@@ -286,9 +291,37 @@ def _take(values, j: np.ndarray) -> np.ndarray:
     return out
 
 
+def _manual_flag(flags: dict[tuple[str, str], bool] | None, feature_ids, flag: str) -> list[bool]:
+    """Per row: True when ``flags`` holds True for ``flag`` on any ``;``-joined member of the id cell."""
+    flags = flags or {}
+    return [any(flags.get((member, flag), False) for member in str(cell).split(REASON_SEP)) for cell in feature_ids]
+
+
+def flag_status(flags: pd.DataFrame, classified: set[str], known: set[str]) -> pd.DataFrame:
+    """What became of every row of the flag log (``review.load_flags``), in log order: ``flag_id``,
+    ``curr_feature_id``, ``flag``, ``applied_status`` and ``reason`` (None when applied).
+
+    ``superseded``: a later row for the same feature and flag decides. ``not_applied``: ``unknown_feature``
+    (the id is not in the current run, ``known``) or ``not_anomaly`` (in the run but not a classified
+    current-run anomaly, ``classified``: ids of the feature-variables rows, cluster members split)."""
+    latest = latest_flag_ids(flags)
+    rows = []
+    for r in flags.itertuples(index=False):
+        if r.flag_id not in latest:
+            status, reason = "superseded", None
+        elif r.curr_feature_id not in known:
+            status, reason = "not_applied", "unknown_feature"
+        elif r.curr_feature_id not in classified:
+            status, reason = "not_applied", "not_anomaly"
+        else:
+            status, reason = "applied", None
+        rows.append((r.flag_id, r.curr_feature_id, r.flag, status, reason))
+    return pd.DataFrame(rows, columns=FLAG_STATUS_COLUMNS, dtype=object)
+
+
 def feature_variables(match_table: pd.DataFrame, remaining_life: pd.DataFrame, curr_std: pd.DataFrame,
                       pipe: pd.DataFrame, segments: pd.DataFrame, crossings: pd.DataFrame | None,
-                      settings: Settings) -> pd.DataFrame:
+                      settings: Settings, flags: dict[tuple[str, str], bool] | None = None) -> pd.DataFrame:
     """One row per current-run anomaly of the M4 match table, columns ``FEATURE_VARIABLE_COLUMNS``.
 
     Rows: match types ``CURRENT_SIDE_MATCH_TYPES`` with ``curr_feature_type`` metal_loss, dent or gouge,
@@ -315,7 +348,9 @@ def feature_variables(match_table: pd.DataFrame, remaining_life: pd.DataFrame, c
     - ``could_affect_hca``: the segment's flag (``segments``: start_ft, end_ft, segment_id,
       could_affect_hca); outside every segment it is True (HCA rules, the conservative choice) and the
       row is flagged ``no_segment``.
-    - ``manual_immediate``, ``field_crack_confirmed``: False (M9 supplies them).
+    - ``manual_immediate``, ``field_crack_confirmed``: from ``flags`` (``review.effective_flags``: the latest
+      value per (current feature id, flag)). A cluster row is True when any member's flag is True; False
+      otherwise, including when no flag was set or ``flags`` is None.
     - ``upstream_needs_review``: M4 needs_review OR M6 needs_review (unknown counts as True) OR any
       reason; ``upstream_review_reasons``: ``match_review``, M6's reasons, ``no_segment``,
       ``rl_missing``, ``;``-joined without repeats, None when there are none.
@@ -394,7 +429,8 @@ def feature_variables(match_table: pd.DataFrame, remaining_life: pd.DataFrame, c
         "general_corrosion": obj(general_corrosion(length, width, cfg.general_corrosion_min_dim_in)),
         "widespread_circumferential": obj(widespread_circumferential(width, od, cfg.widespread_circ_min_width_frac)),
         "dig_required_by_remaining_life": obj(dig),
-        "manual_immediate": obj([False] * n), "field_crack_confirmed": obj([False] * n),
+        "manual_immediate": obj(_manual_flag(flags, rows.curr_feature_id, "manual_immediate")),
+        "field_crack_confirmed": obj(_manual_flag(flags, rows.curr_feature_id, "field_crack_confirmed")),
         "repair_by_date": obj(repair_by_date),
         "upstream_needs_review": obj(bool(r[0]) for r in review), "upstream_review_reasons": obj(r[1] for r in review),
     })
@@ -765,6 +801,19 @@ def write_classification(result: ClassificationResult, out_dir: Path) -> dict[st
     return paths
 
 
+def write_flag_status(status: pd.DataFrame, folder: Path) -> Path:
+    """``flag_status.csv`` (``FLAG_STATUS_COLUMNS``; a header only without a log) in the comparison dir,
+    through a temporary file and ``os.replace`` so a failure leaves the old file."""
+    path = Path(folder) / FLAG_STATUS_FILE
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    try:
+        status.to_csv(tmp, index=False, lineterminator="\n")
+        os.replace(tmp, path)
+    finally:
+        tmp.unlink(missing_ok=True)
+    return path
+
+
 def _parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(prog="python -m ili.classify",
                                  description="Repair classification, 195.452(h)(4). " + DRAFT_LABEL)
@@ -776,6 +825,8 @@ def _parser() -> argparse.ArgumentParser:
     ap.add_argument("--crossings", type=Path, default=None, help="foreign_crossings.csv (optional)")
     ap.add_argument("--criteria", type=Path, default=None,
                     help="repair criteria YAML (default: classification.criteria_file of the settings)")
+    ap.add_argument("--flags", type=Path, default=None,
+                    help=f"manual flag log (default: {FLAGS_FILE} in the comparison dir, when it exists)")
     ap.add_argument("--discovery-date", default=None, help="discovery date, YYYY-MM-DD (default: latest permissible)")
     ap.add_argument("--settings", type=Path, default=DEFAULT_SETTINGS, help="settings YAML")
     ap.add_argument("--out", type=Path, default=PROJECT_ROOT / "outputs", help="output directory")
@@ -802,6 +853,11 @@ def _print_report(result: ClassificationResult, paths: dict[str, Path]) -> None:
     print(f"could be more severe: {sum(more.values())} (worst case: "
           + ", ".join(f"{k} {v}" for k, v in more.items() if k != "evaluate") + ")")
     print(f"overdue at discovery: {s['n_overdue_at_discovery']}")
+    print(f"flags: {s['flags_file'] or 'none'}"
+          + (f" ({len(t[t.manual_immediate])} manual immediate, {len(t[t.field_crack_confirmed])} field crack "
+             f"confirmed, {len(s['flags_not_applied'])} not applied)" if s["flags_file"] else ""))
+    for f in s["flags_not_applied"]:
+        print(f"  {f['flag_id']} {f['flag']} on {f['curr_feature_id']} not applied: {f['reason']}")
     print(f"wrote {paths['classification.csv'].parent}")
 
 
@@ -813,6 +869,16 @@ def criteria_path(given: Path | None, settings: Settings) -> Path:
         return Path(given)
     path = Path(settings.classification.criteria_file)
     return path if path.is_absolute() else PROJECT_ROOT / path
+
+
+def _flags_path(given: Path | None, folder: Path) -> Path | None:
+    """The flag log to apply: ``--flags`` (which must exist), else the comparison dir's log if any."""
+    if given is not None:
+        if not given.is_file():
+            raise ValueError(f"flags file {given} not found")
+        return given
+    default = folder / FLAGS_FILE
+    return default if default.is_file() else None
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -837,11 +903,25 @@ def main(argv: list[str] | None = None) -> int:
         if run_dates.empty:
             raise ValueError(f"{args.curr}: the current run has no run date")
         assessed = run_dates.iloc[0]
-        variables = feature_variables(matches, remaining, curr, pipe, segments, crossings, settings)
+        flags_path = _flags_path(args.flags, comparison_dir(args.out, prev_id, curr_id))
+        flags, flags_digest = (load_flags_hashed(flags_path) if flags_path
+                               else (pd.DataFrame(columns=FLAG_COLUMNS, dtype=object), None))
+        variables = feature_variables(matches, remaining, curr, pipe, segments, crossings, settings,
+                                      flags=effective_flags(flags))
         result = classify(variables, criteria, settings, assessed, args.discovery_date, criteria_sha256=digest,
                           criteria_path=str(crit_path), crossings_file_given=crossings is not None)
-        result = replace(result, summary={"prev_run_id": prev_id, "curr_run_id": curr_id, **result.summary})
+        classified = {m for cell in variables.curr_feature_id for m in str(cell).split(REASON_SEP)}
+        status = flag_status(flags, classified, set(curr.feature_id.astype(str)))
+        not_applied = status[status.applied_status == "not_applied"]
+        flag_summary = {
+            "flags_file": str(flags_path) if flags_path else None,
+            "flags_sha256": flags_digest,  # of the bytes parsed above, not a second read
+            "flags_not_applied": [{"flag_id": r.flag_id, "curr_feature_id": r.curr_feature_id, "flag": r.flag,
+                                   "reason": r.reason} for r in not_applied.itertuples(index=False)]}
+        result = replace(result, summary={"prev_run_id": prev_id, "curr_run_id": curr_id, **result.summary,
+                                          **flag_summary})
         paths = write_classification(result, args.out)
+        write_flag_status(status, paths["classification.csv"].parent)
     except (ValueError, OSError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2

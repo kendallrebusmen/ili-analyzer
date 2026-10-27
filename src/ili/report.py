@@ -45,6 +45,7 @@ from ili.report_charts import (CATEGORY_COLOURS, depth_vs_distance, feature_map,
                                growth_vs_distance, rl_distribution, unity_chart)
 from ili.report_data import (ReportInputs, _sha256, backtest, config_rows, criteria_rows, dig_list, input_hashes,
                              largest_growth, load_report_inputs, match_stats, pending_reviews)
+from ili.review import FLAG_COLUMNS, REVIEW_COLUMNS
 
 TEMPLATES = Path(__file__).parent / "templates"
 TEMPLATE_NAME = "report.html.j2"
@@ -68,8 +69,9 @@ DIG_LIST_PRINT_COLUMNS = ("governing_category", "governing_rule", "match_id", "c
 MOVED_PRINT_COLUMNS = ("match_id", "curr_feature_id", "feature_type", "prev_depth_pct_assessed",
                        "curr_depth_pct_assessed", "prev_rule_category", "prev_rules_not_evaluable",
                        "curr_rule_category", "curr_governing_rule", "curr_rules_not_evaluable")
-REVIEW_LOG_COLUMNS = ["match_id", "match_type", "prev_feature_id", "curr_feature_id", "confidence",
-                      "missing_hint", "review_status"]
+UNRECORDED = "saved after the last run — rerun to apply"
+REVIEW_LOG_COLUMNS = [*REVIEW_COLUMNS, "applied_status", "reason"]  # reviews.csv joined to review_status.csv
+FLAG_LOG_COLUMNS = [*FLAG_COLUMNS, "applied_status", "reason"]  # feature_flags.csv with what became of each row
 
 
 @dataclass(frozen=True)
@@ -211,6 +213,7 @@ def _data_quality(inputs: ReportInputs) -> dict:
     by_reason = issues.groupby(["run_id", "reason"], dropna=False).size().rename("count").reset_index()
     align = inputs.summaries["alignment"]
     cls_summary = inputs.summaries["classification"]
+    n_pending, n_unrecorded = len(pending_reviews(inputs.match_table)), _n_unrecorded(inputs)
     return {
         "n_issues": len(issues),
         "issue_counts": table(by_reason),
@@ -218,7 +221,10 @@ def _data_quality(inputs: ReportInputs) -> dict:
         "alignment_rate": _rate(align.get("alignment_rate")),
         "alignment_rate_outside_repairs": _rate(align.get("alignment_rate_outside_repairs")),
         "match_stats": table(_match_stats(inputs.match_table)),
-        "n_pending": len(pending_reviews(inputs.match_table)),
+        "n_pending": n_pending,
+        "n_unrecorded": n_unrecorded,
+        "pending_text": pending_text(n_pending, n_unrecorded),
+        "not_final": n_pending + n_unrecorded > 0,
         "n_requires_review": cls_summary.get("n_requires_review"),
         "review_reasons": _counts(cls_summary.get("counts_by_review_reason") or {}, "reason"),
         "crossings_given": inputs.crossings is not None,
@@ -255,9 +261,44 @@ def _charts(inputs: ReportInputs, dig: pd.DataFrame) -> dict:
     }
 
 
+def _with_outcome(log: pd.DataFrame, status: pd.DataFrame, id_col: str, columns: list[str]) -> pd.DataFrame:
+    """``log`` with ``applied_status`` and ``reason`` from the run's status file by id; a row the run did
+    not record (saved after it) says so in ``applied_status``."""
+    outcome = status.drop_duplicates(id_col).set_index(id_col)
+    log = log.reset_index(drop=True)
+    for col in ("applied_status", "reason"):
+        log[col] = log[id_col].map(outcome[col])
+    log["applied_status"] = log.applied_status.where(log[id_col].isin(outcome.index), UNRECORDED)
+    return log[columns]
+
+
+def _review_log(inputs: ReportInputs) -> pd.DataFrame:
+    """Every row of ``reviews.csv`` with the outcome match recorded for it (``review_status.csv``)."""
+    return _with_outcome(inputs.reviews, inputs.review_status, "decision_id", REVIEW_LOG_COLUMNS)
+
+
+def _flag_log(inputs: ReportInputs) -> pd.DataFrame:
+    """Every row of ``feature_flags.csv`` with the outcome classification recorded (``flag_status.csv``)."""
+    return _with_outcome(inputs.flags, inputs.flag_status, "flag_id", FLAG_LOG_COLUMNS)
+
+
+def pending_text(n_pending: int, n_unrecorded: int) -> str:
+    """What still keeps a report from being final, in the words both the report and the CLI use: the
+    matches pending review, plus (when there are any) the log rows saved after the last run, which no
+    result reflects yet. The two are counted apart: a log row is not a match."""
+    text = f"{n_pending} {'match' if n_pending == 1 else 'matches'} pending review"
+    if n_unrecorded:
+        text += f", plus {n_unrecorded} log {'row' if n_unrecorded == 1 else 'rows'} saved after the last run"
+    return text
+
+
+def _n_unrecorded(inputs: ReportInputs) -> int:
+    """Log rows no run has recorded: saved after the last run, so not yet in any result."""
+    return int((_review_log(inputs).applied_status == UNRECORDED).sum()
+               + (_flag_log(inputs).applied_status == UNRECORDED).sum())
+
+
 def _methods(inputs: ReportInputs) -> dict:
-    mt = inputs.match_table
-    reviewed = mt[mt.needs_review.fillna(False).astype(bool)]
     tool = inputs.settings.tool.model_dump()
     config = config_rows(inputs.settings, inputs.settings_path)
     return {
@@ -270,7 +311,8 @@ def _methods(inputs: ReportInputs) -> dict:
         "criteria_path": str(inputs.criteria_path),
         "criteria": table(criteria_rows(inputs.criteria)),
         "hashes": Table(["path", "sha256"], [[p, h] for p, h in input_hashes(inputs).items()]),
-        "review_log": table(reviewed, REVIEW_LOG_COLUMNS),
+        "review_log": table(_review_log(inputs)),
+        "flag_log": table(_flag_log(inputs)),
     }
 
 
@@ -291,6 +333,7 @@ def render_report(inputs: ReportInputs, changes: CategoryChangeResult, header: R
         "plotlyjs": Markup(plotly.offline.get_plotlyjs()),
         "category_colours": CATEGORY_COLOURS,
         "head": _header(inputs, header, generated_utc),
+        "log_warnings": inputs.log_warnings,
         "summary": _summary(inputs, dig),
         "quality": _data_quality(inputs),
         "growth": _growth(inputs),
@@ -472,7 +515,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 2
     summary = inputs.summaries["classification"]
-    pending = pending_reviews(inputs.match_table)
+    n_pending, n_unrecorded = len(pending_reviews(inputs.match_table)), _n_unrecorded(inputs)
     moved = changes.table[changes.table.moved_more_severe]
     print(DRAFT_LABEL)
     if summary.get("discovery_warning"):
@@ -480,8 +523,8 @@ def main(argv: list[str] | None = None) -> int:
     print(f"{summary['prev_run_id']} vs {summary['curr_run_id']}: " + ", ".join(
         f"{k} {v}" for k, v in summary["counts_by_category"].items()))
     print(f"dig list: {len(dig_list(inputs))} rows")
-    print(f"pending reviews: {len(pending)}"
-          + (" (the report is not final until each is reviewed)" if len(pending) else ""))
+    print(f"pending: {pending_text(n_pending, n_unrecorded)}"
+          + (" (the report cannot be final)" if n_pending + n_unrecorded else ""))
     print(f"moved to a more severe category: {len(moved)} of {len(changes.table)} compared")
     for path in paths.values():
         print(f"wrote {path}")

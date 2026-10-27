@@ -160,6 +160,11 @@ class ReportCfg(_Strict):
         return v
 
 
+class ReviewCfg(_Strict):
+    # presentation only: nothing here changes a number in the analysis
+    nearby_window_ft: float = Field(gt=0)  # the review page's nearby-features window (ft)
+
+
 class Settings(_Strict):
     units: Literal["us_customary"]
     tool: ToolCfg
@@ -171,6 +176,7 @@ class Settings(_Strict):
     classification: ClassificationCfg
     cp_overlay: CpOverlayCfg
     report: ReportCfg
+    review: ReviewCfg
 
 
 class Rule(_Strict):

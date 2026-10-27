@@ -102,6 +102,9 @@ code { font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; font-siz
 <dt>Generated (UTC)</dt><dd>{{ head.generated_utc }} by {{ head.generator }}</dd>
 </dl>
 {{ render_table(head.runs) }}
+{% for w in log_warnings %}
+<p class="warning">{{ w }}</p>
+{% endfor %}
 </section>
 
 <section id="summary">
@@ -130,8 +133,8 @@ code { font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; font-siz
 <section id="data-quality">
 <p class="draft">{{ label }}</p>
 <h2>Data quality</h2>
-{% if quality.n_pending > 0 %}
-<p class="warning">{{ quality.n_pending }} match reviews pending — this report cannot be final.</p>
+{% if quality.not_final %}
+<p class="warning">{{ quality.pending_text }} — this report cannot be final.</p>
 {% endif %}
 <h3>Validation issues</h3>
 {% if quality.n_issues %}
@@ -148,7 +151,7 @@ code { font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; font-siz
 <h3>Match statistics</h3>
 {{ render_table(quality.match_stats, "Rows by match type and confidence. The all column counts every row of the type, including rows with no confidence (unmatched new and missing features), so the confidence columns need not sum to it.") }}
 <h3>Reviews</h3>
-<p>Match reviews pending: {{ quality.n_pending }}.</p>
+<p>Pending: {{ quality.pending_text }}.</p>
 <p>Features that require review (classification): {{ quality.n_requires_review if quality.n_requires_review is not none else "not stated" }}.</p>
 {{ render_table(quality.review_reasons, "Requires-review counts by reason (a feature can have several)") }}
 <h3>Foreign crossings</h3>
@@ -319,11 +322,19 @@ criterion is already met at τ = 0.</p>
 {{ render_table(methods.hashes) }}
 
 <h3>Match review log</h3>
-<p>Decisions are recorded in M9 (reviews.csv).</p>
+<p>Every decision in reviews.csv, with whether the match applied it. Pending: {{ quality.pending_text }}.</p>
 {% if methods.review_log.rows %}
-{{ render_table(methods.review_log, "Every match that needs review") }}
+{{ render_table(methods.review_log, "Review decisions (reviewer and note are as entered)") }}
 {% else %}
-<p>No match needs review.</p>
+<p>No review decisions are recorded.</p>
+{% endif %}
+
+<h3>Manual flags</h3>
+<p>Every row in feature_flags.csv, with whether classification applied it (manual_immediate: IMM-5; field_crack_confirmed: D180-7).</p>
+{% if methods.flag_log.rows %}
+{{ render_table(methods.flag_log, "Manual flags (reviewer and note are as entered)") }}
+{% else %}
+<p>No manual flags are recorded.</p>
 {% endif %}
 </section>
 

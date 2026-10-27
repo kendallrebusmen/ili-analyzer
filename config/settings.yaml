@@ -80,3 +80,6 @@ cp_overlay:
 report:                             # presentation only; changes no number in the analysis
   largest_changes_n: 20             # rows in the "largest changes" table
   dig_list_sheet: "Dig list"        # worksheet name in the Excel dig list
+
+review:                             # presentation only; changes no number in the analysis
+  nearby_window_ft: 10              # the review page's nearby-features window (ft)
