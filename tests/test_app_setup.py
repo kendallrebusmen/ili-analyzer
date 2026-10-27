@@ -67,7 +67,7 @@ def _all_text(at):
 def test_app_starts_with_draft_label():
     at = _app().run()
     assert not at.exception
-    assert any(DRAFT_LABEL in w.value for w in at.sidebar.warning)
+    assert any('class="ili-shell"' in m.value and DRAFT_LABEL in m.value for m in at.markdown)
     assert at.text_input(key="reviewer").value == ""
 
 
@@ -85,8 +85,9 @@ def test_run_setup_runs_pipeline(synth, tmp_path):
     assert not at.error
     assert at.session_state[app_state.COMPARISON_KEY] == str(inputs.out / FOLDER)
     assert (inputs.out / FOLDER / "report.html").is_file()
-    # the page redraws after the run, so the sidebar names the new folder (it was drawn before the run)
-    assert [c.value for c in at.sidebar.caption] == [f"Comparison: {inputs.out / FOLDER}"]
+    # the page redraws after the run, so the breadcrumb names the new folder (it was drawn before the run)
+    crumbs = [m.value for m in at.markdown if 'class="ili-breadcrumb"' in m.value]
+    assert len(crumbs) == 1 and FOLDER in crumbs[0] and str(inputs.out / FOLDER) in crumbs[0]
 
 
 def test_run_setup_shows_failing_stderr(synth, tmp_path):
@@ -110,7 +111,7 @@ def test_run_setup_requires_inputs():
 def test_weld_alignment_page_shows_changed_sections(ran):
     _, folder = ran
     at = _app(comparison_dir=str(folder)).run()
-    at.sidebar.radio(key="page").set_value("Weld alignment").run()
+    at.radio(key="page").set_value("Weld alignment").run()
     assert not at.exception
     assert [m.label for m in at.metric][-1] == "Changed sections"
     assert len(at.dataframe) == 1 and len(at.dataframe[0].value) == 7
@@ -120,7 +121,7 @@ def test_weld_alignment_page_shows_changed_sections(ran):
 def test_pages_without_data_show_neutral_text_and_draft():
     at = _app().run()
     for page in PAGES[1:]:
-        at.sidebar.radio(key="page").set_value(page).run()
+        at.radio(key="page").set_value(page).run()
         assert not at.exception
         assert [i.value for i in at.info] == ["No data yet: run the pipeline on the Run setup page."]
         assert DRAFT_LABEL in _all_text(at)
@@ -130,7 +131,7 @@ def test_pages_with_data_show_tables_and_draft(ran):
     _, folder = ran
     at = _app(comparison_dir=str(folder)).run()
     for page in PAGES[2:]:
-        at.sidebar.radio(key="page").set_value(page).run()
+        at.radio(key="page").set_value(page).run()
         assert not at.exception and not at.info and not at.error
         assert len(at.dataframe) >= (2 if page == PAGES[4] else 1)
         assert DRAFT_LABEL in _all_text(at)
@@ -188,8 +189,9 @@ def test_app_refuses_to_run_when_not_local(option, value):
         _set_options(old, "test restore")
     assert not at.exception
     assert len(at.error) == 1 and "refuses to start" in at.error[0].value and option in at.error[0].value
-    assert any(DRAFT_LABEL in w.value for w in at.sidebar.warning) and DRAFT_LABEL in _all_text(at)
-    assert not at.text_input and not at.sidebar.radio  # no reviewer field, no page
+    assert any('class="ili-shell"' in m.value and DRAFT_LABEL in m.value for m in at.markdown)
+    assert DRAFT_LABEL in _all_text(at)
+    assert not at.text_input and not at.radio  # no reviewer field, no page
 
 
 def test_unreadable_log_is_an_error_on_every_page_not_a_traceback(ran, tmp_path):
@@ -202,7 +204,7 @@ def test_unreadable_log_is_an_error_on_every_page_not_a_traceback(ran, tmp_path)
                                      encoding="utf-8")
     at = _app(comparison_dir=str(work)).run()
     for page in PAGES[1:]:
-        at.sidebar.radio(key="page").set_value(page).run()
+        at.radio(key="page").set_value(page).run()
         assert not at.exception, page
         assert len(at.error) == 1 and "reviews.csv: line 2" in at.error[0].value, page
         assert DRAFT_LABEL in _all_text(at)

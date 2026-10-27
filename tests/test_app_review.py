@@ -54,7 +54,7 @@ def _page(folder, tmp_path, **state):
     work = tmp_path / "folder"
     shutil.copytree(folder, work)
     at = _app(comparison_dir=str(work), **state).run()
-    at.sidebar.radio(key="page").set_value(PAGE).run()
+    at.radio(key="page").set_value(PAGE).run()
     assert not at.exception
     return at, work
 
@@ -73,7 +73,7 @@ def test_accept_writes_log(ran, tmp_path):
     at, work = _page(folder, tmp_path)
     assert DRAFT_LABEL in _all_text(at)
     at.selectbox(key="review_pick").set_value(row_key(row.prev_feature_id, row.curr_feature_id)).run()
-    at.sidebar.text_input(key="reviewer").set_value("A. Reviewer").run()
+    at.text_input(key="reviewer").set_value("A. Reviewer").run()
     [b for b in at.button if b.label == "Accept"][0].click().run()
     assert not at.exception
     assert [e.value for e in at.success] == [SAVED]
@@ -92,7 +92,7 @@ def test_manual_cluster_writes_log(ran, tmp_path, monkeypatch):
     row = _paired(folder)
     at, work = _page(folder, tmp_path)
     at.selectbox(key="review_pick").set_value(row_key(row.prev_feature_id, row.curr_feature_id)).run()
-    at.sidebar.text_input(key="reviewer").set_value("A. Reviewer").run()
+    at.text_input(key="reviewer").set_value("A. Reviewer").run()
     prev_opts, curr_opts = at.multiselect(key="manual_prev").options, at.multiselect(key="manual_curr").options
     assert len(prev_opts) >= 2 and len(curr_opts) >= 1
     want_prev, want_curr = [prev_opts[1], prev_opts[0]], [curr_opts[0]]
@@ -125,7 +125,7 @@ def test_rerun_disabled_without_setup(ran, tmp_path):
     shutil.copytree(folder, work)
     (work / "pipeline_inputs.json").unlink()
     at = _app(comparison_dir=str(work)).run()
-    at.sidebar.radio(key="page").set_value(PAGE).run()
+    at.radio(key="page").set_value(PAGE).run()
     assert [b for b in at.button if b.label == "Rerun the pipeline"][0].disabled
     assert NO_SETUP in _all_text(at)
 
@@ -140,7 +140,7 @@ def test_not_applied_decisions_are_shown(ran, tmp_path):
                            "reason": ["unknown_feature"]})
     status.to_csv(work / "review_status.csv", index=False)
     at = _app(comparison_dir=str(work)).run()
-    at.sidebar.radio(key="page").set_value(PAGE).run()
+    at.radio(key="page").set_value(PAGE).run()
     assert not at.exception
     shown = " ".join(str(df.value.to_dict("list")) for df in at.dataframe)
     assert "unknown_feature" in shown and "NOPE-1" in shown
@@ -197,7 +197,7 @@ def test_manual_needs_both_sides(ran, tmp_path):
 def test_rerun_runs_the_pipeline(ran):
     inputs, folder = ran
     at = _app(comparison_dir=str(folder), pipeline_inputs=inputs).run()
-    at.sidebar.radio(key="page").set_value(PAGE).run()
+    at.radio(key="page").set_value(PAGE).run()
     [b for b in at.button if b.label == "Rerun the pipeline"][0].click().run()
     assert not at.exception and not at.error
     assert [e.label for e in at.expander] == [f"{s}: exit 0" for s in pipeline.STAGES]
@@ -207,7 +207,7 @@ def test_rerun_runs_the_pipeline(ran):
 def test_rerun_busy_shows_the_busy_result(ran):
     inputs, folder = ran
     at = _app(comparison_dir=str(folder), pipeline_inputs=inputs).run()
-    at.sidebar.radio(key="page").set_value(PAGE).run()
+    at.radio(key="page").set_value(PAGE).run()
     assert pipeline._RUN_LOCK.acquire(blocking=False)
     try:
         [b for b in at.button if b.label == "Rerun the pipeline"][0].click().run()
@@ -242,7 +242,7 @@ def test_rerun_between_selection_and_click_never_saves_other_ids(fresh):
     index = int(paired[len(paired) // 2])
     shown = queue.loc[index]
     at = _app(comparison_dir=str(folder), reviewer="Pat").run()
-    at.sidebar.radio(key="page").set_value(PAGE).run()
+    at.radio(key="page").set_value(PAGE).run()
     at.selectbox(key="review_pick").set_value(row_key(shown.prev_feature_id, shown.curr_feature_id)).run()
     assert at.selectbox(key="review_pick").value == row_key(shown.prev_feature_id, shown.curr_feature_id)
 
@@ -274,7 +274,7 @@ def test_correction_view_re_accepts_a_rejected_pair(fresh):
     _, folder = fresh
     row = _paired(folder)
     at = _app(comparison_dir=str(folder), reviewer="Pat").run()
-    at.sidebar.radio(key="page").set_value(PAGE).run()
+    at.radio(key="page").set_value(PAGE).run()
     assert "No decisions are in force yet." in _all_text(at)
     at.selectbox(key="review_pick").set_value(row_key(row.prev_feature_id, row.curr_feature_id)).run()
     at.button(key="review_reject").click().run()
@@ -314,3 +314,36 @@ def test_locked_log_says_close_the_file(ran, tmp_path, monkeypatch):
     assert not at.exception and not at.success
     assert len(at.error) == 1 and "reviews.csv could not be written" in at.error[0].value
     assert "close it" in at.error[0].value
+
+
+def test_selected_match_has_enterprise_header_and_action_bar(ran, tmp_path):
+    _, folder = ran
+    row = _paired(folder)
+    at, _ = _page(folder, tmp_path)
+    at.selectbox(key="review_pick").set_value(row_key(row.prev_feature_id, row.curr_feature_id)).run()
+    headers = [m.value for m in at.markdown if 'class="ili-object"' in m.value]
+    assert len(headers) == 1
+    assert row.match_id in headers[0] and f"{row.confidence.capitalize()} confidence" in headers[0]
+    assert "Pending" in headers[0]
+    accept = [b for b in at.button if b.label == "Accept"][0]
+    assert accept.proto.type == "primary"
+    assert {"review_accept", "review_reject"} <= {b.key for b in at.button}
+
+
+def test_side_by_side_cells_are_readable():
+    values = {f"{s}_{f}": None for s in ("prev", "curr") for f in app_pages_review.SIDE_FIELDS}
+    values.update({"prev_wt_nom_in": 0.25, "curr_wt_nom_in": 0.24999999999999997, "prev_log_dist_ft": 1279.36,
+                   "curr_log_dist_ft": 1273.6581364829394, "prev_depth_pct": float("nan"), "curr_depth_pct": 28.1,
+                   "prev_us_gw_id": "GW00320", "curr_us_gw_id": "32", "prev_feature_id": "A-1",
+                   "curr_feature_id": "B-1"})
+    row = pd.Series(values, dtype=object)
+    frame = app_pages_review._side_frame(row).set_index("field")
+    assert frame.loc["wt_nom_in"].tolist() == ["0.25", "0.25"]
+    assert frame.loc["log_dist_ft"].tolist() == ["1279.36", "1273.658"]
+    assert frame.loc["depth_pct"].tolist() == ["", "28.1"]
+    assert frame.loc["us_gw_id"].tolist() == ["GW00320", "32"]
+    assert frame.loc["dent_depth_in"].tolist() == ["", ""]
+
+
+def test_reviewer_hint_names_the_reviewer_box_not_a_sidebar():
+    assert "sidebar" not in app_pages_review.NEEDS_REVIEWER.lower()

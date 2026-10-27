@@ -9,7 +9,7 @@ localhost, no telemetry and headless, and the app refuses to run when the option
 
 import streamlit as st
 
-from ili import app_state
+from ili import app_state, app_theme
 from ili.align_welds import DRAFT_LABEL
 from ili.app_pages_results import explorer_page, export_page
 from ili.app_pages_review import review_queue_page
@@ -36,17 +36,19 @@ def not_local_reason() -> str | None:
     return None
 
 
-st.set_page_config(page_title=TITLE)
-with st.sidebar:
-    st.warning(DRAFT_LABEL)
+st.set_page_config(page_title=TITLE, layout="wide", initial_sidebar_state="collapsed")
+app_theme.apply_theme()
+st.markdown(app_theme.shell_bar_html(st.session_state.get(app_state.REVIEWER_KEY, "")), unsafe_allow_html=True)
 if reason := not_local_reason():
     st.error(f"The review app runs on this computer only, with no usage statistics, and refuses to start: "
              f"{reason}. Start it with: streamlit run app/streamlit_app.py --server.address localhost "
              f"--browser.gatherUsageStats false")
     st.caption(DRAFT_LABEL)
     st.stop()
-with st.sidebar:
-    st.text_input("Reviewer name (required before any decision)", key=app_state.REVIEWER_KEY)
-    folder = app_state.comparison_from_session()
-    st.caption(f"Comparison: {folder}" if folder else "Comparison: none loaded")
-PAGES[st.sidebar.radio("Page", list(PAGES), key="page")]()
+folder = app_state.comparison_from_session()
+crumb, reviewer = st.columns([3, 1], vertical_alignment="center")
+crumb.markdown(app_theme.breadcrumb_html(folder, st.session_state.get("page", next(iter(PAGES)))),
+               unsafe_allow_html=True)
+reviewer.text_input("Reviewer name (required before any decision)", key=app_state.REVIEWER_KEY,
+                    label_visibility="collapsed", placeholder="Reviewer name (required to decide)")
+PAGES[st.radio("Page", list(PAGES), key="page", horizontal=True, label_visibility="collapsed")]()

@@ -46,7 +46,7 @@ def _page(folder, tmp_path, page, **state):
     work = tmp_path / "folder"
     shutil.copytree(folder, work)
     at = _app(comparison_dir=str(work), **state).run()
-    at.sidebar.radio(key="page").set_value(page).run()
+    at.radio(key="page").set_value(page).run()
     assert not at.exception
     return at, work
 
