@@ -39,9 +39,10 @@ def _metal_loss(std):
 
 def depth_vs_distance(inputs: ReportInputs) -> go.Figure:
     fig = _figure("Metal-loss depth against distance", "Log distance (ft; each run's odometer)", DEPTH_AXIS)
-    for std, colour in zip((inputs.prev_std, inputs.curr_std), RUN_COLOURS, strict=True):
+    run_ids = (inputs.summaries["match"]["prev_run_id"], inputs.summaries["match"]["curr_run_id"])
+    for std, run_id, colour in zip((inputs.prev_std, inputs.curr_std), run_ids, RUN_COLOURS, strict=True):
         ml = _metal_loss(std)
-        fig.add_trace(go.Scattergl(x=ml.log_dist_ft, y=ml.depth_pct, mode="markers", name=str(std.run_id.iloc[0]),
+        fig.add_trace(go.Scatter(x=ml.log_dist_ft, y=ml.depth_pct, mode="markers", name=str(run_id),
                                    marker={"size": MARKER_SIZE, "color": colour, "line": MARKER_LINE, "opacity": 0.7}))
     return fig
 
@@ -50,7 +51,7 @@ def growth_vs_distance(inputs: ReportInputs) -> go.Figure:
     fig = _figure("Growth rate against distance", CURR_DIST_AXIS, GROWTH_AXIS)
     g = inputs.growth
     for column, colour in GROWTH_COLOURS.items():
-        fig.add_trace(go.Scattergl(x=g.curr_log_dist_ft, y=g[column], mode="markers", name=column,
+        fig.add_trace(go.Scatter(x=g.curr_log_dist_ft, y=g[column], mode="markers", name=column,
                                    marker={"size": MARKER_SIZE, "color": colour, "line": MARKER_LINE,
                                            "opacity": 0.7}))
     return fig
@@ -61,11 +62,12 @@ def growth_histograms(inputs: ReportInputs) -> go.Figure:
     bin_mpy = inputs.settings.growth.diagnostic_bin_mpy
     g = inputs.growth[inputs.growth.raw_mpy.notna()]
     seg_ids = sorted(g.segment_id.dropna().unique())
+    start = bin_mpy * float(np.floor(min(g.raw_mpy.min(), 0.0) / bin_mpy)) if len(g) else 0.0  # keep negatives
     fig = make_subplots(rows=max(len(seg_ids), 1), cols=1, shared_xaxes=True, subplot_titles=[str(s) for s in seg_ids],
                         vertical_spacing=0.04)
     for row, seg in enumerate(seg_ids, start=1):
         fig.add_trace(go.Histogram(x=g.raw_mpy[g.segment_id == seg], name=str(seg), showlegend=False,
-                                   xbins={"size": bin_mpy, "start": 0.0}, marker={"color": GROWTH_COLOURS["governing_mpy"]}),
+                                   xbins={"size": bin_mpy, "start": start}, marker={"color": GROWTH_COLOURS["governing_mpy"]}),
                       row=row, col=1)
         fig.update_yaxes(title_text="Features", row=row, col=1)
     fig.update_xaxes(title_text="Raw growth rate (mpy)", row=len(seg_ids) or 1, col=1)
@@ -108,8 +110,9 @@ def unity_chart(backtest: BacktestResult | None, tolerance: float) -> go.Figure 
         return None
     t = backtest.table
     fig = _figure("ILI depth against field depth", "Field depth (% wall)", "ILI depth (% wall)")
-    top = float(max(t.field_depth_pct.max(), t.ili_depth_pct.max()))
-    span = [0.0, top * 1.05]
+    depths = np.concatenate([t.field_depth_pct.to_numpy(float), t.ili_depth_pct.to_numpy(float)])
+    depths = depths[np.isfinite(depths)]
+    span = [0.0, depths.max() * 1.05 if len(depths) else 100.0]
     for name, offset, dash in (("1:1", 0.0, "solid"), (f"+{tolerance:g} % wall", tolerance, "dash"),
                                (f"-{tolerance:g} % wall", -tolerance, "dash")):
         fig.add_trace(go.Scatter(x=span, y=[v + offset for v in span], mode="lines", name=name,

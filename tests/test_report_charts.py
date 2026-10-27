@@ -1,3 +1,5 @@
+import dataclasses
+
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
@@ -89,3 +91,40 @@ def test_figure_div_has_no_script_src(built):  # noqa: F811
     assert 'src="http' not in html and "https://" not in html.replace("http://www.w3.org", "")
     assert "plotly.js v" not in html and len(html) < 1_000_000
     assert "<html" not in html
+
+
+def test_histogram_bins_keep_negative_rates(built):  # noqa: F811
+    inputs = _load(built)
+    growth = inputs.growth.copy()
+    growth.loc[growth.index[:5], "raw_mpy"] = [-3.7, -0.2, -12.4, -1.0, -5.5]
+    fig = report_charts.growth_histograms(dataclasses.replace(inputs, growth=growth))
+    bin_mpy = inputs.settings.growth.diagnostic_bin_mpy
+    for trace in fig.data:
+        low = np.min(trace.x)
+        assert trace.xbins.start <= low
+        assert np.isclose(trace.xbins.start / bin_mpy, round(trace.xbins.start / bin_mpy))
+    assert min(t.xbins.start for t in fig.data) <= -12.4
+
+
+def test_no_webgl_traces(built):  # noqa: F811
+    inputs = _load(built)
+    figs = [report_charts.depth_vs_distance(inputs), report_charts.growth_vs_distance(inputs),
+            report_charts.growth_histograms(inputs), report_charts.rl_distribution(inputs),
+            report_charts.feature_map(inputs, dig_list(inputs)), report_charts.unity_chart(_backtest(), 10.0)]
+    assert all(t.type != "scattergl" for fig in figs for t in fig.data)
+
+
+def test_empty_run_tables(built):  # noqa: F811
+    inputs = _load(built)
+    empty = dataclasses.replace(inputs, prev_std=inputs.prev_std.iloc[0:0], curr_std=inputs.curr_std.iloc[0:0])
+    fig = report_charts.depth_vs_distance(empty)
+    assert [t.name for t in fig.data] == [inputs.summaries["match"]["prev_run_id"],
+                                          inputs.summaries["match"]["curr_run_id"]]
+
+
+def test_unity_without_finite_pairs():
+    table = pd.DataFrame({"feature_id": ["a"], "field_depth_pct": [np.nan], "ili_depth_pct": [np.nan],
+                          "diff_pct": [np.nan], "within_tolerance": [False]})
+    fig = report_charts.unity_chart(BacktestResult(table, 0, 0.0, []), 10.0)
+    line = next(t for t in fig.data if t.name == "1:1")
+    assert list(line.x) == [0.0, 100.0]
