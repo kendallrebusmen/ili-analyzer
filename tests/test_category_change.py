@@ -126,12 +126,13 @@ def test_prev_categories_use_prev_values(settings, criteria):
         "match_id", "match_type", "prev_feature_id", "curr_feature_id", "feature_type", "prev_depth_pct_assessed",
         "curr_depth_pct_assessed", "prev_p_fail", "curr_p_fail", "prev_rule_category", "prev_governing_rule",
         "prev_triggered_rules", "prev_rules_not_evaluable", "curr_rule_category", "curr_governing_category",
-        "curr_governing_rule", "moved_more_severe"]
+        "curr_governing_rule", "curr_rules_not_evaluable", "moved_more_severe"]
     assert list(result.table.match_id) == ["M1", "M2", "M3"]
     m1 = t.loc["M1"]
     assert (m1.prev_rule_category, m1.curr_rule_category, m1.moved_more_severe) == ("evaluate", "immediate", True)
     assert m1.prev_depth_pct_assessed == pytest.approx(70.0) and m1.curr_depth_pct_assessed == pytest.approx(85.0)
     assert m1.prev_governing_rule == "EVALUATE" and m1.curr_governing_rule == "IMM-1"
+    assert m1.curr_rules_not_evaluable == curr.set_index("match_id").rules_not_evaluable["M1"]
     assert (m1.prev_feature_id, m1.curr_feature_id, m1.match_type) == ("A-M1", "B-M1", "matched_1to1")
     assert m1.prev_p_fail > 100.0 and m1.curr_p_fail == 1800.0  # prev strength computed, curr from M6
     m2 = t.loc["M2"]

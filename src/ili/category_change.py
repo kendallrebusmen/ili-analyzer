@@ -36,7 +36,7 @@ CHANGE_COLUMNS = [
     "match_id", "match_type", "prev_feature_id", "curr_feature_id", "feature_type", "prev_depth_pct_assessed",
     "curr_depth_pct_assessed", "prev_p_fail", "curr_p_fail", "prev_rule_category", "prev_governing_rule",
     "prev_triggered_rules", "prev_rules_not_evaluable", "curr_rule_category", "curr_governing_category",
-    "curr_governing_rule", "moved_more_severe",
+    "curr_governing_rule", "curr_rules_not_evaluable", "moved_more_severe",
 ]
 
 
@@ -156,6 +156,7 @@ def category_changes(match_table: pd.DataFrame, remaining_life: pd.DataFrame, cl
             "prev_governing_rule": p.governing_rule, "prev_triggered_rules": p.triggered_rules,
             "prev_rules_not_evaluable": p.rules_not_evaluable, "curr_rule_category": curr_cat,
             "curr_governing_category": c.governing_category, "curr_governing_rule": c.governing_rule,
+            "curr_rules_not_evaluable": c.rules_not_evaluable,
             "moved_more_severe": rank[curr_cat] < rank[prev_cat],
         })
     table = pd.DataFrame(rows, columns=CHANGE_COLUMNS)
