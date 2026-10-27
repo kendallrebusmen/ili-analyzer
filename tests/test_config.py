@@ -157,3 +157,14 @@ def test_bad_dig_list_sheet_rejected(tmp_path, name):
 def test_dig_list_sheet_31_chars_ok(tmp_path):
     path = _write_settings(tmp_path, lambda r: r["report"].update(dig_list_sheet="x" * 31))
     assert load_settings(path).report.dig_list_sheet == "x" * 31
+
+
+@pytest.mark.parametrize("window", [0, -1])
+def test_review_window_must_be_positive(tmp_path, window):
+    path = _write_settings(tmp_path, lambda r: r["review"].update(nearby_window_ft=window))
+    with pytest.raises(ValueError, match="nearby_window_ft"):
+        load_settings(path)
+
+
+def test_shipped_review_window():
+    assert load_settings().review.nearby_window_ft == 10
