@@ -16,8 +16,14 @@ Compares two in-line inspection (ILI) runs on the same 49 CFR Part 195 hazardous
 |---|---|
 | M1 Skeleton, config, schema, synthetic generator | done |
 | M2 Ingestion and vendor maps | done |
-| M3 Girth weld alignment | done (awaiting review) |
-| M4–M10 | not started |
+| M3 Girth weld alignment | done |
+| M4 Anomaly matching | done |
+| M5 Growth rates | done |
+| M6 Remaining strength and life | done |
+| M7 Repair classification | done |
+| M8 HTML report and Excel dig list | done |
+| M9 Streamlit review UI | done (awaiting review) |
+| M10 | not started |
 
 ## Setup
 
@@ -99,6 +105,29 @@ py -3.13 -m venv .venv
     --crossings data\synthetic\reference\foreign_crossings.csv `
     --digs data\synthetic\reference\digs.csv
 ```
+
+### One command, and the review app
+
+```powershell
+# Every stage, ingest to report, in one run (stops at the first failure; --until <stage> stops early).
+# Writes outputs/<prev>_vs_<curr>/..., including pipeline_inputs.json, which the app reads to rerun.
+.\.venv\Scripts\python.exe -m ili.pipeline `
+    --prev-tally data\synthetic\tally_prev_vendor_a.csv --prev-map config\vendor_maps\synthetic_vendor_a.yaml `
+    --prev-run-date 2021-06-15 `
+    --curr-tally data\synthetic\tally_curr_vendor_b.xlsx --curr-map config\vendor_maps\synthetic_vendor_b.yaml `
+    --pipe data\synthetic\reference\pipe_properties.csv --mop data\synthetic\reference\mop_profile.csv `
+    --segments data\synthetic\reference\hca_segments.csv `
+    --next-inspection data\synthetic\reference\next_inspection.csv `
+    --repairs data\synthetic\reference\repairs_between_runs.csv `
+    --crossings data\synthetic\reference\foreign_crossings.csv --digs data\synthetic\reference\digs.csv `
+    --out outputs
+
+# The review app (local only: localhost, no telemetry). Pages: Run setup, Weld alignment, Match review
+# queue, Growth and remaining life explorer, Dig list and report export.
+.\.venv\Scripts\python.exe -m streamlit run app/streamlit_app.py --server.headless true
+```
+
+Reviewers' decisions are saved in the comparison folder: match decisions in `reviews.csv` and manual flags in `feature_flags.csv`. Both are append-only logs (a correction is a new row; the latest wins). `ili.match` reads `reviews.csv` and `ili.classify` reads `feature_flags.csv` from the comparison folder by default (`--reviews` and `--flags` name other files), so a decision takes effect the next time the pipeline is rerun, from the app's Rerun button or the command above. **The logs live beside the outputs: deleting an output folder deletes the decisions.** Keep a copy of `reviews.csv` and `feature_flags.csv` before clearing outputs.
 
 The run date is the third `--run` value. It can be left out when the vendor map says where the file states it (vendor B's title row). The run id is `<run year>_<run_label from the vendor map>`.
 

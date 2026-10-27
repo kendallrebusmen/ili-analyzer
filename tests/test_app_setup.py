@@ -71,7 +71,8 @@ def test_run_setup_shows_failing_stderr(synth, tmp_path):
     assert at.error and "match failed" in at.error[0].value and "missing.csv" in at.error[0].value
 
 
-def test_run_setup_requires_inputs():
+def test_run_setup_requires_inputs(tmp_path, monkeypatch):
+    monkeypatch.setattr(app_state, "OUTPUTS_DIR", tmp_path)  # no earlier comparison pre-fills the form
     at = _app().run()
     at.button[0].click().run()
     assert at.error and "prev_tally" in at.error[0].value
@@ -102,7 +103,8 @@ def test_pages_with_data_show_tables_and_draft(ran):
     at = _app(comparison_dir=str(folder)).run()
     for page in PAGES[2:]:
         at.sidebar.radio(key="page").set_value(page).run()
-        assert not at.exception and len(at.dataframe) == 1 and not at.info
+        assert not at.exception and not at.info
+        assert page != "Match review queue" or len(at.dataframe) == 1
         assert DRAFT_LABEL in _all_text(at)
 
 

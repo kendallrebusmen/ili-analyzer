@@ -43,6 +43,7 @@ class ComparisonData:
     review_status: pd.DataFrame
     reviews: pd.DataFrame
     flags: pd.DataFrame
+    flag_status: pd.DataFrame  # classify's flag_status.csv: what became of each flag row at the last run
 
 
 def latest_comparison(outputs: Path | None = None) -> Path | None:
@@ -105,7 +106,8 @@ def read_comparison(path: Path) -> ComparisonData:
         classification_summary=_json(p / "classification_summary.json"),
         review_status=_csv(p / REVIEW_STATUS_FILE),
         reviews=load_reviews(p / REVIEWS_FILE),
-        flags=load_flags(p / FLAGS_FILE))
+        flags=load_flags(p / FLAGS_FILE),
+        flag_status=_csv(p / FLAG_STATUS_FILE))
 
 
 def _cached(path: str, mtimes: tuple) -> ComparisonData:

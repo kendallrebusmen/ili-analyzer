@@ -125,9 +125,10 @@ def _save(path, decision, prev_ids, curr_ids, note) -> None:
     st.rerun()
 
 
-def _rerun(path) -> None:
+def rerun_button(path, key: str = "review_rerun") -> None:
+    """The Rerun button with its stage output; disabled when no run setup is known."""
     setup = app_state.inputs_from_session(path)
-    if st.button("Rerun the pipeline", disabled=setup is None, key="review_rerun"):
+    if st.button("Rerun the pipeline", disabled=setup is None, key=key):
         with st.spinner("Running the pipeline"):
             results = run_pipeline(setup)
         for res in results:
@@ -161,7 +162,7 @@ def review_queue_page() -> None:
     queue = review_queue(data.match_table)
     if queue.empty:
         st.info(NO_QUEUE)
-        _rerun(path)
+        rerun_button(path)
         return
     st.metric("Pending review", len(queue))
     by_id = {r.match_id: r for r in queue.itertuples()}
@@ -198,4 +199,4 @@ def review_queue_page() -> None:
             st.error("Pick at least one previous-run and one current-run anomaly.")
         else:
             _save(path, "manual", pick_prev, pick_curr, note)
-    _rerun(path)
+    rerun_button(path)
