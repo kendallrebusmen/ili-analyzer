@@ -15,7 +15,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-from ili import app_state
+from ili import app_state, app_theme
 from ili.align_welds import DRAFT_LABEL
 from ili.app_pages_setup import NO_DATA, run_and_refresh, show_results
 from ili.config import load_settings
@@ -27,7 +27,7 @@ NEARBY_COLUMNS = ["run", "feature_id", "pos_prev_ft", "clock_min", "depth_pct", 
 RUN_COLOURS = {"prev": "#1F77B4", "curr": "#E8833A"}
 SAVED = "Saved — rerun the pipeline to apply"
 SAVED_AFTER_RUN = "saved after the last run — rerun to apply"
-NEEDS_REVIEWER = "Enter the reviewer name in the sidebar to enable decisions."
+NEEDS_REVIEWER = "Enter your name in the reviewer box at the top of the page to enable decisions."
 ONE_SIDED = "One-sided rows can be accepted (confirms missing/new) but not rejected."
 MANUAL_RULES = ("Rules checked on rerun: all members in the same or adjacent weld-map row (an accept of a "
                 "row the matcher itself makes is exempt); a 1:1 pair has one feature type; a side with several "
@@ -137,11 +137,23 @@ def _label(row) -> str:
     return f"{ids}: {row.match_type}, {row.confidence}, {row.missing_hint or 'matched'} ({row.match_id})"
 
 
+SIDE_DECIMALS = 3  # presentation only: the match table keeps full precision
+
+
+def _cell(value) -> str:
+    """A side-by-side cell: blank when missing, floats to at most ``SIDE_DECIMALS`` places, else as text."""
+    if value is None or (isinstance(value, float) and pd.isna(value)) or value is pd.NA:
+        return ""
+    if isinstance(value, float):
+        return f"{value:.{SIDE_DECIMALS}f}".rstrip("0").rstrip(".")
+    return str(value)
+
+
 def _side_frame(row) -> pd.DataFrame:
     return pd.DataFrame({
         "field": [*SIDE_FIELDS, "feature_id"],
-        "previous run": [row[f"prev_{f}"] for f in SIDE_FIELDS] + [row["prev_feature_id"]],
-        "current run": [row[f"curr_{f}"] for f in SIDE_FIELDS] + [row["curr_feature_id"]]}).astype(str)
+        "previous run": [_cell(row[f"prev_{f}"]) for f in SIDE_FIELDS] + [_cell(row["prev_feature_id"])],
+        "current run": [_cell(row[f"curr_{f}"]) for f in SIDE_FIELDS] + [_cell(row["curr_feature_id"])]})
 
 
 def not_applied(data) -> pd.DataFrame:
@@ -206,18 +218,21 @@ def _decision_panel(path: Path, data, stamp, reviewer: str, prev_ids: list[str],
     """The nearby-features chart and the Accept / Reject / Manual re-pair actions for ``prev_ids`` /
     ``curr_ids``, each bound (callback arguments) to the folder, those ids and ``stamp``."""
     nearby = nearby_features(data.match_table, ref_row, load_settings().review.nearby_window_ft)
-    st.plotly_chart(nearby_chart(nearby, {"prev": prev_ids, "curr": curr_ids}), key=f"{prefix}chart")
     paired = bool(prev_ids and curr_ids)
-    st.caption(CLUSTER_NOTE)
+    with st.container(border=True, key=f"{prefix}card_chart"):
+        st.plotly_chart(nearby_chart(nearby, {"prev": prev_ids, "curr": curr_ids}), key=f"{prefix}chart")
+        st.caption(CLUSTER_NOTE)
     if not reviewer:
         st.caption(NEEDS_REVIEWER)
     elif not paired:
         st.caption(ONE_SIDED)
-    left, right = st.columns(2)
-    left.button("Accept", disabled=not (reviewer and (prev_ids or curr_ids)), key=f"{prefix}accept",
-                on_click=save_decision, args=(str(path), stamp, "accept", prev_ids, curr_ids))
-    right.button("Reject", disabled=not (reviewer and paired), key=f"{prefix}reject",
-                 on_click=save_decision, args=(str(path), stamp, "reject", prev_ids, curr_ids))
+    with st.container(key=f"{prefix}actions"):  # the design's action bar: kept in view by app_theme's CSS
+        left, right = st.columns(2)
+        left.button("Accept", type="primary", disabled=not (reviewer and (prev_ids or curr_ids)),
+                    key=f"{prefix}accept", on_click=save_decision,
+                    args=(str(path), stamp, "accept", prev_ids, curr_ids))
+        right.button("Reject", disabled=not (reviewer and paired), key=f"{prefix}reject",
+                     on_click=save_decision, args=(str(path), stamp, "reject", prev_ids, curr_ids))
     with st.form(f"{prefix}manual"):
         st.subheader("Manual re-pair")
         st.caption(MANUAL_RULES)
@@ -240,8 +255,14 @@ def _queue(path: Path, data, stamp, reviewer: str) -> None:
     labels = dict(zip(keys, (_label(r) for r in queue.itertuples())))
     picked = st.selectbox("Queue (lowest confidence first)", keys, key="review_pick", format_func=labels.get)
     row = queue.iloc[keys.index(picked)]
-    st.write(f"Score {row['score']}, confidence {row['confidence']}, hint {row['missing_hint'] or 'none'}")
-    st.dataframe(_side_frame(row), hide_index=True)
+    score = row["score"]
+    st.markdown(app_theme.object_header_html(
+        f"Match {row['match_id']}",
+        [app_theme.confidence_pill_html(row["confidence"]), app_theme.pill_html("Pending", "warning")],
+        [("Type", row["match_type"]), ("Score", "—" if pd.isna(score) else f"{score:.2f}"),
+         ("Hint", row["missing_hint"] or "matched")]), unsafe_allow_html=True)
+    with st.container(border=True, key="review_card_side"):
+        st.dataframe(_side_frame(row), hide_index=True)
     _decision_panel(path, data, stamp, reviewer, _ids(row["prev_feature_id"]), _ids(row["curr_feature_id"]), row,
                     "review_", "")
 

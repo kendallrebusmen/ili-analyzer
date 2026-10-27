@@ -4,3 +4,33 @@ gatherUsageStats = false
 [server]
 address = "localhost"
 headless = true
+
+[client]
+toolbarMode = "viewer"   # menu with the System / Light / Dark choice, no Deploy button: the app is local only
+
+# Enterprise Suite look (presentation only). System fonts only: the app makes no network calls.
+# Light and dark palettes: the app follows the computer's setting until the reviewer picks System, Light or
+# Dark in the menu at the top right of the window.
+[theme]
+baseRadius = "6px"
+headingFontWeights = 700
+headingFontSizes = ["1.75rem", "1.375rem", "1.125rem"]
+font = "'Segoe UI', 'Noto Sans', system-ui, -apple-system, sans-serif"
+
+[theme.light]
+primaryColor = "#0A6ED1"
+backgroundColor = "#F5F6F7"
+secondaryBackgroundColor = "#FFFFFF"
+textColor = "#223548"
+linkColor = "#0A5FB4"
+borderColor = "#D9DEE3"
+redColor = "#AA0808"
+
+[theme.dark]
+primaryColor = "#0A6ED1"
+backgroundColor = "#12171C"
+secondaryBackgroundColor = "#1D232A"
+textColor = "#EAECEE"
+linkColor = "#4DB1FF"
+borderColor = "#3B4752"
+redColor = "#FF8888"

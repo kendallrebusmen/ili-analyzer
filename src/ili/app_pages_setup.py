@@ -65,7 +65,7 @@ def show_results(results: list[StageResult]) -> None:
 
 def run_and_refresh(inputs: PipelineInputs, results_key: str) -> None:
     """Run the pipeline, keep its results for the next script run and rerun the script, so every page
-    element (the sidebar's comparison caption included) shows the new outputs."""
+    element (the breadcrumb's comparison folder included) shows the new outputs."""
     with st.spinner("Running the pipeline"):
         results = run_pipeline(inputs)
     st.session_state[results_key] = results
@@ -130,7 +130,7 @@ def run_setup_page() -> None:
         if folder is not None:
             st.session_state[app_state.COMPARISON_KEY] = str(folder)
         st.session_state["setup_results"] = results
-        st.rerun()  # the sidebar was drawn before the run: draw it again with the new folder
+        st.rerun()  # the breadcrumb was drawn before the run: draw it again with the new folder
     if (results := st.session_state.pop("setup_results", None)) is not None:
         show_results(results)
 
