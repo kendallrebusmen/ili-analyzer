@@ -2,12 +2,13 @@
 {%- macro render_table(t, caption=None) -%}
 {% if caption %}<p class="caption">{{ caption }}</p>
 {% endif %}
+{% set hidden = t.hidden_in_print %}
 <div class="table-wrap">
-<table>
-<thead><tr>{% for c in t.columns %}<th>{{ c }}</th>{% endfor %}</tr></thead>
+<table{% if t.print_columns is not none %} class="print-compact"{% endif %}>
+<thead><tr>{% for c in t.columns %}<th{% if loop.index0 in hidden %} class="noprint"{% endif %}>{{ c }}</th>{% endfor %}</tr></thead>
 <tbody>
 {% for row in t.rows %}
-<tr{% if t.row_classes and t.row_classes[loop.index0] %} class="{{ t.row_classes[loop.index0] }}"{% endif %}>{% for v in row %}<td>{{ v }}</td>{% endfor %}</tr>
+<tr{% if t.row_classes and t.row_classes[loop.index0] %} class="{{ t.row_classes[loop.index0] }}"{% endif %}>{% for v in row %}<td{% if loop.index0 in hidden %} class="noprint"{% endif %}>{{ v }}</td>{% endfor %}</tr>
 {% endfor %}
 </tbody>
 </table>
@@ -65,6 +66,7 @@ tr.cat-{{ category }} td { background: {{ colour }}; }
 .formula td, .formula th { white-space: normal; font-size: 13px; }
 .chart { margin: 8px 0 16px; break-inside: avoid; }
 code { font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; font-size: 12px; }
+.print-only { display: none; }
 @page {
   size: landscape; margin: 14mm 10mm;
   @top-left { content: "{{ label_css }}"; color: #9b1c1c; font-weight: 600; }
@@ -79,6 +81,10 @@ code { font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; font-siz
   section { break-before: page; }
   section#header { break-before: auto; }
   tr[class^="cat-"] td, tr.placeholder td, .warning { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  .noprint { display: none; }
+  .print-only { display: block; }
+  table.print-compact { width: 100%; font-size: 10px; }
+  table.print-compact th, table.print-compact td { white-space: normal; overflow-wrap: anywhere; padding: 2px 4px; }
 }
 </style>
 <script type="text/javascript">{{ plotlyjs }}</script>
@@ -157,7 +163,7 @@ code { font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; font-siz
 <section id="growth">
 <p class="draft">{{ label }}</p>
 <h2>Growth</h2>
-<p>Negative raw growth rates: {{ growth.pct_negative_raw }} % of matched features (included in the segment percentiles).</p>
+<p>Negative raw growth rates: {{ growth.pct_negative_raw }} (included in the segment percentiles).</p>
 {{ render_table(growth.segments, "Per-segment statistics") }}
 {{ render_table(growth.methods, "Features by governing method") }}
 <div class="chart">{{ growth.histograms }}</div>
@@ -169,6 +175,7 @@ code { font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; font-siz
 <p class="muted">Every classified feature except <code>evaluate</code>, ranked by category, then remaining life
 (none last), then due date. {{ dig_list.rows | length }} features.</p>
 {% if dig_list.rows %}
+<p class="print-only muted">Printed with {{ dig_list.print_columns | length }} of {{ dig_list.columns | length }} columns; dig_list.xlsx is the full, printable dig list.</p>
 {{ render_table(dig_list) }}
 {% else %}
 <p>The dig list is empty.</p>
@@ -186,6 +193,7 @@ compares rule categories only (immediate, 60_day, 180_day, evaluate; imp_schedul
 the previous run did not report leaves its rules not evaluable (<code>prev_rules_not_evaluable</code>), which can
 make a feature look as if it moved. {{ largest.n_compared }} matched anomalies compared.</p>
 {% if largest.moved.rows %}
+<p class="print-only muted">Printed with {{ largest.moved.print_columns | length }} of {{ largest.moved.columns | length }} columns; category_changes.csv holds every column.</p>
 {{ render_table(largest.moved) }}
 {% else %}
 <p>No feature moved to a more severe category.</p>
@@ -208,8 +216,13 @@ make a feature look as if it moved. {{ largest.n_compared }} matched anomalies c
 {% if charts.backtest.n %}
 <p>{{ charts.backtest.n_within }} of {{ charts.backtest.n }} digs ({{ charts.backtest.pct_within }} %) have the
 reported current-run depth within ±{{ charts.tolerance }} % wall of the field depth.</p>
+{% elif charts.backtest.no_depth %}
+<p>No dig in the current run has both a reported and a field depth.</p>
 {% else %}
 <p>No dig feature id is in the current run.</p>
+{% endif %}
+{% if charts.backtest.no_depth %}
+<p>Digs without both a reported and a field depth (not compared): {{ charts.backtest.no_depth }}.</p>
 {% endif %}
 {% if charts.backtest.unmatched %}
 <p>Dig feature ids not in the current run: {{ charts.backtest.unmatched }}.</p>
@@ -227,7 +240,7 @@ reported current-run depth within ±{{ charts.tolerance }} % wall of the field d
 <p class="draft">{{ label }}</p>
 <h2>Methods and assumptions</h2>
 <h3>Configuration</h3>
-{{ render_table(methods.config, "Every setting used, from " ~ methods.settings_path ~ ". PLACEHOLDER values need integrity-engineer sign-off.") }}
+{{ render_table(methods.config, "Every setting used, from " ~ methods.settings_path ~ ". Strength, remaining-life and classification values, and the tool tolerances they use, were verified against the M6 and M7 summaries; alignment, matching and growth values (and the other tool values) are the settings at report time, as no summary records them. PLACEHOLDER values need integrity-engineer sign-off.") }}
 <h3>Tool tolerances</h3>
 {{ render_table(methods.tool) }}
 

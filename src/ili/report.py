@@ -17,8 +17,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -59,6 +61,13 @@ LARGEST_GROWTH_COLUMNS = ["match_id", "match_type", "prev_feature_id", "curr_fea
                           "segment_id", "history_class", "d_prev_pct", "d_curr_pct", "raw_mpy", "governing_mpy",
                           "governing_method", "needs_review"]
 MOVED_COLUMNS = [c for c in CHANGE_COLUMNS if c != "moved_more_severe"]
+# Printed (landscape) the wide tables keep only these columns; dig_list.xlsx and category_changes.csv hold all.
+DIG_LIST_PRINT_COLUMNS = ("governing_category", "governing_rule", "match_id", "curr_feature_id", "curr_log_dist_ft",
+                          "curr_us_gw_id", "curr_dist_from_us_gw_ft", "clock_min", "depth_pct_assessed", "rl_yr",
+                          "due_date", "requires_review")
+MOVED_PRINT_COLUMNS = ("match_id", "curr_feature_id", "feature_type", "prev_depth_pct_assessed",
+                       "curr_depth_pct_assessed", "prev_rule_category", "prev_rules_not_evaluable",
+                       "curr_rule_category", "curr_governing_rule", "curr_rules_not_evaluable")
 REVIEW_LOG_COLUMNS = ["match_id", "match_type", "prev_feature_id", "curr_feature_id", "confidence",
                       "missing_hint", "review_status"]
 
@@ -73,10 +82,19 @@ class ReportHeader:
 
 @dataclass(frozen=True)
 class Table:
-    """A table ready for the template: every cell already a string ("" for a blank)."""
+    """A table ready for the template: every cell already a string ("" for a blank). With ``print_columns``
+    the other columns are hidden in print."""
     columns: list[str]
     rows: list[list[str]]
     row_classes: list[str] | None = None
+    print_columns: tuple[str, ...] | None = None
+
+    @property
+    def hidden_in_print(self) -> set[int]:
+        """Indices of the columns not in ``print_columns`` (none without it)."""
+        if self.print_columns is None:
+            return set()
+        return {i for i, c in enumerate(self.columns) if c not in self.print_columns}
 
 
 def _number(value: float, decimals: int) -> str:
@@ -106,11 +124,12 @@ def cell(value, column: str | None = None) -> str:
     return str(value)
 
 
-def table(df: pd.DataFrame, columns: list[str] | None = None, row_classes: list[str] | None = None) -> Table:
+def table(df: pd.DataFrame, columns: list[str] | None = None, row_classes: list[str] | None = None,
+          print_columns: tuple[str, ...] | None = None) -> Table:
     """``df[columns]`` as a ``Table``; ``row_classes`` gives each row's class ("" for none)."""
     columns = list(df.columns) if columns is None else list(columns)
     rows = [[cell(v, c) for c, v in zip(columns, r, strict=True)] for r in df[columns].itertuples(index=False)]
-    return Table(columns, rows, row_classes)
+    return Table(columns, rows, row_classes, print_columns)
 
 
 def _css_string(text: str) -> str:
@@ -127,10 +146,15 @@ def _counts(mapping: dict, key: str) -> Table:
 
 
 def _vendor(manifest: dict, run_id: str) -> str:
-    """The ``vendor`` key of the run's vendor map named in the ingest manifest; "not stated" if unreadable."""
+    """The ``vendor`` key of the run's vendor map named in the ingest manifest; "not stated" if unreadable. A
+    relative path not found from the working directory is read from the project root (ingest records it as
+    given, usually relative to the project)."""
     try:
         run = next(r for r in manifest["runs"] if r["run_id"] == run_id)
-        vmap = yaml.safe_load(Path(run["vendor_map"]).read_text(encoding="utf-8"))
+        path = Path(run["vendor_map"])
+        if not path.is_absolute() and not path.is_file():
+            path = PROJECT_ROOT / path
+        vmap = yaml.safe_load(path.read_text(encoding="utf-8"))
         vendor = vmap["vendor"]
     except (KeyError, TypeError, StopIteration, OSError, yaml.YAMLError):
         return NOT_STATED
@@ -204,9 +228,10 @@ def _data_quality(inputs: ReportInputs) -> dict:
 
 def _growth(inputs: ReportInputs) -> dict:
     summary = inputs.summaries["growth"]
+    pct_negative = cell(summary.get("pct_negative_raw"))
     return {
         "segments": table(inputs.growth_segments),
-        "pct_negative_raw": cell(summary.get("pct_negative_raw")),
+        "pct_negative_raw": f"{pct_negative} % of matched features" if pct_negative else "not available",
         "methods": _counts(summary.get("counts_by_governing_method") or {}, "governing_method"),
         "histograms": Markup(figure_div(growth_histograms(inputs))),
     }
@@ -224,7 +249,7 @@ def _charts(inputs: ReportInputs, dig: pd.DataFrame) -> dict:
         "unity": None if unity is None else Markup(figure_div(unity)),
         "backtest": None if bt is None else {
             "n_within": bt.n_within, "n": len(bt.table), "pct_within": cell(bt.pct_within),
-            "unmatched": ", ".join(bt.unmatched_ids)},
+            "unmatched": ", ".join(bt.unmatched_ids), "no_depth": ", ".join(bt.no_depth_ids)},
         "tolerance": cell(tolerance),
         "digs_given": inputs.digs is not None,
     }
@@ -269,9 +294,11 @@ def render_report(inputs: ReportInputs, changes: CategoryChangeResult, header: R
         "summary": _summary(inputs, dig),
         "quality": _data_quality(inputs),
         "growth": _growth(inputs),
-        "dig_list": table(dig, row_classes=[f"cat-{c}" for c in dig.governing_category]),
+        "dig_list": table(dig, row_classes=[f"cat-{c}" for c in dig.governing_category],
+                          print_columns=DIG_LIST_PRINT_COLUMNS),
         "largest": {"n": n_largest, "growth": table(largest_growth(inputs, n_largest), LARGEST_GROWTH_COLUMNS),
-                    "moved": table(moved, MOVED_COLUMNS), "n_compared": len(changes.table)},
+                    "moved": table(moved, MOVED_COLUMNS, print_columns=MOVED_PRINT_COLUMNS),
+                    "n_compared": len(changes.table)},
         "charts": _charts(inputs, dig),
         "methods": _methods(inputs),
     }
@@ -366,9 +393,29 @@ def _sheet_label(inputs: ReportInputs) -> str:
     return f"{DRAFT_LABEL} WARNING: {warning}" if warning else DRAFT_LABEL
 
 
+REPLACE_FIRST = "dig_list.xlsx"  # the output most often held open (Excel locks it): replaced before the rest
+
+
+def _write_all(writers: dict[str, Callable[[Path], object]], paths: dict[str, Path]) -> None:
+    """Write each output to a temporary file beside it, then move them into place with ``os.replace``,
+    ``REPLACE_FIRST`` first: a failure while writing, or replacing that file, leaves every existing output
+    as it was. Temporary files are removed whatever happens."""
+    temps: dict[str, Path] = {}
+    try:
+        for name, write in writers.items():
+            temps[name] = paths[name].with_name(f".{name}.{os.getpid()}.tmp")
+            write(temps[name])
+        for name in sorted(temps, key=lambda n: n != REPLACE_FIRST):
+            os.replace(temps[name], paths[name])
+    finally:
+        for tmp in temps.values():
+            tmp.unlink(missing_ok=True)
+
+
 def write_report(inputs: ReportInputs, header: ReportHeader, out_dir: Path,
                  generated_utc: datetime) -> tuple[dict[str, Path], CategoryChangeResult]:
-    """Build every output, then write them: nothing is written if any of them fails to build."""
+    """Build every output, then write them (``_write_all``): nothing is written if any of them fails to build,
+    and no existing output is replaced if ``dig_list.xlsx`` cannot be."""
     prev_dates = inputs.prev_std.run_date.dropna()
     if prev_dates.empty:
         raise ValueError("the previous run has no run date")
@@ -379,10 +426,12 @@ def write_report(inputs: ReportInputs, header: ReportHeader, out_dir: Path,
     workbook = dig_list_workbook(dig_list(inputs), inputs.settings, _sheet_label(inputs))
     manifest = json.dumps(run_manifest(inputs, list(OUTPUT_NAMES), generated_utc), indent=2, allow_nan=False)
     paths = {name: Path(out_dir) / name for name in OUTPUT_NAMES}
-    changes.table.to_csv(paths["category_changes.csv"], index=False)
-    paths["report.html"].write_text(html, encoding="utf-8")
-    workbook.save(paths["dig_list.xlsx"])
-    paths["run_manifest.json"].write_text(manifest, encoding="utf-8")
+    _write_all({
+        "category_changes.csv": lambda p: changes.table.to_csv(p, index=False, lineterminator="\n"),
+        "report.html": lambda p: p.write_text(html, encoding="utf-8"),
+        "dig_list.xlsx": workbook.save,
+        "run_manifest.json": lambda p: p.write_text(manifest, encoding="utf-8"),
+    }, paths)
     return paths, changes
 
 

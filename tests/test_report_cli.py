@@ -1,6 +1,7 @@
 import hashlib
 import json
 from datetime import datetime, timezone
+from pathlib import Path
 
 import openpyxl
 import pandas as pd
@@ -156,3 +157,62 @@ def test_no_file_written_when_a_build_step_fails(built, tmp_path, monkeypatch, t
     with pytest.raises(ValueError, match="boom"):
         write_report(inputs, ReportHeader(None, None, None), dest, datetime.now(timezone.utc))
     assert list(dest.iterdir()) == []
+
+
+def _inputs(built):
+    from ili.report_data import load_report_inputs
+    data, out, std, folder = built
+    ref = data / "reference"
+    return load_report_inputs(folder, std / "2021_vendorA.csv", std / "2026_vendorB.csv", out,
+                              ref / "pipe_properties.csv", ref / "mop_profile.csv", ref / "hca_segments.csv",
+                              None, None, config.DEFAULT_SETTINGS, config.DEFAULT_CRITERIA)
+
+
+def test_category_changes_csv_has_lf_line_endings(built, tmp_path):
+    from ili.report import ReportHeader, write_report
+    paths, _ = write_report(_inputs(built), ReportHeader(None, None, None), tmp_path, datetime.now(timezone.utc))
+    data = paths["category_changes.csv"].read_bytes()
+    assert data.count(b"\n") > 1 and b"\r" not in data
+
+
+def test_locked_dig_list_leaves_every_output_untouched(built, tmp_path, monkeypatch):
+    """Excel holding dig_list.xlsx open makes writing or replacing it fail: no other output may have been
+    replaced."""
+    import os
+
+    from ili.report import OUTPUT_NAMES, ReportHeader, write_report
+    for name in OUTPUT_NAMES:
+        (tmp_path / name).write_bytes(b"old " + name.encode())
+    real_replace, real_save = os.replace, openpyxl.Workbook.save
+
+    def check(path):
+        if Path(path).name == "dig_list.xlsx":
+            raise PermissionError(13, "The process cannot access the file", str(path))
+
+    def replace(src, dst):
+        check(dst)
+        return real_replace(src, dst)
+
+    def save(wb, path):
+        check(path)
+        return real_save(wb, path)
+    monkeypatch.setattr(os, "replace", replace)
+    monkeypatch.setattr(openpyxl.Workbook, "save", save)
+    with pytest.raises(PermissionError):
+        write_report(_inputs(built), ReportHeader(None, None, None), tmp_path, datetime.now(timezone.utc))
+    assert sorted(p.name for p in tmp_path.iterdir()) == sorted(OUTPUT_NAMES)  # no temp file left behind
+    for name in OUTPUT_NAMES:
+        assert (tmp_path / name).read_bytes() == b"old " + name.encode(), name
+
+
+@pytest.mark.parametrize("warning", [None, "Discovery date not entered."])
+def test_dig_list_row_1_carries_the_discovery_warning(built, tmp_path, warning):
+    import dataclasses
+
+    from ili.report import ReportHeader, write_report
+    inputs = _inputs(built)
+    cls = {**inputs.summaries["classification"], "discovery_warning": warning}
+    inputs = dataclasses.replace(inputs, summaries={**inputs.summaries, "classification": cls})
+    paths, _ = write_report(inputs, ReportHeader(None, None, None), tmp_path, datetime.now(timezone.utc))
+    a1 = openpyxl.load_workbook(paths["dig_list.xlsx"]).active["A1"].value
+    assert a1 == (DRAFT_LABEL if warning is None else f"{DRAFT_LABEL} WARNING: {warning}")

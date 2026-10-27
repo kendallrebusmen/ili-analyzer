@@ -10,7 +10,8 @@ import pytest
 from ili.align_welds import DRAFT_LABEL
 from ili.category_change import category_changes
 from ili.classify import IMMEDIATE_ACTION_NOTE
-from ili.report import SECTION_IDS, ReportHeader, _css_string, cell, render_report
+from ili.report import (DIG_LIST_PRINT_COLUMNS, MOVED_PRINT_COLUMNS, SECTION_IDS, ReportHeader, _css_string, _vendor,
+                        cell, render_report)
 from ili.report_data import backtest, pending_reviews
 from test_report_inputs import _load, built  # noqa: F401  (built is the module fixture)
 
@@ -245,3 +246,79 @@ def test_empty_digs_file_is_not_missing(report):
     charts = _section_text(render_report(empty, changes, ReportHeader(None, None, None), GENERATED), "charts")
     assert "No unity chart: digs.csv has no rows." in charts
     assert "not provided" not in charts
+
+
+def _headers(section_html):
+    """``{column name: th class}`` of the section's first table."""
+    head = section_html[section_html.index("<thead>"):section_html.index("</thead>")]
+    return {name: cls for cls, name in re.findall(r'<th(?: class="([^"]*)")?>([^<]*)</th>', head)}
+
+
+def test_print_shows_a_compact_column_subset(report):
+    _, _, html = report
+    style = _style(html)
+    print_css = style[style.index("@media print"):]
+    assert re.search(r"\.noprint\s*\{\s*display:\s*none;", print_css)
+    assert re.search(r"\.print-only\s*\{\s*display:\s*block;", print_css)
+    assert re.search(r"(?<!\S)\.print-only\s*\{\s*display:\s*none;", style[:style.index("@media print")])
+    dig = _section(html, "dig-list")
+    headers = _headers(dig)
+    shown = [c for c, cls in headers.items() if "noprint" not in cls.split()]
+    assert shown == list(DIG_LIST_PRINT_COLUMNS)
+    assert len(shown) == 12 and "noprint" in headers["lat"] and "noprint" in headers["review_reasons"]
+    assert re.search(r'<td class="noprint">', dig)  # body cells hidden with their header
+    assert "dig_list.xlsx" in _section_text(html, "dig-list")
+    moved = _section(html, "largest-changes")
+    moved = moved[moved.index("Moved to a more severe category"):]
+    shown = [c for c, cls in _headers(moved).items() if "noprint" not in cls.split()]
+    assert shown == list(MOVED_PRINT_COLUMNS) and "category_changes.csv" in moved
+
+
+def test_moved_table_shows_current_rules_not_evaluable(report):
+    _, changes, html = report
+    assert list(changes.table.columns).index("curr_rules_not_evaluable") == \
+        list(changes.table.columns).index("curr_governing_rule") + 1
+    moved = _section(html, "largest-changes")
+    assert "curr_rules_not_evaluable" in _headers(moved[moved.index("Moved to a more severe category"):])
+
+
+def test_methods_caption_says_which_settings_are_verified(report):
+    _, _, html = report
+    text = _section_text(html, "methods")
+    assert ("Strength, remaining-life and classification values, and the tool tolerances they use, were verified "
+            "against the M6 and M7 summaries; alignment, matching and growth values (and the other tool values) are "
+            "the settings at report time, as no summary records them.") in text
+
+
+def test_missing_pct_negative_raw_is_not_available(report):
+    inputs, changes, html = report
+    assert re.search(r"Negative raw growth rates: [0-9.]+ % of matched features", _section_text(html, "growth"))
+    growth = {k: v for k, v in inputs.summaries["growth"].items() if k != "pct_negative_raw"}
+    bare = dataclasses.replace(inputs, summaries={**inputs.summaries, "growth": growth})
+    text = _section_text(render_report(bare, changes, ReportHeader(None, None, None), GENERATED), "growth")
+    assert "Negative raw growth rates: not available (included in the segment percentiles)." in text
+    assert "of matched features" not in text
+
+
+def test_backtest_digs_without_depth_listed(report):
+    inputs, changes, _ = report
+    first = inputs.digs.feature_id.iloc[0]
+    digs = inputs.digs.assign(field_depth_pct=inputs.digs.field_depth_pct.where(inputs.digs.feature_id != first))
+    bt = backtest(digs, inputs.curr_std, inputs.settings)
+    assert bt.no_depth_ids == [first] and len(bt.table) == len(inputs.digs) - 1
+    html = render_report(dataclasses.replace(inputs, digs=digs), changes, ReportHeader(None, None, None), GENERATED)
+    charts = _section_text(html, "charts")
+    assert f"{bt.n_within} of {len(bt.table)} digs" in charts
+    assert f"Digs without both a reported and a field depth (not compared): {first}." in charts
+    none = digs.assign(field_depth_pct=np.nan)
+    charts = _section_text(render_report(dataclasses.replace(inputs, digs=none), changes,
+                                         ReportHeader(None, None, None), GENERATED), "charts")
+    assert "No dig in the current run has both a reported and a field depth." in charts
+    assert "No dig feature id is in the current run." not in charts
+
+
+def test_vendor_map_relative_to_project_root(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    manifest = {"runs": [{"run_id": "R1", "vendor_map": "config/vendor_maps/synthetic_vendor_a.yaml"}]}
+    assert _vendor(manifest, "R1") == "synthetic_vendor_a"
+    assert _vendor({"runs": [{"run_id": "R1", "vendor_map": "config/vendor_maps/nope.yaml"}]}, "R1") == "not stated"
