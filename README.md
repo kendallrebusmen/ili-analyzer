@@ -122,12 +122,13 @@ py -3.13 -m venv .venv
     --crossings data\synthetic\reference\foreign_crossings.csv --digs data\synthetic\reference\digs.csv `
     --out outputs
 
-# The review app (local only: localhost, no telemetry). Pages: Run setup, Weld alignment, Match review
-# queue, Growth and remaining life explorer, Dig list and report export.
+# The review app (local only: localhost, no telemetry; app/.streamlit/config.toml sets both, and the app
+# refuses to run if the options in force differ). Pages: Run setup, Weld alignment, Match review queue
+# (with "Correct a decision"), Growth and remaining life explorer, Dig list and report export.
 .\.venv\Scripts\python.exe -m streamlit run app/streamlit_app.py --server.address localhost --browser.gatherUsageStats false
 ```
 
-Reviewers' decisions are saved in the comparison folder: match decisions in `reviews.csv` and manual flags in `feature_flags.csv`. Both are append-only logs (a correction is a new row; the latest wins). `ili.match` reads `reviews.csv` and `ili.classify` reads `feature_flags.csv` from the comparison folder by default (`--reviews` and `--flags` name other files), so a decision takes effect the next time the pipeline is rerun, from the app's Rerun button or the command above. **The logs live beside the outputs: deleting an output folder deletes the decisions.** Keep a copy of `reviews.csv` and `feature_flags.csv` before clearing outputs.
+Reviewers' decisions are saved in the comparison folder: match decisions in `reviews.csv` and manual flags in `feature_flags.csv`. Both are append-only logs (a correction is a new row; the latest wins). `ili.match` reads `reviews.csv` and `ili.classify` reads `feature_flags.csv` from the comparison folder by default (`--reviews` and `--flags` name other files on those two commands only; the app and `ili.pipeline` always use the comparison folder's logs), so a decision takes effect the next time the pipeline is rerun, from the app's Rerun button or the command above. **The logs live beside the outputs: deleting an output folder deletes the decisions.** Keep a copy of `reviews.csv` and `feature_flags.csv` before clearing outputs.
 
 The run date is the third `--run` value. It can be left out when the vendor map says where the file states it (vendor B's title row). The run id is `<run year>_<run_label from the vendor map>`.
 
