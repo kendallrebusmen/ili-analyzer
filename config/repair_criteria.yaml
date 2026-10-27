@@ -1,14 +1,16 @@
 # Repair criteria rule set. Spec sections 6.8 and 7.2.
-# M1 ships the format example only; the remaining section 6.8 rules are added in M7.
-# Conditions are evaluated by a safe expression evaluator (never Python eval).
+# M7 carries the full set: the 16 HCA rules of 49 CFR 195.452(h)(4) plus a PLACEHOLDER non-HCA set.
+# Conditions are evaluated by a safe expression evaluator (never Python eval) and may use only
+# the names in ili.vocabulary.VARIABLES. Thresholds live here, never in code.
 # Where the operator's IMP is more conservative than these rules, the IMP governs.
+# NPS 12 is OD 12.75 in; the dent alternatives apply 0.250 in below that.
 
 version: "49 CFR 195.452(h)(4), reviewed Oct 2026 - VERIFY against current eCFR and IMP"
 rules:
   - id: IMM-1
     category: immediate
     applies_to: hca
-    feature_types: [metal_loss]
+    feature_types: [metal_loss, gouge]  # a gouge is metal loss too: > 80% of wall is immediate (needs engineer sign-off)
     condition: "depth_pct_assessed > 80"
     description: "Metal loss greater than 80% of nominal wall regardless of dimensions"
     citation: "195.452(h)(4)(i)(A)"
@@ -23,6 +25,78 @@ rules:
     citation: "195.452(h)(4)(i)(B)"
     requires_review: false
 
+  - id: IMM-3
+    category: immediate
+    applies_to: hca
+    feature_types: [dent]
+    condition: "top_of_pipe and dent_metal_loss"
+    description: "Top-of-pipe dent with any indication of metal loss, cracking, or a stress riser"
+    citation: "195.452(h)(4)(i)(C)"
+    requires_review: false
+
+  - id: IMM-4
+    category: immediate
+    applies_to: hca
+    feature_types: [dent]
+    condition: "top_of_pipe and dent_depth_pct_od > 6"
+    description: "Top-of-pipe dent deeper than 6% of nominal diameter"
+    citation: "195.452(h)(4)(i)(D)"
+    requires_review: false
+
+  - id: IMM-5
+    category: immediate
+    applies_to: hca
+    feature_types: [metal_loss, dent, gouge]
+    condition: "manual_immediate"
+    description: "Anomaly the designated evaluator judges to require immediate action (manual flag only)"
+    citation: "195.452(h)(4)(i)(E)"
+    requires_review: false
+
+  - id: D60-1
+    category: 60_day
+    applies_to: hca
+    feature_types: [dent]
+    condition: "top_of_pipe and ((od_in >= 12.75 and dent_depth_pct_od > 3) or (od_in < 12.75 and dent_depth_in > 0.250))"
+    description: "Top-of-pipe dent deeper than 3% of diameter (more than 0.250 in for pipe smaller than NPS 12)"
+    citation: "195.452(h)(4)(ii)(A)"
+    requires_review: false
+
+  - id: D60-2
+    category: 60_day
+    applies_to: hca
+    feature_types: [dent]
+    condition: "not top_of_pipe and dent_metal_loss"
+    description: "Bottom dent with any indication of metal loss, cracking, or a stress riser"
+    citation: "195.452(h)(4)(ii)(B)"
+    requires_review: false
+
+  - id: D180-1
+    category: 180_day
+    applies_to: hca
+    feature_types: [dent]
+    condition: "(near_girth_weld or seam_interaction) and ((od_in >= 12.75 and dent_depth_pct_od > 2) or (od_in < 12.75 and dent_depth_in > 0.250))"
+    description: "Dent deeper than 2% of diameter (0.250 in below NPS 12) that affects pipe curvature at a girth weld or longitudinal seam weld"
+    citation: "195.452(h)(4)(iii)(A)"
+    requires_review: true
+
+  - id: D180-2
+    category: 180_day
+    applies_to: hca
+    feature_types: [dent]
+    condition: "top_of_pipe and ((od_in >= 12.75 and dent_depth_pct_od > 2) or (od_in < 12.75 and dent_depth_in > 0.250))"
+    description: "Top-of-pipe dent deeper than 2% of diameter (0.250 in below NPS 12)"
+    citation: "195.452(h)(4)(iii)(B)"
+    requires_review: false
+
+  - id: D180-3
+    category: 180_day
+    applies_to: hca
+    feature_types: [dent]
+    condition: "not top_of_pipe and dent_depth_pct_od > 6"
+    description: "Bottom dent deeper than 6% of diameter"
+    citation: "195.452(h)(4)(iii)(C)"
+    requires_review: false
+
   - id: D180-4
     category: 180_day
     applies_to: hca
@@ -31,3 +105,194 @@ rules:
     description: "Remaining strength calculation shows operating pressure less than MOP"
     citation: "195.452(h)(4)(iii)(D)"
     requires_review: false
+
+  - id: D180-5
+    category: 180_day
+    applies_to: hca
+    feature_types: [metal_loss]
+    condition: "general_corrosion and depth_pct_assessed > 50"
+    description: "General corrosion with predicted metal loss greater than 50% of nominal wall"
+    citation: "195.452(h)(4)(iii)(E)"
+    requires_review: true
+
+  - id: D180-6
+    category: 180_day
+    applies_to: hca
+    feature_types: [metal_loss]
+    condition: "depth_pct_assessed > 50 and (near_foreign_crossing or widespread_circumferential or near_girth_weld)"
+    description: "Predicted metal loss greater than 50% at a foreign pipeline crossing, in widespread circumferential corrosion, or where it could affect a girth weld"
+    citation: "195.452(h)(4)(iii)(F)"
+    requires_review: true
+
+  - id: D180-7
+    category: 180_day
+    applies_to: hca
+    feature_types: [metal_loss, dent, gouge]
+    condition: "field_crack_confirmed"
+    description: "Potential crack indication confirmed as a crack when excavated (manual/field entry only)"
+    citation: "195.452(h)(4)(iii)(G)"
+    requires_review: true
+
+  - id: D180-8
+    category: 180_day
+    applies_to: hca
+    feature_types: [metal_loss]
+    condition: "seam_interaction and feature_type == 'metal_loss'"
+    description: "Corrosion of or along a longitudinal seam weld"
+    citation: "195.452(h)(4)(iii)(H)"
+    requires_review: true
+
+  - id: D180-9
+    category: 180_day
+    applies_to: hca
+    feature_types: [gouge]
+    condition: "feature_type == 'gouge' and depth_pct_assessed > 12.5"
+    description: "Gouge or groove deeper than 12.5% of nominal wall"
+    citation: "195.452(h)(4)(iii)(I)"
+    requires_review: false
+
+  # --- Non-HCA set: PLACEHOLDER pending the operator's IMP criteria (195.401(b) via 195.416(g)). ---
+
+  - id: NH-IMM-1
+    category: immediate
+    applies_to: non_hca
+    feature_types: [metal_loss, gouge]  # a gouge is metal loss too: > 80% of wall is immediate (needs engineer sign-off)
+    condition: "depth_pct_assessed > 80"
+    description: "PLACEHOLDER pending IMP non-HCA criteria: Metal loss greater than 80% of nominal wall regardless of dimensions"
+    citation: "195.401(b) via 195.416(g) — operator IMP (PLACEHOLDER)"
+    requires_review: true
+
+  - id: NH-IMM-2
+    category: immediate
+    applies_to: non_hca
+    feature_types: [metal_loss]
+    condition: "p_fail < mop_local"
+    description: "PLACEHOLDER pending IMP non-HCA criteria: Predicted burst pressure less than MOP at the anomaly"
+    citation: "195.401(b) via 195.416(g) — operator IMP (PLACEHOLDER)"
+    requires_review: true
+
+  - id: NH-IMM-3
+    category: immediate
+    applies_to: non_hca
+    feature_types: [dent]
+    condition: "top_of_pipe and dent_metal_loss"
+    description: "PLACEHOLDER pending IMP non-HCA criteria: Top-of-pipe dent with any indication of metal loss, cracking, or a stress riser"
+    citation: "195.401(b) via 195.416(g) — operator IMP (PLACEHOLDER)"
+    requires_review: true
+
+  - id: NH-IMM-4
+    category: immediate
+    applies_to: non_hca
+    feature_types: [dent]
+    condition: "top_of_pipe and dent_depth_pct_od > 6"
+    description: "PLACEHOLDER pending IMP non-HCA criteria: Top-of-pipe dent deeper than 6% of nominal diameter"
+    citation: "195.401(b) via 195.416(g) — operator IMP (PLACEHOLDER)"
+    requires_review: true
+
+  - id: NH-IMM-5
+    category: immediate
+    applies_to: non_hca
+    feature_types: [metal_loss, dent, gouge]
+    condition: "manual_immediate"
+    description: "PLACEHOLDER pending IMP non-HCA criteria: Anomaly the designated evaluator judges to require immediate action (manual flag only)"
+    citation: "195.401(b) via 195.416(g) — operator IMP (PLACEHOLDER)"
+    requires_review: true
+
+  - id: NH-D60-1
+    category: 60_day
+    applies_to: non_hca
+    feature_types: [dent]
+    condition: "top_of_pipe and ((od_in >= 12.75 and dent_depth_pct_od > 3) or (od_in < 12.75 and dent_depth_in > 0.250))"
+    description: "PLACEHOLDER pending IMP non-HCA criteria: Top-of-pipe dent deeper than 3% of diameter (more than 0.250 in for pipe smaller than NPS 12)"
+    citation: "195.401(b) via 195.416(g) — operator IMP (PLACEHOLDER)"
+    requires_review: true
+
+  - id: NH-D60-2
+    category: 60_day
+    applies_to: non_hca
+    feature_types: [dent]
+    condition: "not top_of_pipe and dent_metal_loss"
+    description: "PLACEHOLDER pending IMP non-HCA criteria: Bottom dent with any indication of metal loss, cracking, or a stress riser"
+    citation: "195.401(b) via 195.416(g) — operator IMP (PLACEHOLDER)"
+    requires_review: true
+
+  - id: NH-D180-1
+    category: 180_day
+    applies_to: non_hca
+    feature_types: [dent]
+    condition: "(near_girth_weld or seam_interaction) and ((od_in >= 12.75 and dent_depth_pct_od > 2) or (od_in < 12.75 and dent_depth_in > 0.250))"
+    description: "PLACEHOLDER pending IMP non-HCA criteria: Dent deeper than 2% of diameter (0.250 in below NPS 12) that affects pipe curvature at a girth weld or longitudinal seam weld"
+    citation: "195.401(b) via 195.416(g) — operator IMP (PLACEHOLDER)"
+    requires_review: true
+
+  - id: NH-D180-2
+    category: 180_day
+    applies_to: non_hca
+    feature_types: [dent]
+    condition: "top_of_pipe and ((od_in >= 12.75 and dent_depth_pct_od > 2) or (od_in < 12.75 and dent_depth_in > 0.250))"
+    description: "PLACEHOLDER pending IMP non-HCA criteria: Top-of-pipe dent deeper than 2% of diameter (0.250 in below NPS 12)"
+    citation: "195.401(b) via 195.416(g) — operator IMP (PLACEHOLDER)"
+    requires_review: true
+
+  - id: NH-D180-3
+    category: 180_day
+    applies_to: non_hca
+    feature_types: [dent]
+    condition: "not top_of_pipe and dent_depth_pct_od > 6"
+    description: "PLACEHOLDER pending IMP non-HCA criteria: Bottom dent deeper than 6% of diameter"
+    citation: "195.401(b) via 195.416(g) — operator IMP (PLACEHOLDER)"
+    requires_review: true
+
+  - id: NH-D180-4
+    category: 180_day
+    applies_to: non_hca
+    feature_types: [metal_loss]
+    condition: "p_safe < mop_local"
+    description: "PLACEHOLDER pending IMP non-HCA criteria: Remaining strength calculation shows operating pressure less than MOP"
+    citation: "195.401(b) via 195.416(g) — operator IMP (PLACEHOLDER)"
+    requires_review: true
+
+  - id: NH-D180-5
+    category: 180_day
+    applies_to: non_hca
+    feature_types: [metal_loss]
+    condition: "general_corrosion and depth_pct_assessed > 50"
+    description: "PLACEHOLDER pending IMP non-HCA criteria: General corrosion with predicted metal loss greater than 50% of nominal wall"
+    citation: "195.401(b) via 195.416(g) — operator IMP (PLACEHOLDER)"
+    requires_review: true
+
+  - id: NH-D180-6
+    category: 180_day
+    applies_to: non_hca
+    feature_types: [metal_loss]
+    condition: "depth_pct_assessed > 50 and (near_foreign_crossing or widespread_circumferential or near_girth_weld)"
+    description: "PLACEHOLDER pending IMP non-HCA criteria: Predicted metal loss greater than 50% at a foreign pipeline crossing, in widespread circumferential corrosion, or where it could affect a girth weld"
+    citation: "195.401(b) via 195.416(g) — operator IMP (PLACEHOLDER)"
+    requires_review: true
+
+  - id: NH-D180-7
+    category: 180_day
+    applies_to: non_hca
+    feature_types: [metal_loss, dent, gouge]
+    condition: "field_crack_confirmed"
+    description: "PLACEHOLDER pending IMP non-HCA criteria: Potential crack indication confirmed as a crack when excavated (manual/field entry only)"
+    citation: "195.401(b) via 195.416(g) — operator IMP (PLACEHOLDER)"
+    requires_review: true
+
+  - id: NH-D180-8
+    category: 180_day
+    applies_to: non_hca
+    feature_types: [metal_loss]
+    condition: "seam_interaction and feature_type == 'metal_loss'"
+    description: "PLACEHOLDER pending IMP non-HCA criteria: Corrosion of or along a longitudinal seam weld"
+    citation: "195.401(b) via 195.416(g) — operator IMP (PLACEHOLDER)"
+    requires_review: true
+
+  - id: NH-D180-9
+    category: 180_day
+    applies_to: non_hca
+    feature_types: [gouge]
+    condition: "feature_type == 'gouge' and depth_pct_assessed > 12.5"
+    description: "PLACEHOLDER pending IMP non-HCA criteria: Gouge or groove deeper than 12.5% of nominal wall"
+    citation: "195.401(b) via 195.416(g) — operator IMP (PLACEHOLDER)"
+    requires_review: true

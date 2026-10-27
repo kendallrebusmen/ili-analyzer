@@ -27,7 +27,7 @@ import pandas as pd
 from ili.align_welds import DRAFT_LABEL, comparison_dir
 from ili.config import DEFAULT_SETTINGS, PROJECT_ROOT, GrowthMethod, Settings, ToolCfg, load_settings
 from ili.ingest import load_standardized
-from ili.match import MILS_PER_IN, delta_t_years, load_match_table
+from ili.match import MILS_PER_IN, delta_t_years, load_match_table, parse_flag_column
 from ili.reference import _require_columns, assign_segment, check_segments, lookup, segment_table
 from ili.schema import FeatureType
 from ili.units import sigma_from_tolerance
@@ -377,7 +377,7 @@ _GROWTH_FLAGS = ("needs_review", "implausible", "match_needs_review")
 
 def load_growth_table(path: Path) -> pd.DataFrame:
     """Read a ``growth.csv`` back with its types (as ``match.load_match_table``): ids and labels stay text
-    (empty is None), flags are True/False/None, the rest float."""
+    (empty is None), flags are True/False/None (``match.parse_flag_column``), the rest float."""
     header = pd.read_csv(path, nrows=0).columns
     text = [c for c in _GROWTH_TEXT if c in header]
     flags = [c for c in _GROWTH_FLAGS if c in header]
@@ -386,10 +386,7 @@ def load_growth_table(path: Path) -> pd.DataFrame:
     for c in text:
         df[c] = df[c].astype(object).where(df[c] != "", None)
     for c in flags:
-        bad = df[c][~df[c].isin(["True", "False", ""])]
-        if not bad.empty:
-            raise ValueError(f"{path}: column {c} has {bad.iloc[0]!r}; expected True, False or blank")
-        df[c] = df[c].map({"True": True, "False": False}).astype(object).where(df[c] != "", None)
+        df[c] = parse_flag_column(df[c], path, c)
     return df
 
 

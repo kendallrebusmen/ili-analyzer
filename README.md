@@ -76,6 +76,16 @@ py -3.13 -m venv .venv
     --mop data\synthetic\reference\mop_profile.csv `
     --segments data\synthetic\reference\hca_segments.csv `
     --next-inspection data\synthetic\reference\next_inspection.csv
+
+# Repair classification -> outputs/<prev>_vs_<curr>/classification.csv, classification_summary.json
+# (add --discovery-date YYYY-MM-DD once known; without it the latest permissible date is used, with a banner)
+.\.venv\Scripts\python.exe -m ili.classify `
+    --curr outputs\standardized\2026_vendorB.csv `
+    --matches outputs\2021_vendorA_vs_2026_vendorB\match_table.csv `
+    --remaining-life outputs\2021_vendorA_vs_2026_vendorB\remaining_life.csv `
+    --pipe data\synthetic\reference\pipe_properties.csv `
+    --segments data\synthetic\reference\hca_segments.csv `
+    --crossings data\synthetic\reference\foreign_crossings.csv
 ```
 
 The run date is the third `--run` value. It can be left out when the vendor map says where the file states it (vendor B's title row). The run id is `<run year>_<run_label from the vendor map>`.

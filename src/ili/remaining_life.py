@@ -50,7 +50,7 @@ from ili.align_welds import DRAFT_LABEL, comparison_dir
 from ili.config import DEFAULT_SETTINGS, PROJECT_ROOT, Settings, load_settings
 from ili.growth import REASON_SEP, REVIEW_REASONS, load_growth_table
 from ili.ingest import load_standardized
-from ili.match import DAYS_PER_YEAR, MILS_PER_IN
+from ili.match import DAYS_PER_YEAR, MILS_PER_IN, parse_flag_column
 from ili.reference import _require_columns, assign_segment, check_segments, lookup
 from ili.strength import (WALL_LOSS_LIMIT, assessed_depth_in, assessed_length_in, burst_pressure,
                           exceeds_wall_loss_limit, failure_stress, safe_pressure)
@@ -657,6 +657,32 @@ def write_remaining_life(result: RLResult, out_dir: Path) -> dict[str, Path]:
     paths["remaining_life_summary.json"].write_text(
         json.dumps({"label": DRAFT_LABEL, **s}, indent=2, allow_nan=False), encoding="utf-8")
     return paths
+
+
+_RL_TEXT = ("match_id", "curr_feature_id", "segment_id", "method", "rl_governing", "next_assessment_source",
+            "review_reasons")
+_RL_FLAGS = ("could_affect_hca", "exceeds_80pct", "dig_required_by_remaining_life", "needs_review")
+_RL_DATES = ("repair_by_date", "next_assessment_date")
+
+
+def load_remaining_life_table(path: Path) -> pd.DataFrame:
+    """Read a ``remaining_life.csv`` back with its types (as ``growth.load_growth_table``): ids and labels
+    stay text (empty is None), flags are True/False/None (``match.parse_flag_column``: any case), dates are
+    ``datetime.date`` or None, the rest float. ValueError for a flag that is not true, false or blank, or a
+    date that is not ISO."""
+    header = pd.read_csv(path, nrows=0).columns
+    text = [c for c in (*_RL_TEXT, *_RL_DATES) if c in header]
+    flags = [c for c in _RL_FLAGS if c in header]
+    df = pd.read_csv(path, dtype={c: str for c in text + flags}, keep_default_na=False,
+                     na_values={c: [""] for c in header if c not in text + flags})
+    for c in text:
+        df[c] = df[c].astype(object).where(df[c] != "", None)
+    for c in flags:
+        df[c] = parse_flag_column(df[c], path, c)
+    for c in _RL_DATES:
+        if c in header:
+            df[c] = pd.Series([_as_date(v, f"{path}: {c}") for v in df[c]], dtype=object, index=df.index)
+    return df
 
 
 def _run_ids(growth_path: Path, curr_std: pd.DataFrame) -> tuple[str | None, str]:
