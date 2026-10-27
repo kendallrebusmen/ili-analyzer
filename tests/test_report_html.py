@@ -163,11 +163,12 @@ def test_pending_warning_and_never_final(report):
     inputs, changes, html = report
     n = len(pending_reviews(inputs.match_table))
     assert n > 0
-    warning = f"{n} match reviews pending — this report cannot be final."
+    warning = f"{n} matches pending review — this report cannot be final."
     assert warning in _section_text(html, "data-quality")
     accepted = dataclasses.replace(inputs, match_table=inputs.match_table.assign(review_status="accepted"))
     clean = render_report(accepted, changes, ReportHeader(None, None, None), GENERATED)
-    assert "match reviews pending" not in clean and "cannot be final" not in clean
+    assert "pending review —" not in clean and "cannot be final" not in clean
+    assert "Pending: 0 matches pending review." in clean
     for page in (html, clean):
         p = _parse(page)
         assert DRAFT_LABEL in p.first_child["summary"][2]

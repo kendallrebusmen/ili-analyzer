@@ -208,7 +208,7 @@ def test_report_shows_review_and_flag_logs(plain, synth, tmp_path, capsys):
     assert "Pat &lt;Lee&gt;" in html and "Pat <Lee>" not in html
     # the pending count drops by the reviewed rows (the accepted and the rejected one)
     pending_after = len(pending_reviews(inputs.match_table))
-    assert pending_after <= pending_before - 2 and f"{pending_after} match reviews pending" in html
+    assert pending_after <= pending_before - 2 and f"{pending_after} matches pending review —" in html
 
 
 # ---- logs saved after the last run -----------------------------------------------------------------
@@ -267,7 +267,7 @@ def test_flag_saved_after_classify_is_unrecorded(classified):
     inputs, html = _report(data, std, folder, out)
     assert len(inputs.log_warnings) == 1 and FLAGS_FILE in inputs.log_warnings[0]
     assert "saved after the last run — rerun to apply" in _row(html, "F000001")
-    assert f"{pending0 + 1} match reviews pending" in html
+    assert f"{pending0} matches pending review, plus 1 log row saved after the last run —" in html
     assert 'class="warning">feature_flags.csv has changed' in html
 
 
@@ -278,7 +278,37 @@ def test_review_saved_after_match_is_unrecorded(classified):
     inputs, html = _report(data, std, folder, out)
     assert len(inputs.log_warnings) == 1 and REVIEWS_FILE in inputs.log_warnings[0]
     assert "saved after the last run — rerun to apply" in _row(html, "R000001")
-    assert f"{pending0 + 1} match reviews pending" in html
+    assert f"{pending0} matches pending review, plus 1 log row saved after the last run —" in html
+
+
+def test_pending_wording_is_the_same_in_report_and_cli(classified, capsys):
+    """M1: pending matches and log rows saved after the last run are counted apart, with the same words in
+    the report and the report CLI; either one keeps the not-final warning."""
+    from test_report_cli import _argv
+
+    from ili import report
+    data, out, std, folder = classified
+    pending0 = len(pending_reviews(_report(data, std, folder, out)[0].match_table))
+    assert pending0 > 1
+    append_review(folder / REVIEWS_FILE, "accept", ["NO-PREV"], ["NO-CURR"], "Pat", None, now=_t(0))
+    append_flag(folder / FLAGS_FILE, "B-LATE", "manual_immediate", True, "Pat", None, now=_t(1))
+    inputs, html = _report(data, std, folder, out)
+    text = f"{pending0} matches pending review, plus 2 log rows saved after the last run"
+    assert f"{text} — this report cannot be final." in html
+    capsys.readouterr()
+    assert report.main(_argv((data, out, std, folder))) == 0
+    assert f"pending: {text} (the report cannot be final)" in capsys.readouterr().out
+    assert report.pending_text(1, 0) == "1 match pending review"
+    assert report.pending_text(0, 1) == "0 matches pending review, plus 1 log row saved after the last run"
+    # no pending match, but a log row no run has applied: still not final
+    import dataclasses
+    done = dataclasses.replace(inputs, match_table=inputs.match_table.assign(review_status="accepted"))
+    changes = category_changes(inputs.match_table, inputs.remaining_life, inputs.classification, inputs.curr_std,
+                               inputs.pipe, inputs.mop, inputs.segments, inputs.crossings, inputs.settings,
+                               inputs.criteria, inputs.prev_std.run_date.dropna().iloc[0])
+    html = render_report(done, changes, ReportHeader(None, None, None), datetime(2026, 10, 27, tzinfo=timezone.utc))
+    assert ("0 matches pending review, plus 2 log rows saved after the last run — this report cannot be final."
+            in html)
 
 
 def test_recorded_hashes_are_of_the_parsed_bytes(plain, tmp_path, monkeypatch, capsys):

@@ -213,6 +213,7 @@ def _data_quality(inputs: ReportInputs) -> dict:
     by_reason = issues.groupby(["run_id", "reason"], dropna=False).size().rename("count").reset_index()
     align = inputs.summaries["alignment"]
     cls_summary = inputs.summaries["classification"]
+    n_pending, n_unrecorded = len(pending_reviews(inputs.match_table)), _n_unrecorded(inputs)
     return {
         "n_issues": len(issues),
         "issue_counts": table(by_reason),
@@ -220,7 +221,10 @@ def _data_quality(inputs: ReportInputs) -> dict:
         "alignment_rate": _rate(align.get("alignment_rate")),
         "alignment_rate_outside_repairs": _rate(align.get("alignment_rate_outside_repairs")),
         "match_stats": table(_match_stats(inputs.match_table)),
-        "n_pending": len(pending_reviews(inputs.match_table)) + _n_unrecorded(inputs),
+        "n_pending": n_pending,
+        "n_unrecorded": n_unrecorded,
+        "pending_text": pending_text(n_pending, n_unrecorded),
+        "not_final": n_pending + n_unrecorded > 0,
         "n_requires_review": cls_summary.get("n_requires_review"),
         "review_reasons": _counts(cls_summary.get("counts_by_review_reason") or {}, "reason"),
         "crossings_given": inputs.crossings is not None,
@@ -276,6 +280,16 @@ def _review_log(inputs: ReportInputs) -> pd.DataFrame:
 def _flag_log(inputs: ReportInputs) -> pd.DataFrame:
     """Every row of ``feature_flags.csv`` with the outcome classification recorded (``flag_status.csv``)."""
     return _with_outcome(inputs.flags, inputs.flag_status, "flag_id", FLAG_LOG_COLUMNS)
+
+
+def pending_text(n_pending: int, n_unrecorded: int) -> str:
+    """What still keeps a report from being final, in the words both the report and the CLI use: the
+    matches pending review, plus (when there are any) the log rows saved after the last run, which no
+    result reflects yet. The two are counted apart: a log row is not a match."""
+    text = f"{n_pending} {'match' if n_pending == 1 else 'matches'} pending review"
+    if n_unrecorded:
+        text += f", plus {n_unrecorded} log {'row' if n_unrecorded == 1 else 'rows'} saved after the last run"
+    return text
 
 
 def _n_unrecorded(inputs: ReportInputs) -> int:
@@ -501,7 +515,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 2
     summary = inputs.summaries["classification"]
-    pending = pending_reviews(inputs.match_table)
+    n_pending, n_unrecorded = len(pending_reviews(inputs.match_table)), _n_unrecorded(inputs)
     moved = changes.table[changes.table.moved_more_severe]
     print(DRAFT_LABEL)
     if summary.get("discovery_warning"):
@@ -509,8 +523,8 @@ def main(argv: list[str] | None = None) -> int:
     print(f"{summary['prev_run_id']} vs {summary['curr_run_id']}: " + ", ".join(
         f"{k} {v}" for k, v in summary["counts_by_category"].items()))
     print(f"dig list: {len(dig_list(inputs))} rows")
-    print(f"pending reviews: {len(pending)}"
-          + (" (the report is not final until each is reviewed)" if len(pending) else ""))
+    print(f"pending: {pending_text(n_pending, n_unrecorded)}"
+          + (" (the report cannot be final)" if n_pending + n_unrecorded else ""))
     print(f"moved to a more severe category: {len(moved)} of {len(changes.table)} compared")
     for path in paths.values():
         print(f"wrote {path}")
