@@ -1,0 +1,332 @@
+{#- ILI run-comparison report (spec 6.10). Autoescaped; only plotlyjs and the chart divs arrive as Markup. -#}
+{%- macro render_table(t, caption=None) -%}
+{% if caption %}<p class="caption">{{ caption }}</p>
+{% endif %}
+{% set hidden = t.hidden_in_print %}
+<div class="table-wrap">
+<table{% if t.print_columns is not none %} class="print-compact"{% endif %}>
+<thead><tr>{% for c in t.columns %}<th{% if loop.index0 in hidden %} class="noprint"{% endif %}>{{ c }}</th>{% endfor %}</tr></thead>
+<tbody>
+{% for row in t.rows %}
+<tr{% if t.row_classes and t.row_classes[loop.index0] %} class="{{ t.row_classes[loop.index0] }}"{% endif %}>{% for v in row %}<td{% if loop.index0 in hidden %} class="noprint"{% endif %}>{{ v }}</td>{% endfor %}</tr>
+{% endfor %}
+</tbody>
+</table>
+</div>
+{%- endmacro -%}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ILI run comparison {{ head.prev_run_id }} vs {{ head.curr_run_id }} (DRAFT)</title>
+<style>
+:root {
+  --ink: #1f2328; --muted: #5b636e; --rule: #c9ced6; --rule-light: #e4e7eb; --paper: #ffffff;
+  --band: #f4f5f7; --warn-bg: #fff4d6; --warn-rule: #b7791f; --draft: #9b1c1c;
+}
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0; background: var(--paper); color: var(--ink);
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  font-size: 14px; line-height: 1.45;
+}
+.draft-banner {
+  position: sticky; top: 0; z-index: 10; padding: 4px 16px; background: var(--paper);
+  border-bottom: 2px solid var(--draft); color: var(--draft); font-weight: 600; letter-spacing: 0.02em;
+}
+main { max-width: 1200px; margin: 0 auto; padding: 8px 16px 48px; }
+section { padding: 8px 0 24px; border-bottom: 1px solid var(--rule); }
+section:last-child { border-bottom: none; }
+.draft { margin: 8px 0 0; color: var(--draft); font-size: 12px; font-weight: 600; }
+h1 { font-size: 22px; margin: 4px 0 8px; }
+h2 { font-size: 18px; margin: 8px 0 8px; }
+h3 { font-size: 15px; margin: 18px 0 6px; }
+p { margin: 6px 0; }
+.muted { color: var(--muted); }
+dl.facts { display: grid; grid-template-columns: max-content 1fr; gap: 2px 16px; margin: 8px 0; }
+dl.facts dt { color: var(--muted); }
+dl.facts dd { margin: 0; }
+.warning {
+  margin: 10px 0; padding: 8px 12px; background: var(--warn-bg); border-left: 4px solid var(--warn-rule);
+  font-weight: 600;
+}
+.table-wrap { overflow-x: auto; margin: 6px 0 10px; }
+table { border-collapse: collapse; font-size: 12px; font-variant-numeric: tabular-nums; }
+caption { caption-side: top; text-align: left; color: var(--muted); padding: 2px 0 4px; }
+.caption { margin: 8px 0 2px; color: var(--muted); font-size: 12px; }
+th, td { padding: 3px 8px; border: 1px solid var(--rule-light); text-align: left; vertical-align: top; }
+th { background: var(--band); font-weight: 600; white-space: nowrap; }
+td { white-space: nowrap; }
+tr.placeholder td { background: var(--warn-bg); }
+{% for category, colour in category_colours.items() %}
+tr.cat-{{ category }} td { background: {{ colour }}; }
+{% endfor %}
+.formula td, .formula th { white-space: normal; font-size: 13px; }
+.chart { margin: 8px 0 16px; break-inside: avoid; }
+code { font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; font-size: 12px; }
+.print-only { display: none; }
+@page {
+  size: landscape; margin: 14mm 10mm;
+  @top-left { content: "{{ label_css }}"; color: #9b1c1c; font-weight: 600; }
+}
+@media print {
+  .draft-banner { display: none; }
+  body { font-size: 11px; }
+  main { max-width: none; padding-top: 0; }
+  .table-wrap { overflow: visible; }
+  thead { display: table-header-group; }
+  tr { break-inside: avoid; }
+  section { break-before: page; }
+  section#header { break-before: auto; }
+  tr[class^="cat-"] td, tr.placeholder td, .warning { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  .noprint { display: none; }
+  .print-only { display: block; }
+  table.print-compact { width: 100%; font-size: 10px; }
+  table.print-compact th, table.print-compact td { white-space: normal; overflow-wrap: anywhere; padding: 2px 4px; }
+}
+</style>
+<script type="text/javascript">{{ plotlyjs }}</script>
+</head>
+<body>
+<div class="draft-banner">{{ label }}</div>
+<main>
+
+<section id="header">
+<p class="draft">{{ label }}</p>
+<h1>ILI run comparison: {{ head.prev_run_id }} vs {{ head.curr_run_id }}</h1>
+<dl class="facts">
+<dt>Line</dt><dd>{{ head.line_name }}</dd>
+<dt>Status</dt><dd>{{ label }}</dd>
+<dt>Generated (UTC)</dt><dd>{{ head.generated_utc }} by {{ head.generator }}</dd>
+</dl>
+{{ render_table(head.runs) }}
+</section>
+
+<section id="summary">
+<p class="draft">{{ label }}</p>
+<h2>Executive summary</h2>
+<h3>Immediate conditions</h3>
+{% if summary.immediate.rows %}
+<p class="warning">{{ summary.immediate.rows | length }} immediate condition(s). {{ summary.immediate_note }}</p>
+{{ render_table(summary.immediate) }}
+{% else %}
+<p>No immediate conditions.</p>
+{% endif %}
+{% if summary.discovery_warning %}
+<p class="warning">{{ summary.discovery_warning }}</p>
+{% endif %}
+<h3>Counts by repair category</h3>
+{{ render_table(summary.category_counts, summary.n_features ~ " classified features") }}
+<h3>Digs driven by remaining life</h3>
+<p>{{ summary.n_rl_dig }} of {{ summary.n_rl_feature }} features have <code>dig_required_by_remaining_life</code>
+(remaining life × rl_factor is shorter than the time to the next planned assessment);
+{{ summary.n_imp_scheduled }} of them are governed by no repair rule and are classified <code>imp_scheduled</code>.</p>
+<h3>Recommended reinspection interval by segment</h3>
+{{ render_table(summary.intervals, "recommended_interval_yr: the minimum of remaining life × rl_factor over the segment's features, capped at regulatory_max_yr") }}
+</section>
+
+<section id="data-quality">
+<p class="draft">{{ label }}</p>
+<h2>Data quality</h2>
+{% if quality.n_pending > 0 %}
+<p class="warning">{{ quality.n_pending }} match reviews pending — this report cannot be final.</p>
+{% endif %}
+<h3>Validation issues</h3>
+{% if quality.n_issues %}
+{{ render_table(quality.issue_counts, "Issues by run and reason") }}
+{{ render_table(quality.issues, quality.n_issues ~ " issue rows (rows dropped or flagged at ingestion)") }}
+{% else %}
+<p>No validation issues.</p>
+{% endif %}
+<h3>Girth-weld alignment</h3>
+<dl class="facts">
+<dt>Alignment rate</dt><dd>{{ quality.alignment_rate }}</dd>
+<dt>Alignment rate outside repairs</dt><dd>{{ quality.alignment_rate_outside_repairs }}</dd>
+</dl>
+<h3>Match statistics</h3>
+{{ render_table(quality.match_stats, "Rows by match type and confidence. The all column counts every row of the type, including rows with no confidence (unmatched new and missing features), so the confidence columns need not sum to it.") }}
+<h3>Reviews</h3>
+<p>Match reviews pending: {{ quality.n_pending }}.</p>
+<p>Features that require review (classification): {{ quality.n_requires_review if quality.n_requires_review is not none else "not stated" }}.</p>
+{{ render_table(quality.review_reasons, "Requires-review counts by reason (a feature can have several)") }}
+<h3>Foreign crossings</h3>
+{% if quality.crossings_given %}
+<p>Foreign crossings file provided to the report (used for the previous-run classification).</p>
+{% else %}
+<p>Foreign crossings file not provided to the report: near_foreign_crossing is unknown for the previous-run classification.</p>
+{% endif %}
+<p>The current-run classification was made {% if quality.classified_with_crossings is none %}with no record of a crossings file{% elif quality.classified_with_crossings %}with a crossings file{% else %}without a crossings file (near_foreign_crossing unknown){% endif %}.</p>
+</section>
+
+<section id="growth">
+<p class="draft">{{ label }}</p>
+<h2>Growth</h2>
+<p>Negative raw growth rates: {{ growth.pct_negative_raw }} (included in the segment percentiles).</p>
+{{ render_table(growth.segments, "Per-segment statistics") }}
+{{ render_table(growth.methods, "Features by governing method") }}
+<div class="chart">{{ growth.histograms }}</div>
+</section>
+
+<section id="dig-list">
+<p class="draft">{{ label }}</p>
+<h2>Dig list</h2>
+<p class="muted">Every classified feature except <code>evaluate</code>, ranked by category, then remaining life
+(none last), then due date. {{ dig_list.rows | length }} features.</p>
+{% if dig_list.rows %}
+<p class="print-only muted">Printed with {{ dig_list.print_columns | length }} of {{ dig_list.columns | length }} columns; dig_list.xlsx is the full, printable dig list.</p>
+{{ render_table(dig_list) }}
+{% else %}
+<p>The dig list is empty.</p>
+{% endif %}
+</section>
+
+<section id="largest-changes">
+<p class="draft">{{ label }}</p>
+<h2>Largest changes</h2>
+<h3>Highest governing growth rates</h3>
+{{ render_table(largest.growth, "The " ~ largest.n ~ " largest governing growth rates (report.largest_changes_n)") }}
+<h3>Moved to a more severe category</h3>
+<p class="muted">The previous category applies today's criteria to the previous run's reported values at τ = 0, and
+compares rule categories only (immediate, 60_day, 180_day, evaluate; imp_scheduled reads as evaluate). A value
+the previous run did not report leaves its rules not evaluable (<code>prev_rules_not_evaluable</code>), which can
+make a feature look as if it moved. {{ largest.n_compared }} matched anomalies compared.</p>
+{% if largest.moved.rows %}
+<p class="print-only muted">Printed with {{ largest.moved.print_columns | length }} of {{ largest.moved.columns | length }} columns; category_changes.csv holds every column.</p>
+{{ render_table(largest.moved) }}
+{% else %}
+<p>No feature moved to a more severe category.</p>
+{% endif %}
+</section>
+
+<section id="charts">
+<p class="draft">{{ label }}</p>
+<h2>Charts</h2>
+<div class="chart">{{ charts.depth }}</div>
+<div class="chart">{{ charts.growth }}</div>
+<div class="chart">{{ charts.rl }}</div>
+{% if charts.map is not none %}
+<div class="chart">{{ charts.map }}</div>
+{% else %}
+<p>No map: no dig-list feature has a latitude and longitude.</p>
+{% endif %}
+{% if charts.unity is not none %}
+<div class="chart">{{ charts.unity }}</div>
+{% if charts.backtest.n %}
+<p>{{ charts.backtest.n_within }} of {{ charts.backtest.n }} digs ({{ charts.backtest.pct_within }} %) have the
+reported current-run depth within ±{{ charts.tolerance }} % wall of the field depth.</p>
+{% elif charts.backtest.no_depth %}
+<p>No dig in the current run has both a reported and a field depth.</p>
+{% else %}
+<p>No dig feature id is in the current run.</p>
+{% endif %}
+{% if charts.backtest.no_depth %}
+<p>Digs without both a reported and a field depth (not compared): {{ charts.backtest.no_depth }}.</p>
+{% endif %}
+{% if charts.backtest.unmatched %}
+<p>Dig feature ids not in the current run: {{ charts.backtest.unmatched }}.</p>
+{% else %}
+<p>Every dig feature id is in the current run.</p>
+{% endif %}
+{% elif charts.digs_given %}
+<p>No unity chart: digs.csv has no rows.</p>
+{% else %}
+<p>No unity chart: digs.csv not provided.</p>
+{% endif %}
+</section>
+
+<section id="methods">
+<p class="draft">{{ label }}</p>
+<h2>Methods and assumptions</h2>
+<h3>Configuration</h3>
+{{ render_table(methods.config, "Every setting used, from " ~ methods.settings_path ~ ". Strength, remaining-life and classification values, and the tool tolerances they use, were verified against the M6 and M7 summaries; alignment, matching and growth values (and the other tool values) are the settings at report time, as no summary records them. PLACEHOLDER values need integrity-engineer sign-off.") }}
+<h3>Tool tolerances</h3>
+{{ render_table(methods.tool) }}
+
+<h3>Formulas</h3>
+<p><strong>Governing growth rate</strong> (spec 6.5, default rule; the rule in use is <code>growth.governing</code> above):</p>
+<div class="table-wrap formula"><table>
+<thead><tr><th>Feature</th><th>Governing rate</th></tr></thead>
+<tbody>
+<tr><td>Matched</td><td>max(segment_percentile, tolerance_adjusted)</td></tr>
+<tr><td>New</td><td>max(new_feature, segment_percentile)</td></tr>
+<tr><td>No usable history</td><td>max(full_life, default_rate)</td></tr>
+</tbody></table></div>
+<div class="table-wrap formula"><table>
+<thead><tr><th>Method</th><th>Rate</th></tr></thead>
+<tbody>
+<tr><td>raw</td><td>(d_curr − d_prev) / Δt</td></tr>
+<tr><td>tolerance_adjusted</td><td>(Δd + k·σ_diff) / Δt, σ_diff = √(σ_prev² + σ_curr²); floor min_rate_mpy</td></tr>
+<tr><td>segment_percentile</td><td>P-th percentile of raw matched growth in the segment, negatives included; floor min_rate_mpy</td></tr>
+<tr><td>new_feature</td><td>(d_curr − reporting_threshold) / Δt</td></tr>
+<tr><td>full_life</td><td>d_curr / (current run year − install_year)</td></tr>
+<tr><td>default_rate</td><td>fixed rate from config (IMP default)</td></tr>
+</tbody></table></div>
+
+<p><strong>Remaining strength</strong> (spec 6.6): z = L² / (D·t); assessed depth per <code>strength.depth_basis</code>.</p>
+<div class="table-wrap formula"><table>
+<caption>Original B31G</caption>
+<thead><tr><th>Quantity</th><th>Formula</th></tr></thead>
+<tbody>
+<tr><td>Flow stress</td><td>S_flow = 1.1 × SMYS</td></tr>
+<tr><td>Failure stress, z ≤ 20</td><td>M = √(1 + 0.8z); S_F = S_flow × [1 − (2/3)(d/t)] / [1 − (2/3)(d/t)/M]</td></tr>
+<tr><td>Failure stress, z &gt; 20</td><td>S_F = S_flow × (1 − d/t)</td></tr>
+</tbody></table></div>
+<div class="table-wrap formula"><table>
+<caption>Modified B31G (0.85dL)</caption>
+<thead><tr><th>Quantity</th><th>Formula</th></tr></thead>
+<tbody>
+<tr><td>Flow stress</td><td>S_flow = SMYS + 10,000 psi</td></tr>
+<tr><td>Folias factor, z ≤ 50</td><td>M = √(1 + 0.6275z − 0.003375z²)</td></tr>
+<tr><td>Folias factor, z &gt; 50</td><td>M = 0.032z + 3.3</td></tr>
+<tr><td>Failure stress</td><td>S_F = S_flow × [1 − 0.85(d/t)] / [1 − 0.85(d/t)/M]</td></tr>
+</tbody></table></div>
+<div class="table-wrap formula"><table>
+<caption>Pressures (both methods)</caption>
+<thead><tr><th>Quantity</th><th>Formula</th></tr></thead>
+<tbody>
+<tr><td>Predicted burst pressure</td><td>P_F = 2 · S_F · t / D</td></tr>
+<tr><td>Safe operating pressure</td><td>P_safe = P_F × design_factor</td></tr>
+<tr><td>Deep metal loss</td><td>d/t ≥ 0.80 is flagged as exceeding 80 % of wall regardless of pressure</td></tr>
+</tbody></table></div>
+
+<p><strong>Remaining life</strong> (spec 6.7): depth(τ) = d_assessed + g·τ; L(τ) = L + g_L·τ; MOP_local from the MOP
+profile at the feature. Each time is solved with brentq (time-step fallback) out to horizon_yr, and is 0 when the
+criterion is already met at τ = 0.</p>
+<div class="table-wrap formula"><table>
+<thead><tr><th>Time</th><th>Criterion is met when</th></tr></thead>
+<tbody>
+<tr><td>τ_80</td><td>depth(τ) ≥ 0.80·t</td></tr>
+<tr><td>τ_burst</td><td>P_F(τ) &lt; MOP_local</td></tr>
+<tr><td>τ_safe</td><td>P_safe(τ) &lt; MOP_local</td></tr>
+<tr><td>Remaining life</td><td>RL = min(τ_80, τ_burst, τ_safe); the governing criterion is recorded</td></tr>
+<tr><td>Repair-by date</td><td>run_date + RL × rl_factor</td></tr>
+<tr><td>Dig flag</td><td>dig_required_by_remaining_life when RL × rl_factor &lt; years to the segment's next planned assessment
+(missing dates: config defaults, HCA 5 years not to exceed 68 months, non-HCA 10 years)</td></tr>
+<tr><td>Reinspection interval</td><td>min over the segment's features of RL × rl_factor, capped at the regulatory maximum</td></tr>
+</tbody></table></div>
+
+<h3>Repair criteria</h3>
+<dl class="facts">
+<dt>Version</dt><dd>{{ methods.criteria_version }}</dd>
+<dt>File</dt><dd>{{ methods.criteria_path }}</dd>
+<dt>sha256</dt><dd><code>{{ methods.criteria_sha256 }}</code></dd>
+</dl>
+{{ render_table(methods.criteria) }}
+
+<h3>Input files</h3>
+{{ render_table(methods.hashes) }}
+
+<h3>Match review log</h3>
+<p>Decisions are recorded in M9 (reviews.csv).</p>
+{% if methods.review_log.rows %}
+{{ render_table(methods.review_log, "Every match that needs review") }}
+{% else %}
+<p>No match needs review.</p>
+{% endif %}
+</section>
+
+</main>
+</body>
+</html>

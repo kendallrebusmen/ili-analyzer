@@ -145,3 +145,15 @@ def test_discovery_max_days_bounds(tmp_path, days, ok):
     else:
         with pytest.raises(ValidationError, match="discovery_max_days"):
             load_settings(path)
+
+
+@pytest.mark.parametrize("name", ["", "x" * 32, "a:b", "a/b", "a\\b", "a?b", "a*b", "[a]", "a]b"])
+def test_bad_dig_list_sheet_rejected(tmp_path, name):
+    path = _write_settings(tmp_path, lambda r: r["report"].update(dig_list_sheet=name))
+    with pytest.raises(ValidationError):
+        load_settings(path)
+
+
+def test_dig_list_sheet_31_chars_ok(tmp_path):
+    path = _write_settings(tmp_path, lambda r: r["report"].update(dig_list_sheet="x" * 31))
+    assert load_settings(path).report.dig_list_sheet == "x" * 31

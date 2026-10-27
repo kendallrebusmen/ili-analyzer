@@ -1,0 +1,2 @@
+# Config YAML is hashed byte for byte (criteria_sha256, run_manifest.json): keep it LF on every checkout.
+config/**/*.yaml text eol=lf

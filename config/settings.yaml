@@ -76,3 +76,7 @@ classification:
 cp_overlay:
   cp_join_distance_ft: 500          # PLACEHOLDER
   criterion_instant_off_mv: -850
+
+report:                             # presentation only; changes no number in the analysis
+  largest_changes_n: 20             # rows in the "largest changes" table
+  dig_list_sheet: "Dig list"        # worksheet name in the Excel dig list
