@@ -68,7 +68,11 @@ def _check_review(row: dict[str, str]) -> dict[str, str]:
     if row["decision"] not in DECISIONS:
         raise ValueError(f"decision {row['decision']!r} is not one of {', '.join(DECISIONS)}")
     prev, curr = _ids(row["prev_feature_ids"]), _ids(row["curr_feature_ids"])
-    if not prev or not curr:
+    if row["decision"] == "accept":
+        # an accept may confirm a one-sided row (missing or new): exactly one side may be empty
+        if not prev and not curr:
+            raise ValueError("an accept decision needs at least one feature id")
+    elif not prev or not curr:
         raise ValueError(f"a {row['decision']} decision needs at least one feature id on each side")
     if not row["reviewer"].strip():
         raise ValueError("reviewer is blank")

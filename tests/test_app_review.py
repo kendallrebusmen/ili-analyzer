@@ -2,6 +2,8 @@
 
 import shutil
 
+from ili import pipeline
+
 import pandas as pd
 import pytest
 
@@ -112,7 +114,8 @@ def test_buttons_disabled_without_reviewer(ran, tmp_path):
     assert labels["Accept"].disabled and labels["Reject"].disabled
     assert labels["Save manual re-pair"].disabled
     assert "reviewer" in _all_text(at)
-    assert labels["Rerun the pipeline"].disabled is False or NO_SETUP in _all_text(at)
+    # the setup the pipeline recorded in the folder is found, so Rerun is enabled
+    assert labels["Rerun the pipeline"].disabled is False and NO_SETUP not in _all_text(at)
     assert not (work / REVIEWS_FILE).exists()
 
 
@@ -141,3 +144,75 @@ def test_not_applied_decisions_are_shown(ran, tmp_path):
     assert not at.exception
     shown = " ".join(str(df.value.to_dict("list")) for df in at.dataframe)
     assert "unknown_feature" in shown and "NOPE-1" in shown
+
+
+def _one_sided(folder):
+    from ili.app_state import read_comparison
+    queue = review_queue(read_comparison(folder).match_table)
+    one = queue[queue.prev_feature_id.isna() | queue.curr_feature_id.isna()]
+    assert not one.empty, "the synthetic comparison has no pending one-sided row"
+    return one.iloc[0]
+
+
+def test_one_sided_accept_writes_log_and_reject_is_disabled(ran, tmp_path):
+    _, folder = ran
+    row = _one_sided(folder)
+    at, work = _page(folder, tmp_path, reviewer="A. Reviewer")
+    at.selectbox(key="review_pick").set_value(row.match_id).run()
+    labels = {b.label: b for b in at.button}
+    assert labels["Reject"].disabled and not labels["Accept"].disabled
+    assert "can be accepted" in _all_text(at)
+    labels["Accept"].click().run()
+    assert not at.exception
+    got = load_reviews(work / REVIEWS_FILE).iloc[0]
+    prev, curr = row.prev_feature_id, row.curr_feature_id
+    assert got.decision == "accept"
+    assert (got.prev_feature_ids, got.curr_feature_ids) == (prev if isinstance(prev, str) else "",
+                                                            curr if isinstance(curr, str) else "")
+
+
+def test_reject_writes_log(ran, tmp_path):
+    _, folder = ran
+    row = _paired(folder)
+    at, work = _page(folder, tmp_path, reviewer="A. Reviewer")
+    at.selectbox(key="review_pick").set_value(row.match_id).run()
+    [b for b in at.button if b.label == "Reject"][0].click().run()
+    assert not at.exception and [e.value for e in at.success] == [SAVED]
+    got = load_reviews(work / REVIEWS_FILE).iloc[0]
+    assert (got.decision, got.prev_feature_ids, got.curr_feature_ids) == (
+        "reject", row.prev_feature_id, row.curr_feature_id)
+
+
+def test_manual_needs_both_sides(ran, tmp_path):
+    _, folder = ran
+    at, work = _page(folder, tmp_path, reviewer="A. Reviewer")
+    opts = at.multiselect(key="manual_prev").options
+    at.multiselect(key="manual_prev").set_value(opts[:1])
+    [b for b in at.button if b.label == "Save manual re-pair"][0].click().run()
+    assert [e.value for e in at.error] == ["Pick at least one previous-run and one current-run anomaly."]
+    assert not (work / REVIEWS_FILE).exists()
+    assert "same or adjacent weld-map row" in _all_text(at)
+
+
+def test_rerun_runs_the_pipeline(ran):
+    inputs, folder = ran
+    at = _app(comparison_dir=str(folder), pipeline_inputs=inputs).run()
+    at.sidebar.radio(key="page").set_value(PAGE).run()
+    [b for b in at.button if b.label == "Rerun the pipeline"][0].click().run()
+    assert not at.exception and not at.error
+    assert [e.label for e in at.expander] == [f"{s}: exit 0" for s in pipeline.STAGES]
+    assert at.success
+
+
+def test_rerun_busy_shows_the_busy_result(ran):
+    inputs, folder = ran
+    at = _app(comparison_dir=str(folder), pipeline_inputs=inputs).run()
+    at.sidebar.radio(key="page").set_value(PAGE).run()
+    assert pipeline._RUN_LOCK.acquire(blocking=False)
+    try:
+        [b for b in at.button if b.label == "Rerun the pipeline"][0].click().run()
+    finally:
+        pipeline._RUN_LOCK.release()
+    assert not at.exception
+    assert [e.label for e in at.expander] == ["pipeline: exit 1"]
+    assert at.error and pipeline.BUSY_MESSAGE in at.error[0].value

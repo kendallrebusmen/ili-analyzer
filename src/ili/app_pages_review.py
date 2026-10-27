@@ -21,7 +21,11 @@ NEARBY_COLUMNS = ["run", "feature_id", "pos_prev_ft", "clock_min", "depth_pct", 
 RUN_COLOURS = {"prev": "#1F77B4", "curr": "#E8833A"}
 SAVED = "Saved — rerun the pipeline to apply"
 NEEDS_REVIEWER = "Enter the reviewer name in the sidebar to enable decisions."
-NEEDS_BOTH_SIDES = "Accept and Reject need a feature on each side; use Manual re-pair to pair this one."
+ONE_SIDED = "One-sided rows can be accepted (confirms missing/new) but not rejected."
+MANUAL_RULES = ("Rules checked on rerun: all members in the same or adjacent weld-map row; a 1:1 pair has one "
+                "feature type; a side with several members is metal_loss only. A decision that breaks one is "
+                "listed under Decisions not applied.")
+CLUSTER_NOTE = "Members of a cluster share the cluster's position and values in the plot."
 NO_SETUP = "Rerun is disabled: there is no run setup in this session. Run the pipeline on the Run setup page first."
 NO_QUEUE = "No matches are pending review."
 
@@ -126,6 +130,9 @@ def _rerun(path) -> None:
     if st.button("Rerun the pipeline", disabled=setup is None, key="review_rerun"):
         with st.spinner("Running the pipeline"):
             results = run_pipeline(setup)
+        for res in results:
+            with st.expander(f"{res.stage}: exit {res.exit_code}", expanded=res.exit_code != 0):
+                st.code(res.stdout or "(no output)")
         failed = [r for r in results if r.exit_code != 0]
         if failed:
             st.error(f"{failed[0].stage} failed (exit {failed[0].exit_code})\n\n{failed[0].stderr}")
@@ -167,17 +174,19 @@ def review_queue_page() -> None:
     prev_ids, curr_ids = _ids(row["prev_feature_id"]), _ids(row["curr_feature_id"])
     st.plotly_chart(nearby_chart(nearby, {"prev": prev_ids, "curr": curr_ids}))
     paired = bool(prev_ids and curr_ids)
+    st.caption(CLUSTER_NOTE)
     if not reviewer:
         st.caption(NEEDS_REVIEWER)
     elif not paired:
-        st.caption(NEEDS_BOTH_SIDES)
+        st.caption(ONE_SIDED)
     left, right = st.columns(2)
-    if left.button("Accept", disabled=not (reviewer and paired), key="review_accept"):
+    if left.button("Accept", disabled=not (reviewer and (prev_ids or curr_ids)), key="review_accept"):
         _save(path, "accept", prev_ids, curr_ids, None)
     if right.button("Reject", disabled=not (reviewer and paired), key="review_reject"):
         _save(path, "reject", prev_ids, curr_ids, None)
     with st.form("review_manual"):
         st.subheader("Manual re-pair")
+        st.caption(MANUAL_RULES)
         pick_prev = st.multiselect("Previous-run anomalies", sorted(nearby[nearby.run == "prev"].feature_id),
                                    key="manual_prev")
         pick_curr = st.multiselect("Current-run anomalies", sorted(nearby[nearby.run == "curr"].feature_id),

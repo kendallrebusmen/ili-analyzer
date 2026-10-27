@@ -339,3 +339,36 @@ def test_rerun_is_idempotent(synth, tmp_path, capsys):
     capsys.readouterr()
     assert _cli(data, out, std, folder, "--reviews", str(elsewhere)) == 2
     assert "copy.csv: line 9" in capsys.readouterr().err
+
+
+def test_one_sided_accept_confirms_missing_and_new(synth_run):
+    r, run, base = synth_run
+    b = base.match_table
+    miss = b[(b.match_type == "missing") & (b.missing_hint == "unexplained")]
+    assert len(miss), "the synthetic comparison has no unexplained missing row"
+    new = b[b.match_type == "new"].iloc[0]
+    m = miss.iloc[0]
+    assert bool(m.needs_review) is True
+    res = run(_reviews(("accept", [m.prev_feature_id], []), ("accept", [], [new.curr_feature_id])))
+    t = res.match_table
+    got = _row(t, "prev", m.prev_feature_id)
+    assert (got.match_type, got.review_status, bool(got.needs_review), got.missing_hint) == (
+        "missing", "accepted", False, "unexplained")
+    got = _row(t, "curr", new.curr_feature_id)
+    assert (got.match_type, got.review_status, bool(got.needs_review)) == ("new", "accepted", False)
+    assert m.prev_feature_id not in _matched_ids(t, "prev") and new.curr_feature_id not in _matched_ids(t, "curr")
+    assert _status(res) == {"R000001": ("applied", None), "R000002": ("applied", None)}
+    assert res.summary["counts_by_review_status"]["accepted"] == 2
+    score = score_matching(t, r.ground_truth)
+    assert {k: score[k] for k in TABLE_CHECKS} == dict.fromkeys(TABLE_CHECKS, 0)
+    for side, std in (("prev", r.prev_std), ("curr", r.curr_std)):
+        ids = [i for cell in t[f"{side}_feature_id"] for i in _ids(cell)]
+        assert sorted(ids) == sorted(std[std.feature_type.isin(ANOMALY_TYPES)].feature_id)
+    # only the two rows' review fields change
+    _review_fields_only(t, b, [m.match_id, new.match_id])
+
+
+def test_one_sided_accept_unknown_feature_is_not_applied(synth_run):
+    _, run, _ = synth_run
+    res = run(_reviews(("accept", ["A-999999"], [])))
+    assert _status(res) == {"R000001": ("not_applied", "unknown_feature")}

@@ -751,6 +751,7 @@ class _Decided:
     parts: list
     locked: tuple[np.ndarray, np.ndarray]
     rejected: tuple[np.ndarray, np.ndarray]
+    confirmed: tuple[np.ndarray, np.ndarray]  # features of one-sided accepts: kept unmatched, status accepted
     status: pd.DataFrame
 
 
@@ -782,8 +783,8 @@ def _decision_rows(row: dict, runs) -> tuple[list | None, str | None]:
     if any(i not in index for side, (_, index, _) in zip(ids, runs) for i in side):
         return None, NOT_APPLIED_REASONS[1]
     rows = [_log_order(f, [index[i] for i in side]) for side, (f, index, _) in zip(ids, runs)]
-    if row["decision"] == "reject":
-        return rows, None
+    if row["decision"] == "reject" or (row["decision"] == "accept" and not (rows[0] and rows[1])):
+        return rows, None  # a reject forms no row; a one-sided accept confirms a missing or new row
     p, c = (f.iloc[r] for r, (f, _, _) in zip(rows, runs))
     types = np.concatenate([p.feature_type.astype(str).to_numpy(), c.feature_type.astype(str).to_numpy()])
     if _is_cluster(p, c):
@@ -819,12 +820,13 @@ def _apply_decisions(prev: pd.DataFrame, curr: pd.DataFrame, prev_std, curr_std,
     Each decision is checked by ``_decision_rows``; one that fails is ``not_applied`` with the reason
     and its features stay with automation. A valid accept or manual decision becomes a forced row
     (``review_status`` accepted / manual); a valid reject leaves its features unmatched (previous run
-    ``missing`` with hint ``rejected_by_review``, current run ``new``, ``review_status`` rejected). Both
-    take their features out of automation, so a rejected pair is never re-paired, even when each was
+    ``missing`` with hint ``rejected_by_review``, current run ``new``, ``review_status`` rejected). An
+    accept with one empty side confirms a missing (hint kept) or new row: ``review_status`` accepted,
+    the feature locked out of automation. All of these take their features out of automation, so a rejected pair is never re-paired, even when each was
     the other's only candidate. Superseded log rows are listed as ``superseded``. ``effective_reviews``
     leaves no feature in two effective decisions; a ``reviews`` that does is a ValueError."""
     n = (len(prev), len(curr))
-    locked, rejected = tuple(np.zeros(k, bool) for k in n), tuple(np.zeros(k, bool) for k in n)
+    locked, rejected, confirmed = (tuple(np.zeros(k, bool) for k in n) for _ in range(3))
     parts, status = [], []
     if reviews is not None:
         runs = [(f, _id_rows(f), set(std.feature_id.dropna().astype(str)))
@@ -845,12 +847,15 @@ def _apply_decisions(prev: pd.DataFrame, curr: pd.DataFrame, prev_std, curr_std,
             if row["decision"] == "reject":
                 for mask, r in zip(rejected, rows):
                     mask[r] = True
+            elif row["decision"] == "accept" and not (rows[0] and rows[1]):
+                for mask, r in zip(confirmed, rows):
+                    mask[r] = True
             else:
                 parts.append(_forced_part(prev.iloc[rows[0]], curr.iloc[rows[1]],
                                           _DECISION_REVIEW_STATUS[row["decision"]], dt_yr, settings))
     frame = pd.DataFrame(sorted(status, key=lambda r: r["decision_id"]), columns=DECISION_STATUS_COLUMNS,
                          dtype=object)
-    return _Decided(parts, locked, rejected, frame)
+    return _Decided(parts, locked, rejected, confirmed, frame)
 
 
 def match_anomalies(prev_std, curr_std, weld_map, settings: Settings, pipe, repairs=None,
@@ -870,7 +875,7 @@ def match_anomalies(prev_std, curr_std, weld_map, settings: Settings, pipe, repa
     curr = _with_od(place(curr_std, weld_map, "curr", pmap), pipe, tol)
     dt = delta_t_years(prev_std, curr_std)
     decided = _apply_decisions(prev, curr, prev_std, curr_std, reviews, dt, settings)
-    (free_p, free_c), (rej_p, rej_c) = (~m for m in decided.locked), decided.rejected
+    (free_p, free_c), (rej_p, rej_c), (con_p, con_c) = (~m for m in decided.locked), decided.rejected, decided.confirmed
     ap, ac = np.flatnonzero(free_p), np.flatnonzero(free_c)
     pa, ca = prev.iloc[ap].reset_index(drop=True), curr.iloc[ac].reset_index(drop=True)
     chosen = assign_one_to_one(candidates(pa, ca, dt, settings, near_vendor_reports(pa, ca, settings)))
@@ -887,10 +892,10 @@ def match_anomalies(prev_std, curr_std, weld_map, settings: Settings, pipe, repa
         left_c[np.concatenate([c for _, c, _ in found])] = False
     hints = missing_hints(prev, weld_map, repairs, settings)
     hints[rej_p] = HINTS[3]
-    status_p, status_c = (np.where(m, _DECISION_REVIEW_STATUS["reject"], REVIEW_PENDING).astype(object)
-                          for m in (rej_p, rej_c))
-    parts.append(_unmatched_part(prev, np.flatnonzero(left_p | rej_p), "prev", hints, status_p))
-    parts.append(_unmatched_part(curr, np.flatnonzero(left_c | rej_c), "curr", None, status_c))
+    status_p, status_c = (np.select([r, c], [_DECISION_REVIEW_STATUS["reject"], _DECISION_REVIEW_STATUS["accept"]],
+                                    REVIEW_PENDING).astype(object) for r, c in ((rej_p, con_p), (rej_c, con_c)))
+    parts.append(_unmatched_part(prev, np.flatnonzero(left_p | rej_p | con_p), "prev", hints, status_p))
+    parts.append(_unmatched_part(curr, np.flatnonzero(left_c | rej_c | con_c), "curr", None, status_c))
     table = _finish(pd.concat(parts, ignore_index=True), settings)
     summary = _summary(prev_std, curr_std, dt, table, len(prev), len(curr), decided.status)
     return MatchResult(table, summary, decided.status)

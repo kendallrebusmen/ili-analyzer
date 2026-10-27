@@ -42,6 +42,13 @@ def test_append_and_load_round_trip(tmp_path):
     assert b"\r" not in fpath.read_bytes()
 
 
+def test_one_sided_accept_is_valid(tmp_path):
+    path = tmp_path / "reviews.csv"
+    assert append_review(path, "accept", ["A1"], [], "Pat", now=T0)["curr_feature_ids"] == ""
+    assert append_review(path, "accept", [], ["B1"], "Pat", now=T0)["prev_feature_ids"] == ""
+    assert list(load_reviews(path).decision) == ["accept", "accept"]
+
+
 def test_missing_log_is_empty(tmp_path):
     assert load_reviews(tmp_path / "none.csv").empty
     assert list(load_reviews(tmp_path / "none.csv").columns) == REVIEW_COLUMNS
@@ -77,6 +84,10 @@ def test_invalid_rows_are_errors(tmp_path):
         append_review(tmp_path / "x.csv", "accept", ["A1"], ["B1"], "  ", now=T0)
     with pytest.raises(ValueError, match="reject"):
         append_review(tmp_path / "x.csv", "reject", ["A1"], [], "Pat", now=T0)
+    with pytest.raises(ValueError, match="manual"):
+        append_review(tmp_path / "x.csv", "manual", [], ["B1"], "Pat", now=T0)
+    with pytest.raises(ValueError, match="at least one feature id"):
+        append_review(tmp_path / "x.csv", "accept", [], [], "Pat", now=T0)
     with pytest.raises(ValueError, match="timezone"):
         append_review(tmp_path / "x.csv", "accept", ["A1"], ["B1"], "Pat", now=datetime(2026, 10, 27))
     with pytest.raises(ValueError, match="flag"):
