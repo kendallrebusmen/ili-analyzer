@@ -399,3 +399,31 @@ Interpretations of `docs/SPEC.md` and choices the spec leaves open. Newest at th
   - Categories: immediate 15, 60_day 4, 180_day 119, imp_scheduled 352, evaluate 65. Two features moved: B-000006 imp_scheduled to immediate (the flag), and B-002088, which no decision names, imp_scheduled to evaluate. Verified against the no-decisions baseline: the decisions, chiefly the manual pair (which makes B-002255 a matched feature in SEG-03, `n_matched` 122 to 123), move the segment's percentile rate from 10.329 to 10.243 mpy, and B-002088's governing rate (segment_percentile) with it; its remaining life rises from 9.99 to 10.07 yr and its governing rule changes from REMAINING_LIFE (imp_scheduled) to EVALUATE.
   - After the final-review fixes the README command was rerun on the default dataset (no logs in `outputs/`): unchanged, and the report CLI prints "pending: 42 matches pending review (the report cannot be final)".
   - The demo ran with `--out` in a scratch folder, not the default `outputs/`, which is where a reviewer's real logs go; the default dataset's folder holds no demo decisions.
+
+## Spec amendment: the consultant's practice (2026-10-27)
+
+- **Source.** The user shared the consultant's analysis workbook for a real line (values only, no formulas), so we could see their method. It was read in place on the user's drive. No value from it is in this repo; the spec quotes only method and layout. The user agreed to adopt everything recommended from the comparison.
+- **What matched already.** Their Modified B31G burst and safe pressures match spec 6.6 exactly; one anomaly was recomputed by hand. Their assessment used reported depths (depth tolerance 0), which `depth_basis: reported` reproduces.
+- **What the spec gains.** The amendments are in spec 5.1, 6.5–6.8, 6.10, 7.1 and 9–11:
+  - **Growth (6.5):**
+    - `half_life`, `joint_percentile` and `shrinking_fixed` rates;
+    - a `pit_to_pit` governing profile beside the default `conservative` one;
+    - recoated areas left out of the statistics;
+    - a growth summary by surface.
+  - **Strength and remaining life (6.6–6.7):**
+    - ERF and FPR;
+    - predicted failure mode (leak or burst);
+    - condition dates;
+    - values projected to the next assessment.
+  - **Classification (6.8):** an IMP class summary with a "YTC < N yrs" row.
+  - **Report (6.10):**
+    - pipe summary and length check;
+    - anomalies of interest;
+    - depth-bin and dent-bin tables, and per-joint counts;
+    - orientation and elevation charts.
+  - **Schema (5.1):** an `ml_origin` field (corrosion, manufacturing, unknown).
+  - **Milestones (9):** M11 builds all of this on synthetic data. M12 is the parity check against the consultant, on real data. It waits for the user's explicit approval under spec Section 2.
+- **Default unchanged.** `conservative` stays the default profile. The consultant's approach (raw pit-to-pit growth on reported depths) gives longer remaining lives than ours. Which approach governs is the integrity engineer's call (Open Questions 4 and 10).
+- **Not adopted.**
+  - The consultant's "ASME B31.8S response (years)": B31.8S is the gas standard; see Open Question 11.
+  - Trending across four runs: still out of scope, and the leading candidate for v2.

@@ -89,6 +89,7 @@ After ingestion, every run uses this standard schema:
 | `width_in` | float | Circumferential width |
 | `clock_min` | int | Minutes clockwise from 12:00, range 0–719 |
 | `surface` | enum | `EXT`, `INT`, `MID`, `UNK` |
+| `ml_origin` | enum | Metal loss only: `corrosion`, `manufacturing` (mill-related wall loss), or `unknown`; set from the vendor's feature type by the vendor map, default `unknown` |
 | `seam_interaction` | bool | If reported by vendor |
 | `dent_metal_loss` | bool | Dent with reported metal loss, cracking, or stress riser |
 | `vendor_cluster_id` | str | If the vendor reports clusters |
@@ -187,16 +188,43 @@ Compute and store every method below for every feature where it applies. A confi
    - Include negative raw values in the distribution.
    - Apply the floor `min_rate_mpy`.
 4. **`new_feature`**: (d_curr − reporting_threshold) / Δt, for features new in the current run.
-5. **`full_life`**: d_curr / (current run year − install_year)
+5. **`full_life`**: d_curr / (current run year − install_year). Also called the whole-life rate.
 6. **`default_rate`**: a fixed rate from config, representing the IMP default.
+7. **`half_life`**: d_curr / ((current run year − install_year) / 2). This assumes corrosion started at mid-life, so it is twice the whole-life rate.
+8. **`joint_percentile`**: the `joint_percentile`-th percentile of the raw rates of matched features in the same current-run joint. It applies only when the joint has at least `joint_percentile_min_matches` matched features; otherwise it is empty. Apply the floor `min_rate_mpy`.
+9. **`shrinking_fixed`**: the fixed rate `shrinking_rate_mpy`, for matched features whose reported depth decreased between runs. A depth drop is sizing noise, not negative growth, so a fixed rate stands in for the raw rate.
 
-**Governing rate (default rule, configurable):**
+**Governing rate.** Config picks one of two profiles, `growth.governing_profile`; both are configurable:
+
+`conservative` (default):
 
 - Matched features: the maximum of `segment_percentile` and `tolerance_adjusted`.
 - New features: the maximum of `new_feature` and `segment_percentile`.
 - Features with no usable history: the maximum of `full_life` and `default_rate`.
 
+`pit_to_pit` (the consultant's practice):
+
+- Matched features whose depth grew: `raw` (pit-to-pit), floored at `min_rate_mpy`.
+- Matched features whose depth decreased: `shrinking_fixed`.
+- New features: `joint_percentile` when it is available, otherwise `half_life`.
+- Features with no usable history: `half_life`.
+
+The two profiles can differ a lot. `pit_to_pit` takes raw rates with no allowance for tool tolerance. Paired with `depth_basis: reported` (Section 6.6), it gives longer remaining lives than `conservative`. Which profile governs is an engineering decision (Open Question 4). The report always states the profile in force and the method that governed each feature.
+
 Record which method governed each feature.
+
+**Recoated areas.** Features inside a `recoat` repair from `repairs_between_runs.csv` still get growth rates. When `exclude_recoated_from_stats` is true, they are left out of the segment and joint percentile distributions and out of the summary statistics, and the summary says how many were left out.
+
+**Growth summary by surface** (the consultant's CGR summary). For EXT and INT corrosion separately, report:
+
+- the maximum reported depth, in % and in inches;
+- the pipe age at the current run;
+- the half-life and whole-life rates of the deepest feature;
+- the share of current-run features that matched (as "n of N");
+- the maximum raw (pit-to-pit) rate;
+- the mean depth change and mean raw rate of matched features.
+
+Report it twice, with and without recoated areas.
 
 **Length growth:** a config option of `none` (default), `proportional`, or `fixed_rate`.
 
@@ -243,6 +271,10 @@ Both methods use the same length parameter: z = L² / (D·t).
 
 - Predicted burst pressure: P_F = 2 · S_F · t / D
 - Safe operating pressure: P_safe = P_F × `design_factor` (`PLACEHOLDER`: 0.72)
+- Estimated repair factor: ERF = MOP_local / P_safe. Values above 1 mean the safe pressure is below MOP.
+- Failure pressure ratio: FPR = P_F / MOP_local. Values below 1 mean the predicted burst pressure is below MOP.
+
+`depth_basis: reported` with a zero depth tolerance reproduces the consultant's assessment, which used reported depths only.
 
 **Edge cases:** d = 0, very short L, behavior at the z = 20 and z = 50 boundaries, and d/t ≥ 0.80. When d/t ≥ 0.80, flag the feature as exceeding 80% of wall regardless of the pressure result.
 
@@ -276,6 +308,16 @@ For each feature with governing growth rate g (in/yr) and length rate g_L:
 If a criterion is already met at τ = 0, its time is 0.
 
 **Remaining life:** RL = min(τ_80, τ_burst, τ_safe). Record which criterion governs.
+
+**Predicted failure mode:** `leak` when τ_80 ≤ τ_burst, otherwise `burst`. This follows the consultant's convention: a pit that reaches 80% of wall before the predicted burst pressure falls below MOP is expected to leak.
+
+**Projected condition at the next assessment.** At τ_next (years from the run date to the segment's next assessment date), record:
+
+- depth(τ_next);
+- P_F(τ_next) and P_safe(τ_next);
+- ERF(τ_next) and FPR(τ_next).
+
+**Condition dates.** Record run_date + τ for each of τ_80, τ_burst and τ_safe, each in its own column.
 
 **Repair-by date:** run_date + RL × `rl_factor` (`PLACEHOLDER`: 0.5).
 
@@ -336,6 +378,14 @@ A rule engine reads `repair_criteria.yaml`. It evaluates rules at the current co
 - Any other condition gets `evaluate`, per (h)(4)(iv).
 - Features flagged by remaining life get `imp_scheduled`.
 
+**IMP class summary** (the consultant's layout). The report has a table with one row per class:
+
+- Immediate, 60-day and 180-day (the categories above);
+- YTC < N yrs: features with no repair category whose remaining life is under `ytc_flag_years` (years to condition);
+- None: every other feature.
+
+Each row gives the number of classified anomalies, how many were previously repaired (inside any repair in `repairs_between_runs.csv`), and how many remain unrepaired. The table is a summary view only; the categories above still drive due dates.
+
 **Non-HCA segments:** remediation falls under 195.401(b), via 195.416(g). Provide a separate rule set in config with operator-defined criteria and timelines from the IMP (`PLACEHOLDER`).
 
 **Due dates:**
@@ -361,29 +411,56 @@ Write all outputs to `outputs/<prev_run>_vs_<curr_run>/`.
 **`report.html`** (self-contained, charts embedded, DRAFT banner on every page) contains these sections:
 
 1. **Header:** line name, runs compared, run dates, vendors, and tool types.
+   - **Pipe summary.** Covers:
+     - length by wall thickness and grade, from `pipe_properties.csv`;
+     - design pressure, P_design = 2·SMYS·t·`design_factor`/D;
+     - stress at MOP as a percentage of SMYS, MOP·D/(2·t·SMYS), as a range over the line;
+     - install year, coating, and HCA coverage (length and percentage).
+   - **Length check.** The ILI-measured length of each run compared with the reference length (the end of `pipe_properties.csv`). Show the difference in feet and in percent.
 2. **Executive summary:**
    - Immediate conditions at the top, with the pressure-reduction note
-   - Counts by repair category
+   - Counts by repair category, plus the IMP class summary (Section 6.8)
    - Count of digs driven by remaining life
    - Recommended reinspection interval by segment
+   - **Anomalies of interest.** Group current-run metal loss within `aoi_group_ft` of each other. List the `aoi_count` groups with the shortest remaining life, ties broken by deepest. Each row has:
+     - start and end log distance;
+     - surface and origin;
+     - maximum depth and number of anomalies;
+     - minimum remaining life (years to condition);
+     - HCA;
+     - a generated one-line description: the deepest feature's depth, length, width and clock position, the depth range of the others in the group, and any repair from `repairs_between_runs.csv` that overlaps it.
 3. **Data quality:**
    - Validation issues
    - Weld alignment rate
    - Match statistics by type and confidence
    - Count of pending reviews. While any reviews are pending, the report shows a warning and cannot be labeled final.
-4. **Growth:** per-segment statistics and histograms, percentage of negative raw rates, and counts by governing method.
+4. **Growth and anomaly distribution:**
+   - **Growth statistics:**
+     - per-segment statistics and histograms, percentage of negative raw rates, and counts by governing method;
+     - the growth summary by surface (Section 6.5), with and without recoated areas;
+     - the governing profile in force.
+   - **Depth bins:** counts of metal loss in each run by depth bin (`depth_bins_pct_wt`; default 10% steps to 80%, then ≥ 80%). There is one table each for all metal loss, metal loss at a girth weld (within `girth_weld_proximity_in`), and metal loss on the long seam. Columns are external corrosion, internal corrosion, manufacturing, and total.
+   - **Dent bins:** dent counts by depth as a percentage of OD (`dent_bins_pct_od`), with separate columns for dents at a girth weld and on the long seam.
+   - **Per-joint counts:** metal loss per current-run joint and its matched previous-run joint(s), by surface, for both runs, with the change. List the joints with the largest counts and the largest increases. These tables need the weld map and the standardized tallies, but no anomaly matching.
 5. **Dig list,** ranked by category and then by remaining life, with these columns:
    - feature IDs in both runs
    - location (log distance, girth weld, distance from weld, clock, lat/lon)
    - depth and length in both runs
    - governing growth rate and method
-   - P_F, P_safe, and MOP
-   - RL and its governing criterion
+   - P_F, P_safe, MOP, ERF, and FPR, now and projected to the next assessment
+   - RL, its governing criterion, and the predicted failure mode
    - criteria triggered
    - due date
    - review flag
 6. **Largest changes:** features with the highest growth rates, and features that moved to a more severe category.
-7. **Charts:** depth versus log distance for both runs, growth versus log distance, RL distribution, a map if GPS is available, and a unity chart (ILI-predicted versus field-measured depth) when `digs.csv` is provided.
+7. **Charts:**
+   - depth versus log distance for both runs;
+   - growth versus log distance;
+   - RL distribution;
+   - a map if GPS is available;
+   - a unity chart (ILI-predicted versus field-measured depth) when `digs.csv` is provided;
+   - **orientation:** clock position versus log distance for both runs, one chart per surface and origin (external corrosion, internal corrosion, manufacturing), with marker size or colour by depth;
+   - **elevation:** the elevation profile with internal metal loss marked, when `elev_ft` is available. Internal corrosion tends to collect at low points. This is a view for the engineer, not an internal corrosion model (Section 11).
 8. **Methods and assumptions:**
    - Every config value used
    - Tool tolerances
@@ -397,6 +474,10 @@ Write all outputs to `outputs/<prev_run>_vs_<curr_run>/`.
 |---|---|
 | `dig_list.xlsx` | Frozen header row, filters, color-coded by category |
 | `match_table.csv`, `growth_table.csv`, `remaining_life.csv`, `classification.csv` | Full per-feature traceability |
+| `growth_summary.csv` | The growth summary by surface, with and without recoated areas |
+| `anomaly_distribution.csv` | Depth-bin and dent-bin counts for both runs |
+| `joint_ml_counts.csv` | Per-joint metal loss counts for both runs, by surface |
+| `anomalies_of_interest.csv` | The anomalies-of-interest table |
 | `run_manifest.json` | Input file hashes, config hash, code version, and timestamp |
 
 ### 6.11 Streamlit app (`app/streamlit_app.py`)
@@ -449,6 +530,11 @@ growth:
   fixed_segment_length_mi: 1.0
   segment_percentile: 90            # PLACEHOLDER
   default_rate_mpy: null            # PLACEHOLDER - IMP default rate
+  governing_profile: conservative   # conservative | pit_to_pit (consultant's practice)
+  shrinking_rate_mpy: null          # PLACEHOLDER - fixed rate for matched features whose depth decreased
+  joint_percentile: 90              # PLACEHOLDER - the consultant's "Nth percentile per joint"
+  joint_percentile_min_matches: 3   # PLACEHOLDER
+  exclude_recoated_from_stats: true
   length_growth: none               # none | proportional | fixed_rate
   length_rate_ipy: 0.0
 
@@ -471,6 +557,13 @@ classification:
 cp_overlay:
   cp_join_distance_ft: 500          # PLACEHOLDER
   criterion_instant_off_mv: -850
+
+report:
+  ytc_flag_years: 5                 # PLACEHOLDER - "YTC < N yrs" row of the IMP class summary
+  depth_bins_pct_wt: [0, 10, 20, 30, 40, 50, 60, 70, 80]   # last bin is >= 80
+  dent_bins_pct_od: [0, 2, 6]       # last bin is > 6
+  aoi_group_ft: 2.0                 # PLACEHOLDER - anomalies within this distance form one group
+  aoi_count: 10
 ```
 
 ### 7.2 `config/repair_criteria.yaml` (format example; build out all rules from Section 6.8)
@@ -534,6 +627,8 @@ Complete these in order. Stop after each one for review.
 | M8 | HTML report and Excel dig list | Full report generated from synthetic data with DRAFT labels and methods appendix |
 | M9 | Streamlit review UI | Review decisions persist and re-apply on rerun |
 | M10 | CP overlay | Synthetic CP data joined and plotted; ready for PCS export |
+| M11 | Consultant-practice methods and outputs | `ml_origin` ingested. `half_life`, `joint_percentile` and `shrinking_fixed` rates and the `pit_to_pit` profile computed, with tests. ERF, FPR, failure mode, condition dates and next-assessment projections in the outputs. Growth summary, IMP class summary, depth/dent bins, per-joint counts, anomalies of interest, orientation and elevation charts in the report, all from synthetic data |
+| M12 | Parity check against the consultant (real data; needs the user's explicit approval under Section 2) | The consultant's analysis of a real line rerun through the tool with the `pit_to_pit` profile and `depth_basis: reported`. Differences per anomaly listed and explained. Real data stays in gitignored folders and never enters the repo or the conversation beyond small samples |
 
 ## 10. Open questions (answer before using real data)
 
@@ -546,13 +641,17 @@ Complete these in order. Stop after each one for review.
 7. **Non-HCA criteria:** What repair criteria and timelines does the IMP set for non-HCA segments?
 8. **Assessment dates:** What are the planned next assessment dates by segment?
 9. **Back-testing:** Are field dig results from the previous run available?
+10. **Consultant parameters:** What fixed rate (`shrinking_rate_mpy`), joint percentile, and minimum number of matches per joint did the consultant use? Does the IMP adopt them?
+11. **B31.8S response:** The consultant reports an "ASME B31.8S response (years)". B31.8S is the gas-pipeline standard. Does the operator want it for a Part 195 line, and if so, by which table? It is not built until this is answered.
+12. **Years-to-condition threshold:** Is 5 years the right threshold for the "YTC < N yrs" class?
 
 ## 11. Out of scope for v1
 
 - RSTRENG effective area method
 - Crack and SCC growth (fatigue analysis)
 - Dent strain assessment (dents are classified by depth and flags only)
-- Internal corrosion modeling
-- Trending across more than two runs (but design the data model so a third run can be added later)
+- Internal corrosion modeling. The elevation view in Section 6.10 is presentation only.
+- Trending across more than two runs (but design the data model so a third run can be added later). The consultant traces each feature through four runs; this is the leading candidate for v2.
+- ASME B31.8S response intervals (see Open Question 11)
 - Writing to any database
 - Cloud deployment
