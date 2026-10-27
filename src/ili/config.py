@@ -146,6 +146,12 @@ class CpOverlayCfg(_Strict):
     criterion_instant_off_mv: float
 
 
+class ReportCfg(_Strict):
+    # presentation only: nothing here changes a number in the analysis
+    largest_changes_n: _PositiveInt  # rows in the report's "largest changes" table
+    dig_list_sheet: str = Field(min_length=1)  # name of the dig list worksheet
+
+
 class Settings(_Strict):
     units: Literal["us_customary"]
     tool: ToolCfg
@@ -156,6 +162,7 @@ class Settings(_Strict):
     remaining_life: RemainingLifeCfg
     classification: ClassificationCfg
     cp_overlay: CpOverlayCfg
+    report: ReportCfg
 
 
 class Rule(_Strict):
