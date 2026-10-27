@@ -288,7 +288,7 @@ GIT_TIMEOUT_S = 10
 def _excel_value(value, column: str):
     """A cell value Excel can hold: None / NaN / NA become an empty cell, numpy scalars plain Python, and the
     date columns real dates."""
-    if value is None or value is pd.NA or (isinstance(value, float) and np.isnan(value)):
+    if value is None or value is pd.NA or value is pd.NaT or (isinstance(value, float) and np.isnan(value)):
         return None
     if isinstance(value, np.generic):
         value = value.item()
@@ -313,7 +313,10 @@ def dig_list_workbook(dig: pd.DataFrame, settings: Settings, label: str) -> Work
         category = row[columns.index("governing_category")]
         fill = PatternFill("solid", fgColor=CATEGORY_COLOURS[category].lstrip("#").upper())
         for j, (name, value) in enumerate(zip(columns, row), start=1):
-            ws.cell(i, j, _excel_value(value, name)).fill = fill
+            cell = ws.cell(i, j, _excel_value(value, name))
+            if isinstance(cell.value, str):
+                cell.data_type = "s"  # vendor text is never a formula, whatever it starts with
+            cell.fill = fill
     ws.freeze_panes = "A3"
     ws.auto_filter.ref = f"A2:{get_column_letter(max(len(columns), 1))}{max(2, 2 + len(dig))}"
     return wb

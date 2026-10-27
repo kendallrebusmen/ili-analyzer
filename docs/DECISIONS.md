@@ -331,7 +331,7 @@ Interpretations of `docs/SPEC.md` and choices the spec leaves open. Newest at th
 - **Previous-run classification (category changes).** The previous run's matched anomalies are classified with today's criteria and settings, so a change in category is a change in the feature, not in the rules.
   - The previous assessed depth is the previous reported depth at tau = 0 (plus the tool tolerance, as for the current run). Wall: M6's `wt_in` (the pipe-table wall) when M6 has the row, else the previous run's nominal wall.
   - Reference lookups (pipe, segments, crossings) use the current-run position; MOP is today's. Rule categories only (no due dates, no remaining life).
-  - A value the previous run did not report leaves rules not evaluable (`prev_rules_not_evaluable`), which can make a feature look as if it moved. Read the column with the category.
+  - A value the previous run did not report leaves rules not evaluable (`prev_rules_not_evaluable`), which can make a feature look as if it moved to a more severe category when it did not (its previous category is only as severe as the data allowed). Read the column with the category.
   - User decision: previous-run classification on today's basis, shown beside the current category, "moved to a more severe category" counted and listed.
 - **Dig list scope and ranking.** Every classification row except `evaluate` (immediate, 60_day, 180_day, imp_scheduled). Ranked by category severity, then shortest remaining life (none last), earliest due date (none last), match id.
 - **Pending reviews.** Matches with `needs_review` and `review_status` pending. The CLI warns that the report is not final until each is reviewed; the DRAFT label stays either way.

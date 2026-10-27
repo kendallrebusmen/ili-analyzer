@@ -108,3 +108,51 @@ def test_cli_stale_criteria_exit_2(built, tmp_path, capsys):
     assert main(_argv(built, "--criteria", str(stale))) == 2
     err = capsys.readouterr().err
     assert "error:" in err and "changed since" in err
+
+
+def test_dig_list_strings_are_never_formulas(tmp_path):
+    texts = ["=1+1", "+1", "-1", "@SUM(1)"]
+    rows = []
+    for t in texts:
+        row = {c: None for c in DIG_LIST_COLUMNS}
+        row.update(governing_category="immediate", curr_feature_id=t, review_reasons=t)
+        rows.append(row)
+    path = tmp_path / "dig.xlsx"
+    write_dig_list(pd.DataFrame(rows), path, config.load_settings(), DRAFT_LABEL)
+    ws = openpyxl.load_workbook(path, data_only=False).active
+    col = {c.value: c.column for c in ws[2]}
+    for i, t in enumerate(texts, start=3):
+        for name in ("curr_feature_id", "review_reasons"):
+            cell = ws.cell(i, col[name])
+            assert cell.data_type == "s" and cell.value == t
+
+
+def test_dig_list_nat_is_empty_cell(tmp_path):
+    row = {c: None for c in DIG_LIST_COLUMNS}
+    row.update(governing_category="60_day", due_date=pd.NaT)
+    path = tmp_path / "dig.xlsx"
+    write_dig_list(pd.DataFrame([row]), path, config.load_settings(), DRAFT_LABEL)
+    ws = openpyxl.load_workbook(path).active
+    col = {c.value: c.column for c in ws[2]}
+    assert ws.cell(3, col["due_date"]).value is None
+
+
+@pytest.mark.parametrize("target", ["render_report", "dig_list_workbook", "run_manifest"])
+def test_no_file_written_when_a_build_step_fails(built, tmp_path, monkeypatch, target):
+    from ili import report
+    from ili.report import ReportHeader, write_report
+    from ili.report_data import load_report_inputs
+    data, out, std, folder = built
+    ref = data / "reference"
+    inputs = load_report_inputs(folder, std / "2021_vendorA.csv", std / "2026_vendorB.csv", out,
+                                ref / "pipe_properties.csv", ref / "mop_profile.csv", ref / "hca_segments.csv",
+                                None, None, config.DEFAULT_SETTINGS, config.DEFAULT_CRITERIA)
+
+    def boom(*a, **k):
+        raise ValueError("boom")
+    monkeypatch.setattr(report, target, boom)
+    dest = tmp_path / "empty"
+    dest.mkdir()
+    with pytest.raises(ValueError, match="boom"):
+        write_report(inputs, ReportHeader(None, None, None), dest, datetime.now(timezone.utc))
+    assert list(dest.iterdir()) == []
