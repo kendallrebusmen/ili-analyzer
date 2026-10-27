@@ -3,8 +3,10 @@ that they describe one comparison made with one set of criteria.
 
 ``load_report_inputs`` reads the M2-M7 outputs with their own loaders, so every table arrives with the
 types its producer wrote. It refuses (``ValueError`` naming the files) a missing required file, outputs
-from different runs, a classification made with other criteria than the ones now on disk, and a dig
-file without the columns the report needs. ``input_hashes`` fingerprints every file read, for the
+from different runs, an ingest folder that did not ingest both runs, a classification made with other
+criteria than the ones now on disk, settings that differ from the values the M6 and M7 summaries record
+(``RECORDED_SETTINGS``), and a dig file without the columns the report needs. Validation issues are kept
+for the two compared runs only. ``input_hashes`` fingerprints every file read, for the
 report's methods appendix and the run manifest.
 
 The table builders below (dig list, pending reviews, match statistics, largest growth, back-test, and the
@@ -15,10 +17,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 from dataclasses import dataclass
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 from ili.classify import CATEGORY_PRIORITY, load_classification_table
@@ -49,6 +53,23 @@ DIG_LIST_COLUMNS = (
     "review_reasons", "action_note",
 )
 _ID_COLUMNS = ("match_id", "curr_feature_id", "feature_id", "segment_id")
+CLUSTER_SEP = ";"  # a matched cluster's member feature ids are joined with this (M4)
+# Settings the summaries record, as (summary, summary key, dotted settings key). The report refuses settings
+# that differ from them; alignment, matching and growth settings are not recorded and are used as they are.
+RECORDED_SETTINGS = (
+    *(("remaining_life", key, f"{section}.{key}") for section, key in (
+        ("strength", "method"), ("strength", "design_factor"), ("strength", "depth_basis"),
+        ("strength", "length_basis"), ("tool", "depth_tolerance_pct_wt"), ("tool", "depth_certainty"),
+        ("tool", "length_tolerance_in"), ("remaining_life", "time_step_yr"), ("remaining_life", "horizon_yr"),
+        ("remaining_life", "rl_factor"), ("remaining_life", "hca_max_interval_months"),
+        ("remaining_life", "default_next_assessment_yr"))),
+    *(("classification", key, f"classification.{key}") for key in (
+        "girth_weld_proximity_in", "crossing_proximity_ft", "seam_clock_min", "seam_clock_tol_min",
+        "general_corrosion_min_dim_in", "widespread_circ_min_width_frac", "due_days", "discovery_max_days")),
+    ("classification", "depth_basis", "strength.depth_basis"),
+    ("classification", "depth_tolerance_pct_wt", "tool.depth_tolerance_pct_wt"),
+)
+SETTING_REL_TOL = 1e-9  # recorded numbers round-trip through JSON; a real edit is far larger
 
 
 @dataclass(frozen=True)
@@ -77,17 +98,21 @@ class ReportInputs:
     paths: dict[str, Path]  # every file read, by role, for the manifest
 
 
-def _require(path: Path, what: str, *, needed_by: Path) -> Path:
+def _require(path: Path, what: str, *, context: str) -> Path:
     path = Path(path)
     if not path.is_file():
-        raise ValueError(f"{path}: {what} not found (the report needs it alongside {needed_by})")
+        raise ValueError(f"{path}: {what} not found ({context})")
     return path
 
 
 def _read_csv(path: Path) -> pd.DataFrame:
-    """A plain reference or output CSV; id-like columns stay text (``"1"``, never ``1.0``)."""
-    header = pd.read_csv(path, nrows=0).columns
-    return pd.read_csv(path, dtype={c: str for c in _ID_COLUMNS if c in header})
+    """A plain reference or output CSV; id-like columns stay text (``"1"``, never ``1.0``). An empty or
+    malformed file is a ValueError naming it."""
+    try:
+        header = pd.read_csv(path, nrows=0).columns
+        return pd.read_csv(path, dtype={c: str for c in _ID_COLUMNS if c in header})
+    except (pd.errors.EmptyDataError, pd.errors.ParserError) as exc:
+        raise ValueError(f"{path}: unreadable CSV: {exc}") from None
 
 
 def _read_json(path: Path) -> dict:
@@ -99,6 +124,51 @@ def _read_json(path: Path) -> dict:
 
 def _sha256(path: Path) -> str:
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+def _differs_only_in_line_endings(path: Path, recorded_sha256: str | None) -> bool:
+    """True when ``recorded_sha256`` is the hash of ``path`` with its line endings made all LF or all CRLF
+    (a diagnostic for a CRLF checkout; the recorded hashes themselves are of the raw bytes)."""
+    lf = Path(path).read_bytes().replace(b"\r\n", b"\n")
+    return recorded_sha256 in {hashlib.sha256(b).hexdigest() for b in (lf, lf.replace(b"\n", b"\r\n"))}
+
+
+def _same_setting(a, b) -> bool:
+    """Equal settings values: numbers within ``SETTING_REL_TOL``, dicts key by key, anything else ``==``."""
+    if isinstance(a, dict) and isinstance(b, dict):
+        return a.keys() == b.keys() and all(_same_setting(a[k], b[k]) for k in a)
+    if all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in (a, b)):
+        return math.isclose(a, b, rel_tol=SETTING_REL_TOL, abs_tol=1e-12)
+    return a == b
+
+
+def _check_recorded_settings(settings: Settings, settings_path: Path, summaries: dict[str, dict],
+                             summary_paths: dict[str, Path]) -> None:
+    """Refuse settings that differ from a value a summary records (``RECORDED_SETTINGS``); a key the summary
+    does not hold is not checked."""
+    current = settings.model_dump(mode="json")
+    for summary, key, dotted in RECORDED_SETTINGS:
+        if key not in summaries[summary]:
+            continue
+        value = current
+        for part in dotted.split("."):
+            value = value[part]
+        recorded = summaries[summary][key]
+        if not _same_setting(value, recorded):
+            raise ValueError(f"{settings_path}: {dotted} is {value!r} but {summary_paths[summary]} records "
+                             f"{key} {recorded!r}: the outputs were made with other settings; re-run the "
+                             "analysis with these settings, or restore the settings file")
+
+
+def _nearest_member(feature_id, position: float, positions: pd.Series):
+    """The current-run feature whose coordinates a dig-list row takes: the id itself, or for a cluster
+    (``CLUSTER_SEP``-joined ids) the member whose ``log_dist_ft`` is nearest ``position`` (the first listed
+    on a tie, or when no distance is known)."""
+    if not isinstance(feature_id, str) or CLUSTER_SEP not in feature_id:
+        return feature_id
+    members = feature_id.split(CLUSTER_SEP)
+    distance = (positions.reindex(members).astype(float) - float(position)).abs().to_numpy()
+    return members[int(np.nanargmin(distance))] if np.isfinite(distance).any() else members[0]
 
 
 def load_report_inputs(comparison: Path, prev_std: Path, curr_std: Path, ingest_dir: Path, pipe: Path, mop: Path,
@@ -126,8 +196,16 @@ def load_report_inputs(comparison: Path, prev_std: Path, curr_std: Path, ingest_
         files["crossings"] = Path(crossings)
     if digs is not None:
         files["digs"] = Path(digs)
+    contexts = {
+        "ingest_manifest": f"an ingest output, looked for in {ingest_dir}",
+        "validation_issues": f"an ingest output, looked for in {ingest_dir}",
+        "prev_std": "a standardized run given to the report", "curr_std": "a standardized run given to the report",
+        **{r: "a reference file given to the report" for r in ("pipe", "mop", "segments", "crossings", "digs")},
+        **{r: "a configuration file given to the report" for r in ("settings", "criteria")},
+    }
     for role, path in files.items():
-        _require(path, role.replace("_", " "), needed_by=comparison)
+        _require(path, role.replace("_", " "),
+                 context=contexts.get(role, f"the report needs it alongside {comparison}"))
     paths = {role: path.resolve() for role, path in files.items()}
 
     summaries = {k: _read_json(files[f"{k}_summary"]) for k in SUMMARY_FILES}
@@ -144,11 +222,28 @@ def load_report_inputs(comparison: Path, prev_std: Path, curr_std: Path, ingest_
             raise ValueError(f"{path}: run_id {found} does not match {expected!r} in the summaries under "
                              f"{comparison}")
 
+    manifest = _read_json(files["ingest_manifest"])
+    ingested = sorted({str(r.get("run_id")) for r in manifest.get("runs") or [] if isinstance(r, dict)})
+    absent = [i for i in (prev_id, curr_id) if i not in ingested]
+    if absent:
+        raise ValueError(f"{files['ingest_manifest']}: no ingest record of run(s) {absent} compared in "
+                         f"{comparison} (it lists {ingested}); give the ingest folder of these runs")
+    issues = _read_csv(files["validation_issues"])
+    if "run_id" not in issues.columns:
+        raise ValueError(f"{files['validation_issues']}: missing column run_id")
+    issues = issues[issues.run_id.isin([prev_id, curr_id])].reset_index(drop=True)
+
     criteria_sha = summaries["classification"].get("criteria_sha256")
     if criteria_sha != _sha256(files["criteria"]):
+        endings = (" The files differ only in line endings (CRLF against LF): restore the file as it was when "
+                   "classified (config YAML is checked out LF, see .gitattributes), or re-run classify."
+                   if _differs_only_in_line_endings(files["criteria"], criteria_sha) else "")
         raise ValueError(f"{files['criteria']}: changed since the classification was made "
                          f"({files['classification_summary']} records criteria_sha256 {criteria_sha}); "
-                         "re-run classify, or restore the criteria file")
+                         f"re-run classify, or restore the criteria file.{endings}")
+    settings = load_settings(files["settings"])
+    _check_recorded_settings(settings, files["settings"], summaries,
+                             {k: files[f"{k}_summary"] for k in SUMMARY_FILES})
 
     dig_table = None
     if digs is not None:
@@ -166,11 +261,11 @@ def load_report_inputs(comparison: Path, prev_std: Path, curr_std: Path, ingest_
         intervals=_read_csv(files["intervals"]),
         classification=load_classification_table(files["classification"]),
         changed_sections=_read_csv(files["changed_sections"]),
-        validation_issues=_read_csv(files["validation_issues"]),
+        validation_issues=issues,
         pipe=_read_csv(files["pipe"]), mop=_read_csv(files["mop"]), segments=_read_csv(files["segments"]),
         crossings=_read_csv(files["crossings"]) if crossings is not None else None,
-        digs=dig_table, summaries=summaries, ingest_manifest=_read_json(files["ingest_manifest"]),
-        settings=load_settings(files["settings"]), criteria=load_repair_criteria(files["criteria"]),
+        digs=dig_table, summaries=summaries, ingest_manifest=manifest,
+        settings=settings, criteria=load_repair_criteria(files["criteria"]),
         criteria_path=files["criteria"], settings_path=files["settings"], paths=paths)
 
 
@@ -200,8 +295,10 @@ def dig_list(inputs: ReportInputs) -> pd.DataFrame:
     out = out.join(_lookup(inputs.growth, keys, ["governing_mpy", "governing_method"]))
     out = out.join(_lookup(inputs.remaining_life, keys, ["rl_yr", "rl_governing"]))
     std = inputs.curr_std.drop_duplicates("feature_id").set_index("feature_id")
+    located = pd.Series([_nearest_member(f, p, std.log_dist_ft)
+                         for f, p in zip(out.curr_feature_id, out.curr_log_dist_ft)], index=out.index, dtype=object)
     for col in ("lat", "lon"):
-        out[col] = out.curr_feature_id.map(std[col])
+        out[col] = located.map(std[col])
     order = (out.assign(_rank=out.governing_category.map(DIG_LIST_CATEGORIES.index),
                         _rl=out.rl_yr.astype(float), _due=pd.to_datetime(out.due_date))
              .sort_values(["_rank", "_rl", "_due", "match_id"], na_position="last").index)
@@ -230,27 +327,33 @@ def largest_growth(inputs: ReportInputs, n: int) -> pd.DataFrame:
 
 @dataclass(frozen=True)
 class BacktestResult:
-    table: pd.DataFrame  # one row per dig found in the current run
+    table: pd.DataFrame  # one row per dig found in the current run with a finite ILI and field depth
     n_within: int
     pct_within: float  # of the rows in ``table``; NaN when there are none
     unmatched_ids: list[str]  # dig feature ids not in the current run
+    no_depth_ids: list[str]  # dig feature ids in the current run without an ILI or a field depth (not compared)
 
 
 def backtest(digs: pd.DataFrame | None, curr_std: pd.DataFrame, settings: Settings) -> BacktestResult | None:
-    """Reported depth against field depth for each dig (spec 8). None without digs."""
+    """Reported depth against field depth for each dig (spec 8). None without digs. A dig without a finite ILI
+    or field depth goes to ``no_depth_ids`` and counts neither within nor outside the tolerance."""
     if digs is None or digs.empty:
         return None
     found = digs.feature_id.isin(curr_std.feature_id)
     unmatched = [str(i) for i in digs.feature_id[~found]]
     std = curr_std.drop_duplicates("feature_id").set_index("feature_id")
     dug = digs[found].reset_index(drop=True)
-    table = pd.DataFrame({"feature_id": dug.feature_id, "ili_depth_pct": dug.feature_id.map(std.depth_pct),
-                          "field_depth_pct": dug.field_depth_pct})
+    table = pd.DataFrame({"feature_id": dug.feature_id,
+                          "ili_depth_pct": pd.to_numeric(dug.feature_id.map(std.depth_pct), errors="coerce"),
+                          "field_depth_pct": pd.to_numeric(dug.field_depth_pct, errors="coerce")})
+    finite = np.isfinite(table.ili_depth_pct.to_numpy(float)) & np.isfinite(table.field_depth_pct.to_numpy(float))
+    no_depth = [str(i) for i in table.feature_id[~finite]]
+    table = table[finite].reset_index(drop=True)
     table["diff_pct"] = table.ili_depth_pct - table.field_depth_pct
     table["within_tolerance"] = table.diff_pct.abs().round(9) <= settings.tool.depth_tolerance_pct_wt
     n_within = int(table.within_tolerance.sum())
     pct = 100.0 * n_within / len(table) if len(table) else float("nan")
-    return BacktestResult(table, n_within, pct, unmatched)
+    return BacktestResult(table, n_within, pct, unmatched, no_depth)
 
 
 _YAML_KEY = re.compile(r"^(\s*)([^\s#:-][^:]*?)\s*:(?:\s|$)")

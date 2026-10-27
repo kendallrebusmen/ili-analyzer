@@ -21,7 +21,7 @@ def _cls(rows):
     return df
 
 
-def _inputs(cls_rows, rl=None, growth=None):
+def _inputs(cls_rows, rl=None, growth=None, curr_std=None):
     """Hand-built inputs for ``dig_list``: one match-table, growth, remaining-life and curr_std row per id."""
     ids = [r["match_id"] for r in cls_rows]
     match = pd.DataFrame({
@@ -31,7 +31,9 @@ def _inputs(cls_rows, rl=None, growth=None):
     growth = pd.DataFrame({"match_id": ids, "governing_mpy": 5.0, "governing_method": "raw"})
     rl = pd.DataFrame({"match_id": ids, "rl_yr": rl if rl is not None else [1.0] * len(ids),
                        "rl_governing": "burst"})
-    curr_std = pd.DataFrame({"feature_id": [r["curr_feature_id"] for r in cls_rows], "lat": 29.5, "lon": -95.5})
+    if curr_std is None:
+        curr_std = pd.DataFrame({"feature_id": [r["curr_feature_id"] for r in cls_rows], "log_dist_ft": 100.0,
+                                 "lat": 29.5, "lon": -95.5})
     return SimpleNamespace(classification=_cls(cls_rows), match_table=match, growth=growth, remaining_life=rl,
                            curr_std=curr_std)
 
@@ -69,6 +71,18 @@ def test_dig_list_due_date_none_sorts_last():
     rows = [_row("M1", "60_day", due=None), _row("M2", "60_day", due=date(2027, 1, 1))]
     out = dig_list(_inputs(rows, rl=[NAN, NAN]))
     assert list(out.match_id) == ["M2", "M1"]
+
+
+def test_dig_list_cluster_takes_the_member_nearest_its_position():
+    rows = [_row("M1", "60_day"), _row("M2", "180_day")]
+    rows[0]["curr_feature_id"] = "B-1;B-2;B-3"  # a matched cluster: ";"-joined member ids
+    rows[1]["curr_feature_id"] = "B-4"
+    curr = pd.DataFrame({"feature_id": ["B-1", "B-2", "B-3", "B-4"], "log_dist_ft": [99.0, 100.2, 100.9, 500.0],
+                         "lat": [29.1, 29.2, 29.3, 29.4], "lon": [-95.1, -95.2, -95.3, -95.4]})
+    out = dig_list(_inputs(rows, curr_std=curr)).set_index("match_id")  # match table: curr_log_dist_ft 100
+    assert (out.loc["M1", "lat"], out.loc["M1", "lon"]) == (29.2, -95.2)
+    assert (out.loc["M2", "lat"], out.loc["M2", "lon"]) == (29.4, -95.4)
+    assert out.loc["M1", "curr_feature_id"] == "B-1;B-2;B-3"
 
 
 def test_pending_reviews_counts_needs_review_pending_only():
@@ -109,6 +123,17 @@ def test_backtest_within_tolerance_edges():
     assert res.n_within == 2 and abs(res.pct_within - 200 / 3) < 1e-9
     assert res.unmatched_ids == ["Z"]
     assert backtest(None, curr, _settings()) is None
+    assert res.no_depth_ids == []
+
+
+def test_backtest_excludes_digs_without_both_depths():
+    curr = pd.DataFrame({"feature_id": ["A", "B", "C"], "depth_pct": [50.0, NAN, 50.0]})
+    digs = pd.DataFrame({"feature_id": ["A", "B", "C"], "field_depth_pct": [45.0, 40.0, NAN],
+                         "field_length_in": 1.0, "dig_date": "2026-01-01"})
+    res = backtest(digs, curr, _settings(10.0))
+    assert list(res.table.feature_id) == ["A"]  # B: no ILI depth, C: no field depth
+    assert res.n_within == 1 and res.pct_within == 100.0
+    assert res.no_depth_ids == ["B", "C"] and res.unmatched_ids == []
 
 
 def test_config_rows_flags_placeholders():

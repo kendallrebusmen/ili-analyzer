@@ -58,7 +58,7 @@ def test_map_none_without_gps(built):  # noqa: F811
 def _backtest():
     table = pd.DataFrame({"feature_id": ["a", "b"], "field_depth_pct": [20.0, 40.0], "ili_depth_pct": [25.0, 38.0],
                           "diff_pct": [5.0, -2.0], "within_tolerance": [True, True]})
-    return BacktestResult(table, 2, 100.0, [])
+    return BacktestResult(table, 2, 100.0, [], [])
 
 
 def test_unity_none_without_digs():
@@ -125,6 +125,6 @@ def test_empty_run_tables(built):  # noqa: F811
 def test_unity_without_finite_pairs():
     table = pd.DataFrame({"feature_id": ["a"], "field_depth_pct": [np.nan], "ili_depth_pct": [np.nan],
                           "diff_pct": [np.nan], "within_tolerance": [False]})
-    fig = report_charts.unity_chart(BacktestResult(table, 0, 0.0, []), 10.0)
+    fig = report_charts.unity_chart(BacktestResult(table, 0, 0.0, [], []), 10.0)
     line = next(t for t in fig.data if t.name == "1:1")
     assert list(line.x) == [0.0, 100.0]
