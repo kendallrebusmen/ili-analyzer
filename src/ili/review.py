@@ -224,3 +224,11 @@ def effective_flags(flags: pd.DataFrame) -> dict[tuple[str, str], bool]:
     for row in _in_time_order(flags, "flag_id"):
         out[(row["curr_feature_id"], row["flag"])] = row["value"] == "true"
     return out
+
+
+def latest_flag_ids(flags: pd.DataFrame) -> set[str]:
+    """The ``flag_id`` of the row that decides each (feature, flag): the same rows ``effective_flags`` uses."""
+    winner: dict[tuple[str, str], str] = {}
+    for row in _in_time_order(flags, "flag_id"):
+        winner[(row["curr_feature_id"], row["flag"])] = row["flag_id"]
+    return set(winner.values())

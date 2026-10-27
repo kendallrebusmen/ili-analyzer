@@ -38,13 +38,15 @@ from openpyxl.utils import get_column_letter
 from ili import __version__
 from ili.align_welds import DRAFT_LABEL
 from ili.category_change import CHANGE_COLUMNS, CategoryChangeResult, category_changes
-from ili.classify import CATEGORY_PRIORITY, IMMEDIATE_ACTION_NOTE, criteria_path
+from ili.classify import CATEGORY_PRIORITY, IMMEDIATE_ACTION_NOTE, criteria_path, flag_status
 from ili.config import DEFAULT_SETTINGS, PROJECT_ROOT, Settings, load_settings
+from ili.growth import REASON_SEP
 from ili.match import CONFIDENCES
 from ili.report_charts import (CATEGORY_COLOURS, depth_vs_distance, feature_map, figure_div, growth_histograms,
                                growth_vs_distance, rl_distribution, unity_chart)
 from ili.report_data import (ReportInputs, _sha256, backtest, config_rows, criteria_rows, dig_list, input_hashes,
                              largest_growth, load_report_inputs, match_stats, pending_reviews)
+from ili.review import FLAG_COLUMNS, REVIEW_COLUMNS
 
 TEMPLATES = Path(__file__).parent / "templates"
 TEMPLATE_NAME = "report.html.j2"
@@ -68,8 +70,8 @@ DIG_LIST_PRINT_COLUMNS = ("governing_category", "governing_rule", "match_id", "c
 MOVED_PRINT_COLUMNS = ("match_id", "curr_feature_id", "feature_type", "prev_depth_pct_assessed",
                        "curr_depth_pct_assessed", "prev_rule_category", "prev_rules_not_evaluable",
                        "curr_rule_category", "curr_governing_rule", "curr_rules_not_evaluable")
-REVIEW_LOG_COLUMNS = ["match_id", "match_type", "prev_feature_id", "curr_feature_id", "confidence",
-                      "missing_hint", "review_status"]
+REVIEW_LOG_COLUMNS = [*REVIEW_COLUMNS, "applied_status", "reason"]  # reviews.csv joined to review_status.csv
+FLAG_LOG_COLUMNS = [*FLAG_COLUMNS, "applied_status", "reason"]  # feature_flags.csv with what became of each row
 
 
 @dataclass(frozen=True)
@@ -255,9 +257,25 @@ def _charts(inputs: ReportInputs, dig: pd.DataFrame) -> dict:
     }
 
 
+def _review_log(inputs: ReportInputs) -> pd.DataFrame:
+    """Every row of ``reviews.csv`` with the outcome (``applied_status``, ``reason``) match recorded for it."""
+    outcome = inputs.review_status.drop_duplicates("decision_id").set_index("decision_id")
+    log = inputs.reviews.reset_index(drop=True)
+    for col in ("applied_status", "reason"):
+        log[col] = log.decision_id.map(outcome[col])
+    return log[REVIEW_LOG_COLUMNS]
+
+
+def _flag_log(inputs: ReportInputs) -> pd.DataFrame:
+    """Every row of ``feature_flags.csv`` with whether classification applied it (``classify.flag_status``)."""
+    classified = {m for cell in inputs.classification.curr_feature_id for m in str(cell).split(REASON_SEP)}
+    status = flag_status(inputs.flags, classified, set(inputs.curr_std.feature_id.astype(str)))
+    log = inputs.flags.reset_index(drop=True)
+    log["applied_status"], log["reason"] = status.applied_status, status.reason
+    return log[FLAG_LOG_COLUMNS]
+
+
 def _methods(inputs: ReportInputs) -> dict:
-    mt = inputs.match_table
-    reviewed = mt[mt.needs_review.fillna(False).astype(bool)]
     tool = inputs.settings.tool.model_dump()
     config = config_rows(inputs.settings, inputs.settings_path)
     return {
@@ -270,7 +288,8 @@ def _methods(inputs: ReportInputs) -> dict:
         "criteria_path": str(inputs.criteria_path),
         "criteria": table(criteria_rows(inputs.criteria)),
         "hashes": Table(["path", "sha256"], [[p, h] for p, h in input_hashes(inputs).items()]),
-        "review_log": table(reviewed, REVIEW_LOG_COLUMNS),
+        "review_log": table(_review_log(inputs)),
+        "flag_log": table(_flag_log(inputs)),
     }
 
 

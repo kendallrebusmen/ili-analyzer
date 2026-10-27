@@ -31,6 +31,7 @@ from ili.growth import load_growth_table
 from ili.ingest import load_standardized
 from ili.match import load_match_table
 from ili.remaining_life import load_remaining_life_table
+from ili.review import FLAG_COLUMNS, FLAGS_FILE, REVIEW_COLUMNS, REVIEWS_FILE, load_flags, load_reviews
 
 SUMMARY_FILES = {
     "alignment": "alignment_summary.json",
@@ -52,7 +53,8 @@ DIG_LIST_COLUMNS = (
     "triggered_rules", "due_date", "due_date_basis", "worst_case_category", "requires_review",
     "review_reasons", "action_note",
 )
-_ID_COLUMNS = ("match_id", "curr_feature_id", "feature_id", "segment_id")
+_ID_COLUMNS = ("match_id", "curr_feature_id", "feature_id", "segment_id", "decision_id")
+REVIEW_STATUS_COLUMNS = ["decision_id", "decision", "applied_status", "reason"]  # match's review_status.csv
 CLUSTER_SEP = ";"  # a matched cluster's member feature ids are joined with this (M4)
 # Settings the summaries record, as (summary, summary key, dotted settings key). The report refuses settings
 # that differ from them; alignment, matching and growth settings are not recorded and are used as they are.
@@ -89,6 +91,9 @@ class ReportInputs:
     segments: pd.DataFrame
     crossings: pd.DataFrame | None
     digs: pd.DataFrame | None
+    reviews: pd.DataFrame  # the match decision log (REVIEW_COLUMNS); empty when there is none
+    review_status: pd.DataFrame  # match's review_status.csv: what became of each decision; empty when absent
+    flags: pd.DataFrame  # the manual flag log (FLAG_COLUMNS); empty when there is none
     summaries: dict[str, dict]
     ingest_manifest: dict
     settings: Settings
@@ -192,6 +197,9 @@ def load_report_inputs(comparison: Path, prev_std: Path, curr_std: Path, ingest_
         "pipe": Path(pipe), "mop": Path(mop), "segments": Path(segments),
         "settings": Path(settings_path), "criteria": Path(criteria_path),
     }
+    for role, name in (("reviews", REVIEWS_FILE), ("review_status", "review_status.csv"), ("flags", FLAGS_FILE)):
+        if (comparison / name).is_file():  # optional: M9 outputs, absent before any review
+            files[role] = comparison / name
     if crossings is not None:
         files["crossings"] = Path(crossings)
     if digs is not None:
@@ -252,6 +260,11 @@ def load_report_inputs(comparison: Path, prev_std: Path, curr_std: Path, ingest_
         if missing:
             raise ValueError(f"{files['digs']}: missing column(s) {missing}")
 
+    reviews = load_reviews(files["reviews"]) if "reviews" in files else pd.DataFrame(columns=REVIEW_COLUMNS)
+    flags = load_flags(files["flags"]) if "flags" in files else pd.DataFrame(columns=FLAG_COLUMNS)
+    review_status = (_read_csv(files["review_status"]) if "review_status" in files
+                     else pd.DataFrame(columns=REVIEW_STATUS_COLUMNS))
+
     return ReportInputs(
         prev_std=prev_df, curr_std=curr_df,
         match_table=load_match_table(files["match_table"]),
@@ -264,7 +277,7 @@ def load_report_inputs(comparison: Path, prev_std: Path, curr_std: Path, ingest_
         validation_issues=issues,
         pipe=_read_csv(files["pipe"]), mop=_read_csv(files["mop"]), segments=_read_csv(files["segments"]),
         crossings=_read_csv(files["crossings"]) if crossings is not None else None,
-        digs=dig_table, summaries=summaries, ingest_manifest=manifest,
+        digs=dig_table, reviews=reviews, review_status=review_status, flags=flags, summaries=summaries, ingest_manifest=manifest,
         settings=settings, criteria=load_repair_criteria(files["criteria"]),
         criteria_path=files["criteria"], settings_path=files["settings"], paths=paths)
 

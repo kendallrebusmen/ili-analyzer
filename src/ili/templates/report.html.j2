@@ -319,11 +319,19 @@ criterion is already met at τ = 0.</p>
 {{ render_table(methods.hashes) }}
 
 <h3>Match review log</h3>
-<p>Decisions are recorded in M9 (reviews.csv).</p>
+<p>Every decision in reviews.csv, with whether the match applied it. Matches still awaiting review: {{ quality.n_pending }}.</p>
 {% if methods.review_log.rows %}
-{{ render_table(methods.review_log, "Every match that needs review") }}
+{{ render_table(methods.review_log, "Review decisions (reviewer and note are as entered)") }}
 {% else %}
-<p>No match needs review.</p>
+<p>No review decisions are recorded.</p>
+{% endif %}
+
+<h3>Manual flags</h3>
+<p>Every row in feature_flags.csv, with whether classification applied it (manual_immediate: IMM-5; field_crack_confirmed: D180-7).</p>
+{% if methods.flag_log.rows %}
+{{ render_table(methods.flag_log, "Manual flags (reviewer and note are as entered)") }}
+{% else %}
+<p>No manual flags are recorded.</p>
 {% endif %}
 </section>
 
