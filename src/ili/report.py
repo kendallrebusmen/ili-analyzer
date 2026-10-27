@@ -38,9 +38,8 @@ from openpyxl.utils import get_column_letter
 from ili import __version__
 from ili.align_welds import DRAFT_LABEL
 from ili.category_change import CHANGE_COLUMNS, CategoryChangeResult, category_changes
-from ili.classify import CATEGORY_PRIORITY, IMMEDIATE_ACTION_NOTE, criteria_path, flag_status
+from ili.classify import CATEGORY_PRIORITY, IMMEDIATE_ACTION_NOTE, criteria_path
 from ili.config import DEFAULT_SETTINGS, PROJECT_ROOT, Settings, load_settings
-from ili.growth import REASON_SEP
 from ili.match import CONFIDENCES
 from ili.report_charts import (CATEGORY_COLOURS, depth_vs_distance, feature_map, figure_div, growth_histograms,
                                growth_vs_distance, rl_distribution, unity_chart)
@@ -70,6 +69,7 @@ DIG_LIST_PRINT_COLUMNS = ("governing_category", "governing_rule", "match_id", "c
 MOVED_PRINT_COLUMNS = ("match_id", "curr_feature_id", "feature_type", "prev_depth_pct_assessed",
                        "curr_depth_pct_assessed", "prev_rule_category", "prev_rules_not_evaluable",
                        "curr_rule_category", "curr_governing_rule", "curr_rules_not_evaluable")
+UNRECORDED = "saved after the last run — rerun to apply"
 REVIEW_LOG_COLUMNS = [*REVIEW_COLUMNS, "applied_status", "reason"]  # reviews.csv joined to review_status.csv
 FLAG_LOG_COLUMNS = [*FLAG_COLUMNS, "applied_status", "reason"]  # feature_flags.csv with what became of each row
 
@@ -220,7 +220,7 @@ def _data_quality(inputs: ReportInputs) -> dict:
         "alignment_rate": _rate(align.get("alignment_rate")),
         "alignment_rate_outside_repairs": _rate(align.get("alignment_rate_outside_repairs")),
         "match_stats": table(_match_stats(inputs.match_table)),
-        "n_pending": len(pending_reviews(inputs.match_table)),
+        "n_pending": len(pending_reviews(inputs.match_table)) + _n_unrecorded(inputs),
         "n_requires_review": cls_summary.get("n_requires_review"),
         "review_reasons": _counts(cls_summary.get("counts_by_review_reason") or {}, "reason"),
         "crossings_given": inputs.crossings is not None,
@@ -257,22 +257,31 @@ def _charts(inputs: ReportInputs, dig: pd.DataFrame) -> dict:
     }
 
 
-def _review_log(inputs: ReportInputs) -> pd.DataFrame:
-    """Every row of ``reviews.csv`` with the outcome (``applied_status``, ``reason``) match recorded for it."""
-    outcome = inputs.review_status.drop_duplicates("decision_id").set_index("decision_id")
-    log = inputs.reviews.reset_index(drop=True)
+def _with_outcome(log: pd.DataFrame, status: pd.DataFrame, id_col: str, columns: list[str]) -> pd.DataFrame:
+    """``log`` with ``applied_status`` and ``reason`` from the run's status file by id; a row the run did
+    not record (saved after it) says so in ``applied_status``."""
+    outcome = status.drop_duplicates(id_col).set_index(id_col)
+    log = log.reset_index(drop=True)
     for col in ("applied_status", "reason"):
-        log[col] = log.decision_id.map(outcome[col])
-    return log[REVIEW_LOG_COLUMNS]
+        log[col] = log[id_col].map(outcome[col])
+    log["applied_status"] = log.applied_status.where(log[id_col].isin(outcome.index), UNRECORDED)
+    return log[columns]
+
+
+def _review_log(inputs: ReportInputs) -> pd.DataFrame:
+    """Every row of ``reviews.csv`` with the outcome match recorded for it (``review_status.csv``)."""
+    return _with_outcome(inputs.reviews, inputs.review_status, "decision_id", REVIEW_LOG_COLUMNS)
 
 
 def _flag_log(inputs: ReportInputs) -> pd.DataFrame:
-    """Every row of ``feature_flags.csv`` with whether classification applied it (``classify.flag_status``)."""
-    classified = {m for cell in inputs.classification.curr_feature_id for m in str(cell).split(REASON_SEP)}
-    status = flag_status(inputs.flags, classified, set(inputs.curr_std.feature_id.astype(str)))
-    log = inputs.flags.reset_index(drop=True)
-    log["applied_status"], log["reason"] = status.applied_status, status.reason
-    return log[FLAG_LOG_COLUMNS]
+    """Every row of ``feature_flags.csv`` with the outcome classification recorded (``flag_status.csv``)."""
+    return _with_outcome(inputs.flags, inputs.flag_status, "flag_id", FLAG_LOG_COLUMNS)
+
+
+def _n_unrecorded(inputs: ReportInputs) -> int:
+    """Log rows no run has recorded: saved after the last run, so not yet in any result."""
+    return int((_review_log(inputs).applied_status == UNRECORDED).sum()
+               + (_flag_log(inputs).applied_status == UNRECORDED).sum())
 
 
 def _methods(inputs: ReportInputs) -> dict:
@@ -310,6 +319,7 @@ def render_report(inputs: ReportInputs, changes: CategoryChangeResult, header: R
         "plotlyjs": Markup(plotly.offline.get_plotlyjs()),
         "category_colours": CATEGORY_COLOURS,
         "head": _header(inputs, header, generated_utc),
+        "log_warnings": inputs.log_warnings,
         "summary": _summary(inputs, dig),
         "quality": _data_quality(inputs),
         "growth": _growth(inputs),

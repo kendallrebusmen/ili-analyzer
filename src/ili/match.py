@@ -10,6 +10,7 @@ DRAFT – for review by qualified personnel.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import sys
 from dataclasses import dataclass
@@ -994,6 +995,9 @@ def main(argv: list[str] | None = None) -> int:
         reviews_path = _reviews_path(args, prev, curr)
         reviews = effective_reviews(load_reviews(reviews_path)) if reviews_path else None
         result = match_anomalies(prev, curr, weld_map, load_settings(args.settings), pipe, repairs, reviews)
+        result.summary.update(
+            reviews_file=str(reviews_path) if reviews_path else None,
+            reviews_sha256=hashlib.sha256(reviews_path.read_bytes()).hexdigest() if reviews_path else None)
         paths = write_matches(result, args.out)
         score = None
         if args.truth:

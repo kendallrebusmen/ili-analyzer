@@ -102,6 +102,9 @@ code { font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; font-siz
 <dt>Generated (UTC)</dt><dd>{{ head.generated_utc }} by {{ head.generator }}</dd>
 </dl>
 {{ render_table(head.runs) }}
+{% for w in log_warnings %}
+<p class="warning">{{ w }}</p>
+{% endfor %}
 </section>
 
 <section id="summary">

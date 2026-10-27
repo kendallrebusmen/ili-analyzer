@@ -208,3 +208,73 @@ def test_report_shows_review_and_flag_logs(plain, synth, tmp_path, capsys):
     # the pending count drops by the reviewed rows (the accepted and the rejected one)
     pending_after = len(pending_reviews(inputs.match_table))
     assert pending_after <= pending_before - 2 and f"{pending_after} match reviews pending" in html
+
+
+# ---- logs saved after the last run -----------------------------------------------------------------
+
+def _report(data, std, folder, out):
+    ref = data / "reference"
+    inputs = load_report_inputs(folder, std / "2021_vendorA.csv", std / "2026_vendorB.csv", out,
+                                ref / "pipe_properties.csv", ref / "mop_profile.csv", ref / "hca_segments.csv",
+                                ref / "foreign_crossings.csv", ref / "digs.csv", DEFAULT_SETTINGS, DEFAULT_CRITERIA)
+    changes = category_changes(inputs.match_table, inputs.remaining_life, inputs.classification, inputs.curr_std,
+                               inputs.pipe, inputs.mop, inputs.segments, inputs.crossings, inputs.settings,
+                               inputs.criteria, inputs.prev_std.run_date.dropna().iloc[0])
+    html = render_report(inputs, changes, ReportHeader(None, None, None), datetime(2026, 10, 27, tzinfo=timezone.utc))
+    return inputs, html
+
+
+@pytest.fixture
+def classified(plain, tmp_path, capsys):
+    """A copy of the plain pipeline (no logs) with classification run on it."""
+    data, out0, std, folder0 = plain
+    out = tmp_path / "out"
+    shutil.copytree(out0, out)
+    folder = out / folder0.name
+    assert classify.main(_classify_args(std, folder, data, out)) == 0
+    capsys.readouterr()
+    return data, out, std, folder
+
+
+def test_flag_status_file_is_written(classified):
+    _, _, _, folder = classified
+    text = (folder / "flag_status.csv").read_text(encoding="utf-8")
+    assert text == "flag_id,curr_feature_id,flag,applied_status,reason\n"
+    assert json.loads((folder / "match_summary.json").read_text(encoding="utf-8"))["reviews_sha256"] is None
+
+
+def test_unchanged_logs_give_no_warning(synth, tmp_path, capsys):
+    _, data = synth
+    out = tmp_path / "out"
+    std, folder = _pipeline(data, out, reviews=[("accept", ["NO-PREV"], ["NO-CURR"], None)],
+                            flags=[("NO-SUCH", "manual_immediate", True, None)])
+    assert classify.main(_classify_args(std, folder, data, out)) == 0
+    capsys.readouterr()
+    summary = json.loads((folder / "match_summary.json").read_text(encoding="utf-8"))
+    assert summary["reviews_sha256"] == hashlib.sha256((folder / REVIEWS_FILE).read_bytes()).hexdigest()
+    inputs, html = _report(data, std, folder, out)
+    assert inputs.log_warnings == [] and "saved after the last run" not in html
+    assert list(inputs.flag_status.applied_status) == ["not_applied"]
+
+
+def test_flag_saved_after_classify_is_unrecorded(classified):
+    data, out, std, folder = classified
+    base, html0 = _report(data, std, folder, out)
+    pending0 = len(pending_reviews(base.match_table))
+    assert base.log_warnings == []
+    append_flag(folder / FLAGS_FILE, "B-LATE", "manual_immediate", True, "Pat", "late <b>", now=_t(0))
+    inputs, html = _report(data, std, folder, out)
+    assert len(inputs.log_warnings) == 1 and FLAGS_FILE in inputs.log_warnings[0]
+    assert "saved after the last run — rerun to apply" in _row(html, "F000001")
+    assert f"{pending0 + 1} match reviews pending" in html
+    assert 'class="warning">feature_flags.csv has changed' in html
+
+
+def test_review_saved_after_match_is_unrecorded(classified):
+    data, out, std, folder = classified
+    pending0 = len(pending_reviews(_report(data, std, folder, out)[0].match_table))
+    append_review(folder / REVIEWS_FILE, "accept", ["NO-PREV"], ["NO-CURR"], "Pat", None, now=_t(0))
+    inputs, html = _report(data, std, folder, out)
+    assert len(inputs.log_warnings) == 1 and REVIEWS_FILE in inputs.log_warnings[0]
+    assert "saved after the last run — rerun to apply" in _row(html, "R000001")
+    assert f"{pending0 + 1} match reviews pending" in html

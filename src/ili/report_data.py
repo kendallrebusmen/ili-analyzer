@@ -25,7 +25,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from ili.classify import CATEGORY_PRIORITY, load_classification_table
+from ili.classify import CATEGORY_PRIORITY, FLAG_STATUS_COLUMNS, FLAG_STATUS_FILE, load_classification_table
 from ili.config import RepairCriteria, Settings, load_repair_criteria, load_settings
 from ili.growth import load_growth_table
 from ili.ingest import load_standardized
@@ -94,6 +94,8 @@ class ReportInputs:
     reviews: pd.DataFrame  # the match decision log (REVIEW_COLUMNS); empty when there is none
     review_status: pd.DataFrame  # match's review_status.csv: what became of each decision; empty when absent
     flags: pd.DataFrame  # the manual flag log (FLAG_COLUMNS); empty when there is none
+    flag_status: pd.DataFrame  # classify's flag_status.csv: what became of each flag row; empty when absent
+    log_warnings: list[str]  # logs that changed since the run that used them (a warning, not an error)
     summaries: dict[str, dict]
     ingest_manifest: dict
     settings: Settings
@@ -176,6 +178,25 @@ def _nearest_member(feature_id, position: float, positions: pd.Series):
     return members[int(np.nanargmin(distance))] if np.isfinite(distance).any() else members[0]
 
 
+def _log_warnings(comparison: Path, summaries: dict[str, dict]) -> list[str]:
+    """One message per log (reviews.csv, feature_flags.csv) whose current sha256 differs from the one the
+    run that used it recorded (a log that appeared or disappeared since counts). A summary that records
+    no log (made before M9) is not checked."""
+    out = []
+    for stage, sha_key, name in (("match", "reviews_sha256", REVIEWS_FILE),
+                                 ("classification", "flags_sha256", FLAGS_FILE)):
+        summary = summaries[stage]
+        if sha_key not in summary:
+            continue
+        path = comparison / name
+        now = _sha256(path) if path.is_file() else None
+        if now != summary[sha_key]:
+            out.append(f"{name} has changed since the {stage} step used it (recorded "
+                       f"{summary[sha_key] or 'no file'}, now {now or 'no file'}); decisions saved since are not "
+                       f"in this report's results. Rerun {stage} and the steps after it.")
+    return out
+
+
 def load_report_inputs(comparison: Path, prev_std: Path, curr_std: Path, ingest_dir: Path, pipe: Path, mop: Path,
                        segments: Path, crossings: Path | None, digs: Path | None, settings_path: Path,
                        criteria_path: Path) -> ReportInputs:
@@ -197,7 +218,8 @@ def load_report_inputs(comparison: Path, prev_std: Path, curr_std: Path, ingest_
         "pipe": Path(pipe), "mop": Path(mop), "segments": Path(segments),
         "settings": Path(settings_path), "criteria": Path(criteria_path),
     }
-    for role, name in (("reviews", REVIEWS_FILE), ("review_status", "review_status.csv"), ("flags", FLAGS_FILE)):
+    for role, name in (("reviews", REVIEWS_FILE), ("review_status", "review_status.csv"), ("flags", FLAGS_FILE),
+                       ("flag_status", FLAG_STATUS_FILE)):
         if (comparison / name).is_file():  # optional: M9 outputs, absent before any review
             files[role] = comparison / name
     if crossings is not None:
@@ -265,6 +287,9 @@ def load_report_inputs(comparison: Path, prev_std: Path, curr_std: Path, ingest_
     review_status = (_read_csv(files["review_status"]) if "review_status" in files
                      else pd.DataFrame(columns=REVIEW_STATUS_COLUMNS))
 
+    flag_status = (_read_csv(files["flag_status"]) if "flag_status" in files
+                   else pd.DataFrame(columns=FLAG_STATUS_COLUMNS))
+
     return ReportInputs(
         prev_std=prev_df, curr_std=curr_df,
         match_table=load_match_table(files["match_table"]),
@@ -277,7 +302,8 @@ def load_report_inputs(comparison: Path, prev_std: Path, curr_std: Path, ingest_
         validation_issues=issues,
         pipe=_read_csv(files["pipe"]), mop=_read_csv(files["mop"]), segments=_read_csv(files["segments"]),
         crossings=_read_csv(files["crossings"]) if crossings is not None else None,
-        digs=dig_table, reviews=reviews, review_status=review_status, flags=flags, summaries=summaries, ingest_manifest=manifest,
+        digs=dig_table, reviews=reviews, review_status=review_status, flags=flags, flag_status=flag_status,
+        log_warnings=_log_warnings(comparison, summaries), summaries=summaries, ingest_manifest=manifest,
         settings=settings, criteria=load_repair_criteria(files["criteria"]),
         criteria_path=files["criteria"], settings_path=files["settings"], paths=paths)
 

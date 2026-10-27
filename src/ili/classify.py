@@ -24,6 +24,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import sys
 from dataclasses import dataclass, replace
 from datetime import date, timedelta
@@ -57,6 +58,7 @@ TOP_OF_PIPE_TO_MIN = 240  # 4:00
 # review; the feature is outside every segment (HCA rules assumed); a metal-loss row has no M6 row.
 REVIEW_MATCH, REVIEW_NO_SEGMENT, REVIEW_RL_MISSING = "match_review", "no_segment", "rl_missing"
 
+FLAG_STATUS_FILE = "flag_status.csv"
 FLAG_STATUS_COLUMNS = ["flag_id", "curr_feature_id", "flag", "applied_status", "reason"]
 VARIABLE_COLUMNS = tuple(VARIABLES)
 FEATURE_VARIABLE_COLUMNS = [
@@ -799,6 +801,19 @@ def write_classification(result: ClassificationResult, out_dir: Path) -> dict[st
     return paths
 
 
+def write_flag_status(status: pd.DataFrame, folder: Path) -> Path:
+    """``flag_status.csv`` (``FLAG_STATUS_COLUMNS``; a header only without a log) in the comparison dir,
+    through a temporary file and ``os.replace`` so a failure leaves the old file."""
+    path = Path(folder) / FLAG_STATUS_FILE
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    try:
+        status.to_csv(tmp, index=False, lineterminator="\n")
+        os.replace(tmp, path)
+    finally:
+        tmp.unlink(missing_ok=True)
+    return path
+
+
 def _parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(prog="python -m ili.classify",
                                  description="Repair classification, 195.452(h)(4). " + DRAFT_LABEL)
@@ -905,6 +920,7 @@ def main(argv: list[str] | None = None) -> int:
         result = replace(result, summary={"prev_run_id": prev_id, "curr_run_id": curr_id, **result.summary,
                                           **flag_summary})
         paths = write_classification(result, args.out)
+        write_flag_status(status, paths["classification.csv"].parent)
     except (ValueError, OSError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
