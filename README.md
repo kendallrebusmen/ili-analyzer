@@ -86,6 +86,18 @@ py -3.13 -m venv .venv
     --pipe data\synthetic\reference\pipe_properties.csv `
     --segments data\synthetic\reference\hca_segments.csv `
     --crossings data\synthetic\reference\foreign_crossings.csv
+
+# Report -> outputs/<prev>_vs_<curr>/report.html, dig_list.xlsx, category_changes.csv, run_manifest.json
+# (--digs is optional field data for the back-test; --line-name, --prev-tool and --curr-tool fill the header)
+.\.venv\Scripts\python.exe -m ili.report `
+    --prev outputs\standardized\2021_vendorA.csv `
+    --curr outputs\standardized\2026_vendorB.csv `
+    --comparison outputs\2021_vendorA_vs_2026_vendorB `
+    --pipe data\synthetic\reference\pipe_properties.csv `
+    --mop data\synthetic\reference\mop_profile.csv `
+    --segments data\synthetic\reference\hca_segments.csv `
+    --crossings data\synthetic\reference\foreign_crossings.csv `
+    --digs data\synthetic\reference\digs.csv
 ```
 
 The run date is the third `--run` value. It can be left out when the vendor map says where the file states it (vendor B's title row). The run id is `<run year>_<run_label from the vendor map>`.

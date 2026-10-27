@@ -15,8 +15,12 @@ DRAFT – for review by qualified personnel.
 
 from __future__ import annotations
 
+import argparse
+import json
+import subprocess
+import sys
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 import jinja2
@@ -25,16 +29,20 @@ import pandas as pd
 import plotly.offline
 import yaml
 from markupsafe import Markup
+from openpyxl import Workbook
+from openpyxl.styles import Font, PatternFill
+from openpyxl.utils import get_column_letter
 
 from ili import __version__
 from ili.align_welds import DRAFT_LABEL
-from ili.category_change import CHANGE_COLUMNS, CategoryChangeResult
-from ili.classify import CATEGORY_PRIORITY, IMMEDIATE_ACTION_NOTE
+from ili.category_change import CHANGE_COLUMNS, CategoryChangeResult, category_changes
+from ili.classify import CATEGORY_PRIORITY, IMMEDIATE_ACTION_NOTE, criteria_path
+from ili.config import DEFAULT_SETTINGS, PROJECT_ROOT, Settings, load_settings
 from ili.match import CONFIDENCES
 from ili.report_charts import (CATEGORY_COLOURS, depth_vs_distance, feature_map, figure_div, growth_histograms,
                                growth_vs_distance, rl_distribution, unity_chart)
-from ili.report_data import (ReportInputs, backtest, config_rows, criteria_rows, dig_list, input_hashes,
-                             largest_growth, match_stats, pending_reviews)
+from ili.report_data import (ReportInputs, _sha256, backtest, config_rows, criteria_rows, dig_list, input_hashes,
+                             largest_growth, load_report_inputs, match_stats, pending_reviews)
 
 TEMPLATES = Path(__file__).parent / "templates"
 TEMPLATE_NAME = "report.html.j2"
@@ -268,3 +276,165 @@ def render_report(inputs: ReportInputs, changes: CategoryChangeResult, header: R
         "methods": _methods(inputs),
     }
     return _environment().get_template(TEMPLATE_NAME).render(context)
+
+
+# --- dig list workbook, manifest, CLI -----------------------------------------------------------------
+
+OUTPUT_NAMES = ("category_changes.csv", "report.html", "dig_list.xlsx", "run_manifest.json")
+DATE_COLUMNS = ("due_date",)
+GIT_TIMEOUT_S = 10
+
+
+def _excel_value(value, column: str):
+    """A cell value Excel can hold: None / NaN / NA become an empty cell, numpy scalars plain Python, and the
+    date columns real dates."""
+    if value is None or value is pd.NA or (isinstance(value, float) and np.isnan(value)):
+        return None
+    if isinstance(value, np.generic):
+        value = value.item()
+    if column in DATE_COLUMNS and isinstance(value, str):
+        return date.fromisoformat(value) if value else None
+    if isinstance(value, pd.Timestamp):
+        return value.to_pydatetime()
+    return value
+
+
+def dig_list_workbook(dig: pd.DataFrame, settings: Settings, label: str) -> Workbook:
+    """The dig list as a workbook: row 1 the label, row 2 the header, data from row 3, each data row filled
+    with its category's colour, panes frozen under the header and a filter over header and data."""
+    wb = Workbook()
+    ws = wb.active
+    ws.title = settings.report.dig_list_sheet
+    columns = list(dig.columns)
+    ws.cell(1, 1, label).font = Font(bold=True)
+    for j, name in enumerate(columns, start=1):
+        ws.cell(2, j, name).font = Font(bold=True)
+    for i, row in enumerate(dig.itertuples(index=False), start=3):
+        category = row[columns.index("governing_category")]
+        fill = PatternFill("solid", fgColor=CATEGORY_COLOURS[category].lstrip("#").upper())
+        for j, (name, value) in enumerate(zip(columns, row), start=1):
+            ws.cell(i, j, _excel_value(value, name)).fill = fill
+    ws.freeze_panes = "A3"
+    ws.auto_filter.ref = f"A2:{get_column_letter(max(len(columns), 1))}{max(2, 2 + len(dig))}"
+    return wb
+
+
+def write_dig_list(dig: pd.DataFrame, path: Path, settings: Settings, label: str) -> Path:
+    dig_list_workbook(dig, settings, label).save(path)
+    return Path(path)
+
+
+def code_version() -> dict:
+    """The package version and, when this runs from a git checkout, the commit and whether the tree is dirty
+    (local git only; any failure gives None)."""
+    def git(*args: str) -> str | None:
+        try:
+            done = subprocess.run(["git", "-C", str(PROJECT_ROOT), *args], capture_output=True, text=True,
+                                  timeout=GIT_TIMEOUT_S, check=True)
+        except (OSError, subprocess.SubprocessError):
+            return None
+        return done.stdout.strip()
+
+    commit = git("rev-parse", "HEAD")
+    status = git("status", "--porcelain") if commit else None
+    return {"package": __version__, "git_commit": commit or None,
+            "git_dirty": None if status is None else bool(status)}
+
+
+def run_manifest(inputs: ReportInputs, outputs: list[str], created_utc: datetime) -> dict:
+    """What produced the outputs: label, generator, code version, the hash of every input file, the tally and
+    vendor-map hashes from the ingest manifest, the configuration files, and the output names."""
+    return {
+        "label": DRAFT_LABEL,
+        "generator": f"ili.report {__version__}",
+        "created_utc": created_utc.isoformat(timespec="seconds"),
+        "code_version": code_version(),
+        "inputs": input_hashes(inputs),
+        "tallies": [{k: r.get(k) for k in ("run_id", "tally", "tally_sha256", "vendor_map", "vendor_map_sha256")}
+                    for r in inputs.ingest_manifest.get("runs", [])],
+        "config": {"settings": {"path": str(inputs.settings_path), "sha256": _sha256(inputs.settings_path)},
+                   "criteria": {"path": str(inputs.criteria_path), "sha256": _sha256(inputs.criteria_path)}},
+        "outputs": list(outputs),
+    }
+
+
+def _sheet_label(inputs: ReportInputs) -> str:
+    warning = inputs.summaries["classification"].get("discovery_warning")
+    return f"{DRAFT_LABEL} WARNING: {warning}" if warning else DRAFT_LABEL
+
+
+def write_report(inputs: ReportInputs, header: ReportHeader, out_dir: Path,
+                 generated_utc: datetime) -> tuple[dict[str, Path], CategoryChangeResult]:
+    """Build every output, then write them: nothing is written if any of them fails to build."""
+    prev_dates = inputs.prev_std.run_date.dropna()
+    if prev_dates.empty:
+        raise ValueError("the previous run has no run date")
+    changes = category_changes(inputs.match_table, inputs.remaining_life, inputs.classification, inputs.curr_std,
+                               inputs.pipe, inputs.mop, inputs.segments, inputs.crossings, inputs.settings,
+                               inputs.criteria, prev_dates.iloc[0])
+    html = render_report(inputs, changes, header, generated_utc)
+    workbook = dig_list_workbook(dig_list(inputs), inputs.settings, _sheet_label(inputs))
+    manifest = json.dumps(run_manifest(inputs, list(OUTPUT_NAMES), generated_utc), indent=2, allow_nan=False)
+    paths = {name: Path(out_dir) / name for name in OUTPUT_NAMES}
+    changes.table.to_csv(paths["category_changes.csv"], index=False)
+    paths["report.html"].write_text(html, encoding="utf-8")
+    workbook.save(paths["dig_list.xlsx"])
+    paths["run_manifest.json"].write_text(manifest, encoding="utf-8")
+    return paths, changes
+
+
+def _parser() -> argparse.ArgumentParser:
+    ap = argparse.ArgumentParser(prog="python -m ili.report",
+                                 description="HTML report and Excel dig list. " + DRAFT_LABEL)
+    ap.add_argument("--prev", type=Path, required=True, help="standardized CSV of the previous run")
+    ap.add_argument("--curr", type=Path, required=True, help="standardized CSV of the current run")
+    ap.add_argument("--comparison", type=Path, required=True, help="the <prev>_vs_<curr> output folder")
+    ap.add_argument("--pipe", type=Path, required=True, help="pipe_properties.csv")
+    ap.add_argument("--mop", type=Path, required=True, help="mop_profile.csv")
+    ap.add_argument("--segments", type=Path, required=True, help="hca_segments.csv")
+    ap.add_argument("--crossings", type=Path, default=None, help="foreign_crossings.csv (optional)")
+    ap.add_argument("--digs", type=Path, default=None, help="digs.csv, field results for the back-test (optional)")
+    ap.add_argument("--ingest-dir", type=Path, default=None,
+                    help="folder with ingest_manifest.json and validation_issues.csv (default: the parent of "
+                         "--curr's folder)")
+    ap.add_argument("--settings", type=Path, default=DEFAULT_SETTINGS, help="settings YAML")
+    ap.add_argument("--criteria", type=Path, default=None,
+                    help="repair criteria YAML (default: classification.criteria_file of the settings)")
+    ap.add_argument("--line-name", default=None, help="pipeline name for the report header")
+    ap.add_argument("--prev-tool", default=None, help="previous run's tool type for the report header")
+    ap.add_argument("--curr-tool", default=None, help="current run's tool type for the report header")
+    return ap
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = _parser().parse_args(argv)
+    try:
+        settings = load_settings(args.settings)
+        ingest_dir = args.ingest_dir or args.curr.resolve().parent.parent
+        inputs = load_report_inputs(args.comparison, args.prev, args.curr, ingest_dir, args.pipe, args.mop,
+                                    args.segments, args.crossings, args.digs, args.settings,
+                                    criteria_path(args.criteria, settings))
+        header = ReportHeader(args.line_name, args.prev_tool, args.curr_tool)
+        paths, changes = write_report(inputs, header, args.comparison, datetime.now(timezone.utc))
+    except (ValueError, OSError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    summary = inputs.summaries["classification"]
+    pending = pending_reviews(inputs.match_table)
+    moved = changes.table[changes.table.moved_more_severe]
+    print(DRAFT_LABEL)
+    if summary.get("discovery_warning"):
+        print("!!! WARNING: " + summary["discovery_warning"])
+    print(f"{summary['prev_run_id']} vs {summary['curr_run_id']}: " + ", ".join(
+        f"{k} {v}" for k, v in summary["counts_by_category"].items()))
+    print(f"dig list: {len(dig_list(inputs))} rows")
+    print(f"pending reviews: {len(pending)}"
+          + (" (the report is not final until each is reviewed)" if len(pending) else ""))
+    print(f"moved to a more severe category: {len(moved)} of {len(changes.table)} compared")
+    for path in paths.values():
+        print(f"wrote {path}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

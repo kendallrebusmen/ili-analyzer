@@ -324,3 +324,24 @@ Interpretations of `docs/SPEC.md` and choices the spec leaves open. Newest at th
   - 144 overdue at discovery. Due-date basis: regulatory 20, remaining_life 471 (64 `evaluate` rows have no due date).
   - The final-review fixes changed no category count: the default data has no gouges and no dent with a blank clock.
 - **Observation for the integrity engineer.** On the synthetic stress case nearly every feature requires review. This is driven by the null PLACEHOLDER settings (seam position especially), the non-HCA placeholder rule set, and upstream M4–M6 flags. Many are overdue at the default discovery date because the synthetic remaining lives are short (see M6). Configuring the PLACEHOLDERs and entering the discovery date clears most of it.
+
+## M8: HTML report and Excel dig list (2026-10-27)
+
+- **Outputs.** `python -m ili.report` writes `report.html`, `dig_list.xlsx`, `category_changes.csv` and `run_manifest.json` into the comparison folder. Everything is built (HTML, workbook, manifest, category changes) before any file is written, so a failure leaves no partial outputs. The report is DRAFT always, including with no pending reviews; no wording marks it final.
+- **Previous-run classification (category changes).** The previous run's matched anomalies are classified with today's criteria and settings, so a change in category is a change in the feature, not in the rules.
+  - The previous assessed depth is the previous reported depth at tau = 0 (plus the tool tolerance, as for the current run). Wall: M6's `wt_in` (the pipe-table wall) when M6 has the row, else the previous run's nominal wall.
+  - Reference lookups (pipe, segments, crossings) use the current-run position; MOP is today's. Rule categories only (no due dates, no remaining life).
+  - A value the previous run did not report leaves rules not evaluable (`prev_rules_not_evaluable`), which can make a feature look as if it moved. Read the column with the category.
+  - User decision: previous-run classification on today's basis, shown beside the current category, "moved to a more severe category" counted and listed.
+- **Dig list scope and ranking.** Every classification row except `evaluate` (immediate, 60_day, 180_day, imp_scheduled). Ranked by category severity, then shortest remaining life (none last), earliest due date (none last), match id.
+- **Pending reviews.** Matches with `needs_review` and `review_status` pending. The CLI warns that the report is not final until each is reviewed; the DRAFT label stays either way.
+- **Charts.** SVG scatter (not WebGL) so they print. Histograms start at the bin-aligned minimum so negative raw rates show. The depth chart has per-run odometer axes (each run's own log distance, not aligned). The map is offline, without a basemap (spec 2: fully local). The unity chart compares reported current depth with the field depth, within the tool tolerance; no growth to the dig date is applied.
+- **Header fields** that the tallies do not carry (line name, tool types) come from `--line-name`, `--prev-tool` and `--curr-tool`; absent ones print "not stated". The methods table marks PLACEHOLDER settings and criteria by detecting the marker in the YAML text.
+- **Print.** The DRAFT label prints in an `@page` top-left margin box on every page (Chromium and Edge; Firefox does not render margin boxes, but each section's own label still prints). The on-screen banner is sticky. No PDF export (optional in spec 3): the HTML prints with the label on every page.
+- **Workbook.** Row 1 is the DRAFT label (plus the discovery warning when there is one), row 2 the header, data from row 3; panes frozen at A3 and a filter over the header and data. Rows are filled with `CATEGORY_COLOURS`, chosen for at least 4.5:1 contrast with black text. Dates are real Excel dates and blanks empty cells. `report.dig_list_sheet` is checked against Excel's rules (1-31 characters, none of `[ ] : * ? / \`) when settings load.
+- **Code version.** The manifest records the package version and, from local git, the commit and whether the tree is dirty; any git failure gives null. It also lists every input's sha256, the tally and vendor-map hashes, and the settings and criteria path and sha256.
+- **Results (default 20-mile dataset, with `--digs`).** The old default outputs predated a criteria edit, so `ili.classify` was re-run first (counts unchanged).
+  - By category: immediate 14, 60_day 4, 180_day 119, imp_scheduled 354, evaluate 64. Dig list 491 rows. Pending reviews 42.
+  - 39 of 500 compared anomalies moved to a more severe category: evaluate to 180_day 33, evaluate to immediate 4, 180_day to immediate 2.
+  - Back-test: 5 of 15 dug features within the tool tolerance (33 %); the tool over-reads most of the rest (up to 27 points).
+  - `report.html` 5.4 MB (plotly.js inlined), `dig_list.xlsx` 114 KB.
