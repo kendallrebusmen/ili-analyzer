@@ -372,3 +372,59 @@ def test_one_sided_accept_unknown_feature_is_not_applied(synth_run):
     _, run, _ = synth_run
     res = run(_reviews(("accept", ["A-999999"], [])))
     assert _status(res) == {"R000001": ("not_applied", "unknown_feature")}
+
+
+def _split_rows(wm: pd.DataFrame, row: int, cuts_prev: list) -> pd.DataFrame:
+    """``wm`` with matched row ``row`` cut into short joints at previous-run positions ``cuts_prev`` (pup
+    joints). The cuts lie on the row's own linear map, so no position in either run moves."""
+    r = wm.iloc[row]
+    ps, pl, cs, cl = (float(r[c]) for c in ("prev_start_ft", "prev_length_ft", "curr_start_ft", "curr_length_ft"))
+    edges = [0.0, *[(x - ps) / pl for x in cuts_prev], 1.0]
+    pieces = [r.copy() for _ in edges[1:]]
+    for piece, a, b in zip(pieces, edges, edges[1:]):
+        piece["prev_start_ft"], piece["prev_length_ft"] = ps + a * pl, (b - a) * pl
+        piece["curr_start_ft"], piece["curr_length_ft"] = cs + a * cl, (b - a) * cl
+        piece["curr_length_scaled_ft"] = (b - a) * pl
+    return pd.concat([wm.iloc[:row], pd.DataFrame(pieces), wm.iloc[row + 1:]], ignore_index=True)
+
+
+def test_accepting_the_matchers_own_row_across_pup_joints_applies(synth_run):
+    """M8: an accept naming exactly a row the automated passes make is applied even when its members span
+    more than one weld-map row (short pup joints); any other out-of-range accept is still not applied."""
+    r, _, base = synth_run
+    pipe, repairs = r.reference["pipe_properties"], r.reference["repairs_between_runs"]
+    wm = align_welds(r.prev_std, r.curr_std, S, repairs).weld_map
+    pmap = PositionMap.from_weld_map(wm)
+    prev, curr = (place(std, wm, run, pmap).set_index("feature_id") for std, run in
+                  ((r.prev_std, "prev"), (r.curr_std, "curr")))
+    t = base.match_table
+    for row in t[t.match_type == "matched_cluster"].itertuples():
+        members = [prev.loc[_ids(row.prev_feature_id)], curr.loc[_ids(row.curr_feature_id)]]
+        pos = np.unique(np.concatenate([m.pos_prev_ft.to_numpy(float) for m in members]).round(3))
+        rows = {int(w) for m in members for w in m.wm_row}
+        if len(pos) >= 3 and len(rows) == 1:
+            break
+    else:
+        pytest.fail("the synthetic data has no cluster with three distinct member positions in one joint")
+    split = _split_rows(wm, rows.pop(), list((pos[1:] + pos[:-1]) / 2))
+
+    def run(reviews=None):
+        return match_anomalies(r.prev_std, r.curr_std, split, S, pipe, repairs, reviews=reviews)
+    auto = run().match_table
+    same = auto[(auto.prev_feature_id == row.prev_feature_id) & (auto.curr_feature_id == row.curr_feature_id)]
+    assert len(same) == 1, "the split weld map changed the automated cluster"
+    smap = PositionMap.from_weld_map(split)
+    spans = [place(std, split, run, smap).set_index("feature_id").loc[_ids(cell)].wm_row.to_numpy(int)
+             for std, run, cell in ((r.prev_std, "prev", row.prev_feature_id), (r.curr_std, "curr", row.curr_feature_id))]
+    assert np.ptp(np.concatenate(spans)) > 1  # the members span more than two pup joints
+
+    res = run(_reviews(("accept", _ids(row.prev_feature_id), _ids(row.curr_feature_id))))
+    assert _status(res) == {"R000001": ("applied", None)}
+    got = _row(res.match_table, "prev", _ids(row.prev_feature_id)[0])
+    assert (got.curr_feature_id, got.review_status, got.needs_review) == (row.curr_feature_id, "accepted", False)
+    assert res.summary["decisions"] == {"applied": 1, "not_applied": 0, "superseded": 0}
+    # the same members minus one form no automated row: the weld-map range rule still applies
+    fewer = run(_reviews(("accept", _ids(row.prev_feature_id)[:-1] or _ids(row.prev_feature_id),
+                          _ids(row.curr_feature_id))))
+    if len(_ids(row.prev_feature_id)) > 1:
+        assert _status(fewer)["R000001"][0] == "not_applied"

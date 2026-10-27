@@ -42,7 +42,7 @@ from ili.match import clock_diff_min, load_match_table, parse_flag_column
 from ili.reference import _require_columns, assign_segment, check_segments, lookup
 from ili.remaining_life import (PIPE_WHAT, RL_SEGMENT_COLUMNS, _as_date, _run_ids, _segment_hca,
                                 load_remaining_life_table)
-from ili.review import FLAG_COLUMNS, FLAGS_FILE, effective_flags, latest_flag_ids, load_flags
+from ili.review import FLAG_COLUMNS, FLAGS_FILE, effective_flags, latest_flag_ids, load_flags_hashed
 from ili.rules import _kleene_and, _kleene_or, _normalize, compile_condition
 from ili.schema import ANOMALY_TYPES, FeatureType
 from ili.strength import assessed_depth_in
@@ -904,7 +904,8 @@ def main(argv: list[str] | None = None) -> int:
             raise ValueError(f"{args.curr}: the current run has no run date")
         assessed = run_dates.iloc[0]
         flags_path = _flags_path(args.flags, comparison_dir(args.out, prev_id, curr_id))
-        flags = load_flags(flags_path) if flags_path else pd.DataFrame(columns=FLAG_COLUMNS, dtype=object)
+        flags, flags_digest = (load_flags_hashed(flags_path) if flags_path
+                               else (pd.DataFrame(columns=FLAG_COLUMNS, dtype=object), None))
         variables = feature_variables(matches, remaining, curr, pipe, segments, crossings, settings,
                                       flags=effective_flags(flags))
         result = classify(variables, criteria, settings, assessed, args.discovery_date, criteria_sha256=digest,
@@ -914,7 +915,7 @@ def main(argv: list[str] | None = None) -> int:
         not_applied = status[status.applied_status == "not_applied"]
         flag_summary = {
             "flags_file": str(flags_path) if flags_path else None,
-            "flags_sha256": hashlib.sha256(flags_path.read_bytes()).hexdigest() if flags_path else None,
+            "flags_sha256": flags_digest,  # of the bytes parsed above, not a second read
             "flags_not_applied": [{"flag_id": r.flag_id, "curr_feature_id": r.curr_feature_id, "flag": r.flag,
                                    "reason": r.reason} for r in not_applied.itertuples(index=False)]}
         result = replace(result, summary={"prev_run_id": prev_id, "curr_run_id": curr_id, **result.summary,

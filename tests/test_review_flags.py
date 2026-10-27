@@ -19,7 +19,8 @@ from ili.classify import feature_variables
 from ili.config import DEFAULT_CRITERIA, DEFAULT_SETTINGS, load_repair_criteria, load_settings
 from ili.report import ReportHeader, render_report
 from ili.report_data import load_report_inputs, pending_reviews
-from ili.review import FLAGS_FILE, REVIEWS_FILE, append_flag, append_review, effective_flags, load_flags
+from ili.review import (FLAGS_FILE, REVIEWS_FILE, append_flag, append_review, effective_flags, effective_reviews,
+                        load_flags)
 
 T0 = datetime(2026, 10, 27, 12, 0, tzinfo=timezone.utc)
 
@@ -278,3 +279,35 @@ def test_review_saved_after_match_is_unrecorded(classified):
     assert len(inputs.log_warnings) == 1 and REVIEWS_FILE in inputs.log_warnings[0]
     assert "saved after the last run — rerun to apply" in _row(html, "R000001")
     assert f"{pending0 + 1} match reviews pending" in html
+
+
+def test_recorded_hashes_are_of_the_parsed_bytes(plain, tmp_path, monkeypatch, capsys):
+    """A log appended to after it was parsed must not be recorded as applied: the summaries hash the
+    bytes that were parsed (read once), so the report then sees the file as changed."""
+    data, out0, std, folder0 = plain
+    out = tmp_path / "out"
+    shutil.copytree(out0, out)
+    folder = out / folder0.name
+    append_review(folder / REVIEWS_FILE, "accept", ["NO-PREV"], ["NO-CURR"], "Pat", None, now=_t(0))
+    append_flag(folder / FLAGS_FILE, "NO-SUCH", "manual_immediate", True, "Pat", None, now=_t(0))
+    parsed = {name: hashlib.sha256((folder / name).read_bytes()).hexdigest() for name in (REVIEWS_FILE, FLAGS_FILE)}
+
+    def late_review(log):  # another session appends right after the log was parsed
+        append_review(folder / REVIEWS_FILE, "accept", ["LATE-P"], ["LATE-C"], "Pat", None, now=_t(9))
+        return effective_reviews(log)
+
+    def late_flag(log):
+        append_flag(folder / FLAGS_FILE, "LATE", "manual_immediate", True, "Pat", None, now=_t(9))
+        return effective_flags(log)
+    monkeypatch.setattr(match, "effective_reviews", late_review)
+    monkeypatch.setattr(classify, "effective_flags", late_flag)
+    ref = data / "reference"
+    assert match.main(["--prev", str(std / "2021_vendorA.csv"), "--curr", str(std / "2026_vendorB.csv"),
+                       "--weld-map", str(folder / "weld_map.csv"), "--pipe", str(ref / "pipe_properties.csv"),
+                       "--repairs", str(ref / "repairs_between_runs.csv"), "--out", str(out)]) == 0
+    assert classify.main(_classify_args(std, folder, data, out)) == 0
+    capsys.readouterr()
+    msum = json.loads((folder / "match_summary.json").read_text(encoding="utf-8"))
+    csum = json.loads((folder / "classification_summary.json").read_text(encoding="utf-8"))
+    assert msum["reviews_sha256"] == parsed[REVIEWS_FILE]
+    assert csum["flags_sha256"] == parsed[FLAGS_FILE]

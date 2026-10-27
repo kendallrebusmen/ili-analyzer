@@ -217,3 +217,36 @@ def test_failed_write_keeps_the_original_error_and_leaves_no_temp(tmp_path, monk
     with pytest.raises(OSError, match="disk full"):
         append_review(path, "accept", ["A1"], ["B1"], "Pat", now=T0)
     assert list(tmp_path.iterdir()) == []
+
+
+def test_excel_bom_is_read_and_header_error_has_the_recovery_hint(tmp_path):
+    # an Excel "CSV UTF-8" save starts the file with a byte-order mark and ends lines with CRLF
+    path = tmp_path / "reviews.csv"
+    text = ",".join(REVIEW_COLUMNS) + "\r\nR000001,accept,A1,B1,Pat,2026-10-27T12:00:00Z,\r\n"
+    path.write_bytes(b"\xef\xbb\xbf" + text.encode("utf-8"))
+    got = load_reviews(path)
+    assert list(got.decision_id) == ["R000001"] and got.prev_feature_ids.iloc[0] == "A1"
+    append_review(path, "reject", ["A1"], ["B1"], "Pat", now=_t(5))
+    assert list(load_reviews(path).decision_id) == ["R000001", "R000002"]
+    path.write_text("decision,decision_id\n", encoding="utf-8")
+    with pytest.raises(ValueError, match=r"reviews\.csv: line 1: .*fix or remove the row by hand"):
+        load_reviews(path)
+
+
+def test_hashed_load_hashes_the_bytes_it_parsed(tmp_path, monkeypatch):
+    import hashlib
+    path = tmp_path / "reviews.csv"
+    append_review(path, "accept", ["A1"], ["B1"], "Pat", now=_t(1))
+    parsed = path.read_bytes()
+    reads = []
+    real = type(path).read_bytes
+
+    def counting(self):
+        reads.append(self)
+        return real(self)
+    monkeypatch.setattr(type(path), "read_bytes", counting)
+    log, digest = review.load_reviews_hashed(path)
+    assert len(reads) == 1 and digest == hashlib.sha256(parsed).hexdigest() and len(log) == 1
+    assert review.load_reviews_hashed(tmp_path / "none.csv")[1] is None
+    flags, fdigest = review.load_flags_hashed(tmp_path / "none.csv")
+    assert flags.empty and fdigest is None

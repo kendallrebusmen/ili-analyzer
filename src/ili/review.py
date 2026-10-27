@@ -14,6 +14,7 @@ DRAFT – for review by qualified personnel.
 from __future__ import annotations
 
 import csv
+import hashlib
 import io
 import os
 import re
@@ -96,33 +97,41 @@ def _check_flag(row: dict[str, str]) -> dict[str, str]:
             "reviewer": row["reviewer"].strip(), "decided_utc": when}
 
 
-def _read(path: Path, columns: list[str], check) -> list[dict[str, str]]:
-    """Every row of a log, validated; a missing file is no rows. A bad row is a ValueError naming the file
-    and line; the tool never rewrites a log, so the fix is to correct or remove that row by hand."""
+_HINT = "fix or remove the row by hand; the log is never rewritten by the tool"
+
+
+def _read(path: Path, columns: list[str], check) -> tuple[list[dict[str, str]], str | None]:
+    """Every row of a log, validated, and the sha256 of the bytes parsed (the file is read once, so the
+    hash is of exactly what was applied); a missing file is no rows and no hash. A bad row is a
+    ValueError naming the file and line; the tool never rewrites a log, so the fix is to correct or
+    remove that row by hand. A leading byte-order mark (an Excel "CSV UTF-8" save) is ignored."""
     path = Path(path)
     if not path.exists():
-        return []
+        return [], None
+    data = path.read_bytes()
+    try:
+        text = data.decode("utf-8-sig")
+    except UnicodeDecodeError as e:
+        raise ValueError(f"{path.name}: not UTF-8 text ({e.reason}); save it as CSV UTF-8") from None
     id_col = columns[0]
     rows, seen = [], set()
-    with open(path, encoding="utf-8", newline="") as f:
-        reader = csv.DictReader(f, restkey=None, restval=None)
-        if reader.fieldnames != columns:
-            raise ValueError(f"{path.name}: line 1: columns are {reader.fieldnames}, expected {columns}")
-        for raw in reader:
-            try:
-                if None in raw or any(raw[c] is None for c in columns):
-                    raise ValueError(f"expected {len(columns)} fields")
-                row = dict(raw)
-                if not _ID_PATTERN[id_col].fullmatch(row[id_col]):
-                    raise ValueError(f"{id_col} {row[id_col]!r} is not {id_col[0].upper()} and 6 digits")
-                if row[id_col] in seen:
-                    raise ValueError(f"{id_col} {row[id_col]} is repeated")
-                seen.add(row[id_col])
-                rows.append(check(row))
-            except ValueError as e:
-                raise ValueError(f"{path.name}: line {reader.line_num}: {e} (fix or remove the row by hand; "
-                                 f"the log is never rewritten by the tool)") from None
-    return rows
+    reader = csv.DictReader(io.StringIO(text, newline=""), restkey=None, restval=None)
+    if reader.fieldnames != columns:
+        raise ValueError(f"{path.name}: line 1: columns are {reader.fieldnames}, expected {columns} ({_HINT})")
+    for raw in reader:
+        try:
+            if None in raw or any(raw[c] is None for c in columns):
+                raise ValueError(f"expected {len(columns)} fields")
+            row = dict(raw)
+            if not _ID_PATTERN[id_col].fullmatch(row[id_col]):
+                raise ValueError(f"{id_col} {row[id_col]!r} is not {id_col[0].upper()} and 6 digits")
+            if row[id_col] in seen:
+                raise ValueError(f"{id_col} {row[id_col]} is repeated")
+            seen.add(row[id_col])
+            rows.append(check(row))
+        except ValueError as e:
+            raise ValueError(f"{path.name}: line {reader.line_num}: {e} ({_HINT})") from None
+    return rows, hashlib.sha256(data).hexdigest()
 
 
 def _write(path: Path, columns: list[str], rows: list[dict[str, str]]) -> None:
@@ -162,19 +171,31 @@ def _clean_note(note: str | None) -> str:
 
 def load_reviews(path: Path) -> pd.DataFrame:
     """The decision log (REVIEW_COLUMNS, all text); a missing file is an empty frame."""
-    return pd.DataFrame(_read(path, REVIEW_COLUMNS, _check_review), columns=REVIEW_COLUMNS, dtype=object)
+    return load_reviews_hashed(path)[0]
+
+
+def load_reviews_hashed(path: Path) -> tuple[pd.DataFrame, str | None]:
+    """``load_reviews`` and the sha256 of the bytes it parsed (None for a missing file)."""
+    rows, digest = _read(path, REVIEW_COLUMNS, _check_review)
+    return pd.DataFrame(rows, columns=REVIEW_COLUMNS, dtype=object), digest
 
 
 def load_flags(path: Path) -> pd.DataFrame:
     """The manual-flag log (FLAG_COLUMNS, all text; ``value`` is ``true``/``false``)."""
-    return pd.DataFrame(_read(path, FLAG_COLUMNS, _check_flag), columns=FLAG_COLUMNS, dtype=object)
+    return load_flags_hashed(path)[0]
+
+
+def load_flags_hashed(path: Path) -> tuple[pd.DataFrame, str | None]:
+    """``load_flags`` and the sha256 of the bytes it parsed (None for a missing file)."""
+    rows, digest = _read(path, FLAG_COLUMNS, _check_flag)
+    return pd.DataFrame(rows, columns=FLAG_COLUMNS, dtype=object), digest
 
 
 def append_review(path: Path, decision: str, prev_ids: list[str], curr_ids: list[str], reviewer: str,
                   note: str | None = None, now: datetime | None = None) -> dict[str, str]:
     """Add one decision to the log and return the row written."""
     with _APPEND_LOCK:
-        rows = _read(path, REVIEW_COLUMNS, _check_review)
+        rows = _read(path, REVIEW_COLUMNS, _check_review)[0]
         row = _check_review({
             "decision_id": f"R{_next_number(rows, 'decision_id'):06d}", "decision": decision,
             "prev_feature_ids": ";".join(prev_ids), "curr_feature_ids": ";".join(curr_ids),
@@ -187,7 +208,7 @@ def append_flag(path: Path, curr_feature_id: str, flag: str, value: bool, review
                 note: str | None = None, now: datetime | None = None) -> dict[str, str]:
     """Add one manual flag value to the log and return the row written."""
     with _APPEND_LOCK:
-        rows = _read(path, FLAG_COLUMNS, _check_flag)
+        rows = _read(path, FLAG_COLUMNS, _check_flag)[0]
         row = _check_flag({
             "flag_id": f"F{_next_number(rows, 'flag_id'):06d}", "curr_feature_id": curr_feature_id, "flag": flag,
             "value": "true" if value else "false", "reviewer": reviewer, "decided_utc": _stamp(now),
