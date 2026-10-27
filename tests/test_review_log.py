@@ -1,7 +1,8 @@
 """Decision and flag logs (spec 6.4, 6.11): append-only, validated, atomic."""
 
 import os
-from datetime import datetime, timezone
+import threading
+from datetime import datetime, timedelta, timezone
 
 import pandas as pd
 import pytest
@@ -122,3 +123,52 @@ def test_effective_flags_latest_value(tmp_path):
         ("B1", "manual_immediate"): False, ("B1", "field_crack_confirmed"): True,
         ("B2", "manual_immediate"): True}
     assert review.REVIEWS_FILE == "reviews.csv" and review.FLAGS_FILE == "feature_flags.csv"
+
+
+def test_curr_only_overlap_supersedes(tmp_path):
+    path = tmp_path / "reviews.csv"
+    append_review(path, "accept", ["A1"], ["B1"], "Pat", now=_t(1))
+    append_review(path, "manual", ["A2"], ["B1"], "Pat", now=_t(2))
+    eff = effective_reviews(load_reviews(path))
+    assert eff.superseded == ["R000001"]
+    assert eff.decisions.decision_id.tolist() == ["R000002"]
+
+
+def test_concurrent_appends_lose_nothing(tmp_path):
+    path = tmp_path / "reviews.csv"
+    n = 8
+    threads = [threading.Thread(target=append_review, args=(path, "accept", [f"A{i}"], [f"B{i}"], "Pat"),
+                                kwargs={"now": _t(i)}) for i in range(n)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    df = load_reviews(path)
+    assert df.decision_id.tolist() == [f"R{i:06d}" for i in range(1, n + 1)]
+    assert sorted(df.prev_feature_ids) == sorted(f"A{i}" for i in range(n))
+    assert [p.name for p in tmp_path.iterdir()] == ["reviews.csv"]
+
+
+def test_times_are_stored_as_utc(tmp_path):
+    path = tmp_path / "reviews.csv"
+    plus5 = datetime(2026, 10, 27, 17, 0, tzinfo=timezone(timedelta(hours=5)))
+    assert append_review(path, "accept", ["A1"], ["B1"], "Pat", now=plus5)["decided_utc"] == "2026-10-27T12:00:00Z"
+    text = path.read_text(encoding="utf-8").replace("2026-10-27T12:00:00Z", "2026-10-27T17:00:00+05:00")
+    path.write_text(text, encoding="utf-8", newline="")
+    assert load_reviews(path).decided_utc.tolist() == ["2026-10-27T12:00:00Z"]
+
+
+def test_malformed_ids_and_field_counts_are_errors(tmp_path):
+    path = tmp_path / "reviews.csv"
+    header = ",".join(REVIEW_COLUMNS)
+    ok = "accept,A1,B1,Pat,2026-10-27T12:00:00Z,"
+    cases = {
+        "bad id": f"X1,{ok}",
+        "repeat": f"R000001,{ok}",
+        "extra": f"R000002,{ok},oops",
+        "short": "R000002,accept,A1,B1",
+    }
+    for key, row in cases.items():
+        path.write_text(f"{header}\nR000001,{ok}\n{row}\n", encoding="utf-8", newline="")
+        with pytest.raises(ValueError, match=r"reviews\.csv: line 3.*by hand"):
+            load_reviews(path)

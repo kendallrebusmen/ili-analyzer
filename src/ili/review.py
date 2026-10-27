@@ -16,6 +16,9 @@ from __future__ import annotations
 import csv
 import io
 import os
+import re
+import tempfile
+import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -31,6 +34,11 @@ REVIEW_COLUMNS = ["decision_id", "decision", "prev_feature_ids", "curr_feature_i
 FLAG_COLUMNS = ["flag_id", "curr_feature_id", "flag", "value", "reviewer", "decided_utc", "note"]
 
 _TIME_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
+_ID_PATTERN = {"decision_id": re.compile(r"R\d{6}"), "flag_id": re.compile(r"F\d{6}")}
+
+# Streamlit runs every browser session as a thread of one process: an append is read, validate, write
+# under this lock, or two sessions could both write N+1 rows and lose one decision.
+_APPEND_LOCK = threading.Lock()
 
 
 @dataclass
@@ -63,9 +71,9 @@ def _check_review(row: dict[str, str]) -> dict[str, str]:
         raise ValueError(f"a {row['decision']} decision needs at least one feature id on each side")
     if not row["reviewer"].strip():
         raise ValueError("reviewer is blank")
-    _parse_time(row["decided_utc"])
+    when = _parse_time(row["decided_utc"]).strftime(_TIME_FORMAT)
     return {**row, "prev_feature_ids": ";".join(prev), "curr_feature_ids": ";".join(curr),
-            "reviewer": row["reviewer"].strip(), "decided_utc": row["decided_utc"].strip()}
+            "reviewer": row["reviewer"].strip(), "decided_utc": when}
 
 
 def _check_flag(row: dict[str, str]) -> dict[str, str]:
@@ -78,43 +86,57 @@ def _check_flag(row: dict[str, str]) -> dict[str, str]:
         raise ValueError(f"value {row['value']!r} must be true or false")
     if not row["reviewer"].strip():
         raise ValueError("reviewer is blank")
-    _parse_time(row["decided_utc"])
+    when = _parse_time(row["decided_utc"]).strftime(_TIME_FORMAT)
     return {**row, "curr_feature_id": row["curr_feature_id"].strip(), "value": value,
-            "reviewer": row["reviewer"].strip(), "decided_utc": row["decided_utc"].strip()}
+            "reviewer": row["reviewer"].strip(), "decided_utc": when}
 
 
 def _read(path: Path, columns: list[str], check) -> list[dict[str, str]]:
-    """Every row of a log, validated; a missing file is no rows."""
+    """Every row of a log, validated; a missing file is no rows. A bad row is a ValueError naming the file
+    and line; the tool never rewrites a log, so the fix is to correct or remove that row by hand."""
     path = Path(path)
     if not path.exists():
         return []
-    rows = []
+    id_col = columns[0]
+    rows, seen = [], set()
     with open(path, encoding="utf-8", newline="") as f:
-        reader = csv.DictReader(f)
+        reader = csv.DictReader(f, restkey=None, restval=None)
         if reader.fieldnames != columns:
             raise ValueError(f"{path.name}: line 1: columns are {reader.fieldnames}, expected {columns}")
         for raw in reader:
-            row = {c: (raw[c] or "") for c in columns}
             try:
+                if None in raw or any(raw[c] is None for c in columns):
+                    raise ValueError(f"expected {len(columns)} fields")
+                row = dict(raw)
+                if not _ID_PATTERN[id_col].fullmatch(row[id_col]):
+                    raise ValueError(f"{id_col} {row[id_col]!r} is not {id_col[0].upper()} and 6 digits")
+                if row[id_col] in seen:
+                    raise ValueError(f"{id_col} {row[id_col]} is repeated")
+                seen.add(row[id_col])
                 rows.append(check(row))
             except ValueError as e:
-                raise ValueError(f"{path.name}: line {reader.line_num}: {e}") from None
+                raise ValueError(f"{path.name}: line {reader.line_num}: {e} (fix or remove the row by hand; "
+                                 f"the log is never rewritten by the tool)") from None
     return rows
 
 
 def _write(path: Path, columns: list[str], rows: list[dict[str, str]]) -> None:
-    """Replace the log with ``rows`` through a temporary file beside it; the old file survives a failure."""
+    """Replace the log with ``rows`` through a uniquely named temporary file beside it; the old file
+    survives a failure."""
     path = Path(path)
     buf = io.StringIO()
     writer = csv.DictWriter(buf, fieldnames=columns, lineterminator="\n")
     writer.writeheader()
     writer.writerows(rows)
-    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    try:
-        tmp.write_bytes(buf.getvalue().encode("utf-8"))
-        os.replace(tmp, path)
-    finally:
-        tmp.unlink(missing_ok=True)
+    with tempfile.NamedTemporaryFile(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp",
+                                     delete=False) as tmp:
+        tmp_path = Path(tmp.name)
+        try:
+            tmp.write(buf.getvalue().encode("utf-8"))
+            tmp.close()
+            os.replace(tmp_path, path)
+        finally:
+            tmp_path.unlink(missing_ok=True)
 
 
 def _stamp(now: datetime | None) -> str:
@@ -142,24 +164,26 @@ def load_flags(path: Path) -> pd.DataFrame:
 def append_review(path: Path, decision: str, prev_ids: list[str], curr_ids: list[str], reviewer: str,
                   note: str | None = None, now: datetime | None = None) -> dict[str, str]:
     """Add one decision to the log and return the row written."""
-    rows = _read(path, REVIEW_COLUMNS, _check_review)
-    row = _check_review({
-        "decision_id": f"R{len(rows) + 1:06d}", "decision": decision,
-        "prev_feature_ids": ";".join(prev_ids), "curr_feature_ids": ";".join(curr_ids),
-        "reviewer": reviewer, "decided_utc": _stamp(now), "note": _clean_note(note)})
-    _write(path, REVIEW_COLUMNS, rows + [row])
+    with _APPEND_LOCK:
+        rows = _read(path, REVIEW_COLUMNS, _check_review)
+        row = _check_review({
+            "decision_id": f"R{len(rows) + 1:06d}", "decision": decision,
+            "prev_feature_ids": ";".join(prev_ids), "curr_feature_ids": ";".join(curr_ids),
+            "reviewer": reviewer, "decided_utc": _stamp(now), "note": _clean_note(note)})
+        _write(path, REVIEW_COLUMNS, rows + [row])
     return row
 
 
 def append_flag(path: Path, curr_feature_id: str, flag: str, value: bool, reviewer: str,
                 note: str | None = None, now: datetime | None = None) -> dict[str, str]:
     """Add one manual flag value to the log and return the row written."""
-    rows = _read(path, FLAG_COLUMNS, _check_flag)
-    row = _check_flag({
-        "flag_id": f"F{len(rows) + 1:06d}", "curr_feature_id": curr_feature_id, "flag": flag,
-        "value": "true" if value else "false", "reviewer": reviewer, "decided_utc": _stamp(now),
-        "note": _clean_note(note)})
-    _write(path, FLAG_COLUMNS, rows + [row])
+    with _APPEND_LOCK:
+        rows = _read(path, FLAG_COLUMNS, _check_flag)
+        row = _check_flag({
+            "flag_id": f"F{len(rows) + 1:06d}", "curr_feature_id": curr_feature_id, "flag": flag,
+            "value": "true" if value else "false", "reviewer": reviewer, "decided_utc": _stamp(now),
+            "note": _clean_note(note)})
+        _write(path, FLAG_COLUMNS, rows + [row])
     return row
 
 
