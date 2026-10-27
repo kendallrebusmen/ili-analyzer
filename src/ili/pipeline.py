@@ -10,6 +10,7 @@ import contextlib
 import io
 import json
 import sys
+import threading
 import traceback
 from dataclasses import dataclass, fields
 from datetime import datetime, timezone
@@ -100,6 +101,11 @@ def _argv(stage: str, i: PipelineInputs, prev_id: str | None, curr_id: str | Non
             *_optional("--curr-tool", i.curr_tool)]
 
 
+# redirect_stdout swaps process-global streams and concurrent runs would write the same folder, so one run
+# at a time per process (Streamlit sessions are threads).
+_RUN_LOCK = threading.Lock()
+BUSY_MESSAGE = "another pipeline run is in progress; try again when it finishes"
+
 _MODULES = {"ingest": ingest, "align_welds": align_welds, "match": match, "growth": growth,
             "remaining_life": remaining_life, "classify": classify, "report": report}
 
@@ -110,8 +116,14 @@ def _call(stage: str, argv: list[str]) -> StageResult:
     with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
         try:
             code = _MODULES[stage].main(argv)
-        except SystemExit as exc:  # argparse errors
-            code = exc.code if isinstance(exc.code, int) else 2
+        except SystemExit as exc:  # argparse errors, sys.exit()
+            if exc.code is None:
+                code = 0
+            elif isinstance(exc.code, int):
+                code = exc.code
+            else:
+                code = 1
+                err.write(f"{exc.code}\n")
         except Exception:
             code = 1
             err.write(traceback.format_exc())
@@ -148,7 +160,17 @@ def load_pipeline_inputs(path: Path) -> PipelineInputs:
 
 
 def run_pipeline(inputs: PipelineInputs, *, until: str | None = None) -> list[StageResult]:
-    """Run the stages in order, stopping at the first non-zero exit (or after ``until``)."""
+    """Run the stages in order, stopping at the first non-zero exit (or after ``until``). One run at a
+    time: while another holds the lock this returns at once with a single failed ``pipeline`` result."""
+    if not _RUN_LOCK.acquire(blocking=False):
+        return [StageResult("pipeline", 1, "", BUSY_MESSAGE)]
+    try:
+        return _run(inputs, until)
+    finally:
+        _RUN_LOCK.release()
+
+
+def _run(inputs: PipelineInputs, until: str | None) -> list[StageResult]:
     if until is not None and until not in STAGES:
         raise ValueError(f"until {until!r} is not one of {', '.join(STAGES)}")
     results: list[StageResult] = []

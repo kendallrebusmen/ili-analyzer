@@ -1,6 +1,7 @@
 """The pipeline runner: every stage in order, stopping at a failure, re-applying reviews (M9 done-when)."""
 
 import sys
+import threading
 from dataclasses import replace
 
 import pandas as pd
@@ -137,3 +138,58 @@ def test_inputs_round_trip_and_errors(tmp_path):
         load_pipeline_inputs(bad)
     with pytest.raises(ValueError):
         run_pipeline(replace(inputs), until="nope")
+
+
+def test_busy_run_returns_at_once_and_streams_survive(synth, tmp_path, monkeypatch):
+    _, data = synth
+    streams = sys.stdout, sys.stderr
+    started, release = threading.Event(), threading.Event()
+
+    def slow(argv):
+        started.set()
+        release.wait(30)
+        return 0
+
+    monkeypatch.setattr(pipeline.ingest, "main", slow)
+    first = []
+    worker = threading.Thread(target=lambda: first.extend(run_pipeline(_inputs(data, tmp_path / "a"), until="ingest")))
+    worker.start()
+    try:
+        assert started.wait(30)
+        second = run_pipeline(_inputs(data, tmp_path / "b"))
+        assert [(r.stage, r.exit_code, r.stdout) for r in second] == [("pipeline", 1, "")]
+        assert "another pipeline run is in progress" in second[0].stderr
+        assert not (tmp_path / "b").exists()
+    finally:
+        release.set()
+        worker.join(30)
+    assert (sys.stdout, sys.stderr) == streams
+    assert pipeline._RUN_LOCK.acquire(blocking=False)
+    pipeline._RUN_LOCK.release()
+
+
+def test_busy_cli_exits_1(tmp_path, capsys):
+    assert pipeline._RUN_LOCK.acquire(blocking=False)
+    try:
+        ref = tmp_path / "x"
+        argv = []
+        names = ("prev-tally", "prev-map", "curr-tally", "curr-map", "pipe", "mop", "segments", "next-inspection", "out")
+        for n in names:
+            argv += ["--" + n, str(ref)]
+        assert pipeline.main(argv) == 1
+    finally:
+        pipeline._RUN_LOCK.release()
+    assert "another pipeline run is in progress" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("raised, code, err", [(None, 0, ""), (3, 3, ""), ("bad thing", 1, "bad thing")])
+def test_system_exit_mapping(raised, code, err):
+    def stage(argv):
+        raise SystemExit(raised)
+
+    pipeline._MODULES["growth"], saved = type("M", (), {"main": staticmethod(stage)}), pipeline._MODULES["growth"]
+    try:
+        result = pipeline._call("growth", [])
+    finally:
+        pipeline._MODULES["growth"] = saved
+    assert result.exit_code == code and err in result.stderr
