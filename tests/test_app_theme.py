@@ -1,6 +1,7 @@
 """The Enterprise Suite look: theme config, shell bar, breadcrumb, status pills, and the app's layout."""
 
 import tomllib
+from pathlib import Path
 
 import pytest
 from streamlit.testing.v1 import AppTest
@@ -12,14 +13,54 @@ from test_app_setup import APP, SCRIPT_CONFIG, isolated_outputs, script_config  
 HOSTILE = "<script>alert(1)</script>"
 
 
-def test_config_sets_the_enterprise_theme():
-    theme = tomllib.loads(SCRIPT_CONFIG.read_text(encoding="utf-8"))["theme"]
-    assert theme["base"] == "light"
-    assert theme["primaryColor"] == app_theme.PRIMARY == "#0A6ED1"
-    assert theme["backgroundColor"] == app_theme.PAGE_BACKGROUND == "#F5F6F7"
-    assert theme["secondaryBackgroundColor"] == "#FFFFFF"
-    assert theme["textColor"] == app_theme.INK == "#223548"
+def test_config_sets_light_and_dark_enterprise_themes():
+    config = tomllib.loads(SCRIPT_CONFIG.read_text(encoding="utf-8"))
+    theme = config["theme"]
+    light, dark = theme["light"], theme["dark"]
+    assert "base" not in theme  # one palette per theme; the reviewer or the computer picks which
+    assert light["primaryColor"] == dark["primaryColor"] == app_theme.PRIMARY == "#0A6ED1"
+    assert light["backgroundColor"] == app_theme.PAGE_BACKGROUND == "#F5F6F7"
+    assert light["secondaryBackgroundColor"] == "#FFFFFF"
+    assert light["textColor"] == app_theme.INK == "#223548"
+    assert dark["backgroundColor"] == app_theme.DARK_PAGE_BACKGROUND
+    assert dark["secondaryBackgroundColor"] == app_theme.DARK_SURFACE
+    assert dark["textColor"] == app_theme.DARK_INK
+    assert dark["linkColor"] == app_theme.DARK_LINK and dark["borderColor"] == app_theme.DARK_LINE
     assert "http" not in theme["font"]  # system fonts only: the app makes no network calls
+    # the menu holds the System / Light / Dark choice; "viewer" keeps it without the Deploy button
+    assert config["client"]["toolbarMode"] == "viewer"
+
+
+def _luminance(hex_colour):
+    channels = [int(hex_colour[i:i + 2], 16) / 255 for i in (1, 3, 5)]
+    r, g, b = (c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4 for c in channels)
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b
+
+
+def _contrast(a, b):
+    hi, lo = sorted((_luminance(a), _luminance(b)), reverse=True)
+    return (hi + 0.05) / (lo + 0.05)
+
+
+@pytest.mark.parametrize("ink, background", [
+    (app_theme.INK, app_theme.PAGE_BACKGROUND), (app_theme.MUTED, app_theme.PAGE_BACKGROUND),
+    (app_theme.LINK, "#FFFFFF"), (app_theme.DANGER, "#FFFFFF"),
+    (app_theme.DARK_INK, app_theme.DARK_PAGE_BACKGROUND), (app_theme.DARK_MUTED, app_theme.DARK_PAGE_BACKGROUND),
+    (app_theme.DARK_LINK, app_theme.DARK_SURFACE), (app_theme.DARK_DANGER, app_theme.DARK_SURFACE),
+    (app_theme.DARK_MUTED, app_theme.DARK_SURFACE),
+])
+def test_text_colours_are_readable_in_both_themes(ink, background):
+    assert _contrast(ink, background) >= 4.5  # WCAG AA for body text
+
+
+def test_css_follows_the_active_theme():
+    css = app_theme.ENTERPRISE_CSS
+    for light, dark in [(app_theme.INK, app_theme.DARK_INK), (app_theme.LINE, app_theme.DARK_LINE),
+                        ("#FFFFFF", app_theme.DARK_SURFACE), (app_theme.DANGER, app_theme.DARK_DANGER)]:
+        assert f"light-dark({light}, {dark})" in css
+    # past the variable block, no hard-coded white card or dark ink that would vanish in the other theme
+    rules = css.split("}", 1)[1]
+    assert f"background: #FFFFFF" not in rules and f"color: {app_theme.INK}" not in rules
 
 
 def test_shell_bar_carries_the_draft_label_and_escapes_the_reviewer():
@@ -74,6 +115,11 @@ def test_app_renders_the_shell_with_tabs_and_no_sidebar():
     assert at.radio(key="page").value == "Run setup"  # tab navigation in the page body
     assert at.text_input(key="reviewer").value == ""
     assert not at.sidebar.radio and not at.sidebar.text_input
+
+
+def test_app_menu_has_no_links_off_this_computer():
+    source = Path(APP).read_text(encoding="utf-8")
+    assert '"Get help": None' in source and '"Report a bug": None' in source
 
 
 def test_object_header_escapes_title_and_facts():

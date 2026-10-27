@@ -36,7 +36,10 @@ def not_local_reason() -> str | None:
     return None
 
 
-st.set_page_config(page_title=TITLE, layout="wide", initial_sidebar_state="collapsed")
+# The menu keeps the System / Light / Dark theme choice; its links to Streamlit's website go, so nothing points off
+# this computer.
+st.set_page_config(page_title=TITLE, layout="wide", initial_sidebar_state="collapsed",
+                   menu_items={"Get help": None, "Report a bug": None, "About": f"{TITLE}. {DRAFT_LABEL}"})
 app_theme.apply_theme()
 st.markdown(app_theme.shell_bar_html(st.session_state.get(app_state.REVIEWER_KEY, "")), unsafe_allow_html=True)
 if reason := not_local_reason():

@@ -26,12 +26,23 @@ def _set_options(options: dict, where: str) -> dict:
     return old
 
 
+def _flatten(table, prefix=""):
+    """{"theme": {"light": {"base": "light"}}} -> {"theme.light.base": "light"}: nested sections like [theme.light]."""
+    flat = {}
+    for key, value in table.items():
+        if isinstance(value, dict):
+            flat |= _flatten(value, f"{prefix}{key}.")
+        else:
+            flat[f"{prefix}{key}"] = value
+    return flat
+
+
 @pytest.fixture(autouse=True)
 def script_config():
     """The options of app/.streamlit/config.toml, as ``streamlit run app/streamlit_app.py`` applies them
     (AppTest reads no config file); the app refuses to run without them."""
     cfg = tomllib.loads(SCRIPT_CONFIG.read_text(encoding="utf-8"))
-    old = _set_options({f"{s}.{k}": v for s, opts in cfg.items() for k, v in opts.items()}, str(SCRIPT_CONFIG))
+    old = _set_options(_flatten(cfg), str(SCRIPT_CONFIG))
     yield
     _set_options(old, "test restore")
 
