@@ -19,7 +19,7 @@ import os
 import re
 import tempfile
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -45,6 +45,7 @@ _APPEND_LOCK = threading.Lock()
 class EffectiveReviews:
     decisions: pd.DataFrame  # the decisions in force, in the order they were made (REVIEW_COLUMNS)
     superseded: list[str]  # decision_ids replaced by a later decision on a shared feature, sorted
+    superseded_decisions: dict[str, str] = field(default_factory=dict)  # superseded decision_id -> decision
 
 
 def _ids(text: str) -> list[str]:
@@ -202,17 +203,19 @@ def effective_reviews(reviews: pd.DataFrame) -> EffectiveReviews:
     that shares any feature id on the same side with an effective earlier row supersedes it."""
     effective: list[tuple[dict, set, set]] = []
     superseded: list[str] = []
+    kinds: dict[str, str] = {}
     for row in _in_time_order(reviews, "decision_id"):
         prev, curr = set(_ids(row["prev_feature_ids"])), set(_ids(row["curr_feature_ids"]))
         keep = []
         for old in effective:
             if old[1] & prev or old[2] & curr:
                 superseded.append(old[0]["decision_id"])
+                kinds[old[0]["decision_id"]] = old[0]["decision"]
             else:
                 keep.append(old)
         effective = keep + [(row, prev, curr)]
     frame = pd.DataFrame([e[0] for e in effective], columns=REVIEW_COLUMNS, dtype=object)
-    return EffectiveReviews(frame, sorted(superseded))
+    return EffectiveReviews(frame, sorted(superseded), dict(sorted(kinds.items())))
 
 
 def effective_flags(flags: pd.DataFrame) -> dict[tuple[str, str], bool]:

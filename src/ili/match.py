@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
@@ -25,6 +26,7 @@ from ili.align_welds import DRAFT_LABEL, comparison_dir, load_weld_map
 from ili.config import DEFAULT_SETTINGS, PROJECT_ROOT, Settings, ToolCfg, load_settings
 from ili.ingest import load_standardized
 from ili.reference import lookup
+from ili.review import REVIEWS_FILE, EffectiveReviews, effective_reviews, load_reviews
 from ili.schema import ANOMALY_TYPES
 from ili.units import CLOCK_MINUTES, wrap_clock_min
 from ili.validation import score_matching, write_metrics
@@ -529,8 +531,13 @@ _OBJECT_FIELDS = ("feature_type", "us_gw_id", "surface", "seam_interaction", "de
 METRIC_COLS = ["axial_diff_in", "clock_diff_min", "depth_change_pct", "implausible", "score"]
 MATCH_TYPES = ("matched_1to1", "matched_cluster", "missing", "new")
 CONFIDENCES = ("high", "medium", "low")
-HINTS = ("in_repaired_section", "near_threshold", "unexplained")
-REVIEW_PENDING = "pending"
+HINTS = ("in_repaired_section", "near_threshold", "unexplained", "rejected_by_review")
+REVIEW_STATUSES = ("pending", "accepted", "rejected", "manual")
+REVIEW_PENDING = REVIEW_STATUSES[0]
+DECISION_STATUS_COLUMNS = ["decision_id", "decision", "applied_status", "reason"]
+APPLIED_STATUSES = ("applied", "not_applied", "superseded")
+NOT_APPLIED_REASONS = ("unknown_feature", "not_anomaly", "type_mismatch", "cluster_type", "out_of_range")
+_DECISION_REVIEW_STATUS = {"accept": "accepted", "reject": "rejected", "manual": "manual"}
 _SIDE_EXTRA = ("pos_prev_ft", "feature_id", "n")
 TABLE_COLUMNS = (
     ["match_id", "match_type", "score", "confidence", "review_status", "needs_review", "missing_hint",
@@ -541,10 +548,13 @@ TABLE_COLUMNS = (
 
 
 class MatchResult:
-    """The match table (one row per match or unmatched feature) and its summary dict."""
+    """The match table (one row per match or unmatched feature), its summary dict, and the outcome of
+    each review decision (``DECISION_STATUS_COLUMNS``, one row per decision-log row)."""
 
-    def __init__(self, match_table: pd.DataFrame, summary: dict):
+    def __init__(self, match_table: pd.DataFrame, summary: dict, decision_status: pd.DataFrame | None = None):
         self.match_table, self.summary = match_table, summary
+        self.decision_status = (decision_status if decision_status is not None
+                                else pd.DataFrame(columns=DECISION_STATUS_COLUMNS, dtype=object))
 
 
 def _require_columns(df: pd.DataFrame, cols: tuple, what: str) -> None:
@@ -615,6 +625,7 @@ def _part(match_type: str, prev: pd.DataFrame, curr: pd.DataFrame, metrics: pd.D
     for c in METRIC_COLS:
         out[c] = m[c].to_numpy()
     out["absorbed"] = m["absorbed"].to_numpy(bool) if "absorbed" in m.columns else np.zeros(n, bool)
+    out["review_status"] = REVIEW_PENDING
     return out
 
 
@@ -654,7 +665,10 @@ def _none_for_na(s: pd.Series) -> pd.Series:
 
 
 def _finish(table: pd.DataFrame, settings: Settings) -> pd.DataFrame:
-    """Sort by prev-frame position, number the rows, fill confidence/review fields and fix dtypes."""
+    """Sort by prev-frame position, number the rows, fill confidence/review fields and fix dtypes.
+
+    ``review_status`` comes from the parts (pending unless a decision settled the row); ``needs_review``
+    is M4's rule (low confidence, unexplained missing, absorbed) and only while pending."""
     pp, cp = _num(table.pop("prev_pos_prev_ft")), _num(table.curr_pos_in_prev_ft)
     key = pd.DataFrame({"pos": np.where(np.isnan(pp), cp, pp), "p": table.prev_feature_id.fillna(""),
                         "c": table.curr_feature_id.fillna("")})
@@ -668,9 +682,9 @@ def _finish(table: pd.DataFrame, settings: Settings) -> pd.DataFrame:
     conf = np.where(absorbed & (conf == CONFIDENCES[0]), CONFIDENCES[1], conf)  # absorbed: at best medium
     table["absorbed"] = absorbed
     table["confidence"] = pd.Series(np.where(matched, conf, None), dtype=object)
-    table["review_status"] = pd.Series([REVIEW_PENDING] * len(table), dtype="str")
-    table["needs_review"] = ((table.confidence == CONFIDENCES[2]) | (table.missing_hint == HINTS[2])
-                             | table.absorbed).astype(bool)
+    table["review_status"] = pd.Series(table.review_status.tolist(), dtype="str")
+    table["needs_review"] = (((table.confidence == CONFIDENCES[2]) | (table.missing_hint == HINTS[2])
+                              | table.absorbed) & (table.review_status == REVIEW_PENDING)).astype(bool)
     for s in ("prev", "curr"):
         for c in _FLOAT_FIELDS:
             table[f"{s}_{c}"] = _num(table[f"{s}_{c}"])
@@ -691,7 +705,8 @@ def _run_id(std: pd.DataFrame):
     return str(ids.iloc[0]) if len(ids) else None
 
 
-def _summary(prev_std, curr_std, dt: float, table: pd.DataFrame, n_prev: int, n_curr: int) -> dict:
+def _summary(prev_std, curr_std, dt: float, table: pd.DataFrame, n_prev: int, n_curr: int,
+             decision_status: pd.DataFrame) -> dict:
     def counts(col, keys):
         got = table[col].value_counts()
         return {k: int(got.get(k, 0)) for k in keys}
@@ -703,14 +718,18 @@ def _summary(prev_std, curr_std, dt: float, table: pd.DataFrame, n_prev: int, n_
         "counts_by_hint": counts("missing_hint", HINTS),
         "n_absorbed": int(table.absorbed.sum()),
         "n_needs_review": int(table.needs_review.sum()),
+        "counts_by_review_status": counts("review_status", REVIEW_STATUSES),
+        "decisions": {k: int((decision_status.applied_status == k).sum()) for k in APPLIED_STATUSES},
     }
 
 
-def _unmatched_part(f: pd.DataFrame, keep: np.ndarray, run: str, hints=None) -> pd.DataFrame:
+def _unmatched_part(f: pd.DataFrame, keep: np.ndarray, run: str, hints=None, status=None) -> pd.DataFrame:
     side, blank = _feature_side(f.iloc[keep]), _blank_side(len(keep))
     part = _part("missing", side, blank) if run == "prev" else _part("new", blank, side)
     if hints is not None:
         part["missing_hint"] = hints[keep]
+    if status is not None:
+        part["review_status"] = status[keep]
     return part
 
 
@@ -720,10 +739,127 @@ def _unused(n: int, used) -> np.ndarray:
     return mask
 
 
-def match_anomalies(prev_std, curr_std, weld_map, settings: Settings, pipe, repairs=None) -> MatchResult:
-    """Match the anomalies of two runs: 1:1 pairs, then many-to-one clusters, then missing and new.
+# --- Review decisions (spec 6.4, 6.11) ---------------------------------------------------------
 
-    Every anomaly of each run lands in exactly one row of the match table."""
+
+@dataclass
+class _Decided:
+    """What the review decisions settled before the automated passes: the forced rows, the features
+    taken out of automation (``locked``: forced or rejected, per run), the rejected ones, and one
+    ``DECISION_STATUS_COLUMNS`` row per decision-log row."""
+    parts: list
+    locked: tuple[np.ndarray, np.ndarray]
+    rejected: tuple[np.ndarray, np.ndarray]
+    status: pd.DataFrame
+
+
+def _id_rows(placed: pd.DataFrame) -> dict[str, int]:
+    """Feature id -> positional row of a placed frame (the first row on a repeated id)."""
+    out: dict[str, int] = {}
+    for i, fid in enumerate(placed.feature_id.astype(str)):
+        out.setdefault(fid, i)
+    return out
+
+
+def _is_cluster(p: pd.DataFrame, c: pd.DataFrame) -> bool:
+    """A decided row is a cluster, as M4's multi groups: >= 2 members on a side, or a vendor report."""
+    return len(p) > 1 or len(c) > 1 or bool(p.vendor_cluster_id.notna().any() or c.vendor_cluster_id.notna().any())
+
+
+def _decision_rows(row: dict, runs) -> tuple[list | None, str | None]:
+    """Positional rows (prev, curr; each in log order) of a decision's features, or why it cannot apply.
+
+    ``runs`` holds per run (placed frame, ``_id_rows`` of it, every feature id of the run). Every id
+    must be in its run (``unknown_feature``) and an anomaly (``not_anomaly``). A reject needs nothing
+    more: it forms no row. An accept or manual decision forms a row: a cluster (``_is_cluster``) must be
+    all metal_loss (``cluster_type``), a 1:1 pair one feature type (``type_mismatch``), and every member
+    must lie in a weld-map row within one row of every other member, the reach of M4's near-weld
+    candidates (``out_of_range``). The first broken rule, in that order, is the reason."""
+    ids = [[i.strip() for i in row[k].split(";") if i.strip()] for k in ("prev_feature_ids", "curr_feature_ids")]
+    if any(i not in every for side, (_, _, every) in zip(ids, runs) for i in side):
+        return None, NOT_APPLIED_REASONS[0]
+    if any(i not in index for side, (_, index, _) in zip(ids, runs) for i in side):
+        return None, NOT_APPLIED_REASONS[1]
+    rows = [_log_order(f, [index[i] for i in side]) for side, (f, index, _) in zip(ids, runs)]
+    if row["decision"] == "reject":
+        return rows, None
+    p, c = (f.iloc[r] for r, (f, _, _) in zip(rows, runs))
+    types = np.concatenate([p.feature_type.astype(str).to_numpy(), c.feature_type.astype(str).to_numpy()])
+    if _is_cluster(p, c):
+        if (types != "metal_loss").any():
+            return None, NOT_APPLIED_REASONS[3]
+    elif types[0] != types[1]:
+        return None, NOT_APPLIED_REASONS[2]
+    wm = np.concatenate([p.wm_row.to_numpy(int), c.wm_row.to_numpy(int)])
+    if (wm < 0).any() or wm.max() - wm.min() > 1:
+        return None, NOT_APPLIED_REASONS[4]
+    return rows, None
+
+
+def _forced_part(p: pd.DataFrame, c: pd.DataFrame, status: str, dt_yr: float, settings: Settings) -> pd.DataFrame:
+    """The match row of an accept or manual decision, built as the automated passes build theirs: a
+    1:1 row from ``pair_metrics``, a cluster row from ``_cluster_side_row`` and the ``_envelope_pairs``
+    metrics of the member envelopes. Members are in log order."""
+    if _is_cluster(p, c):
+        envs = [pd.DataFrame([envelope(m)]) for m in (p, c)]
+        sides = [pd.DataFrame([_cluster_side_row(m, run)]) for m, run in ((p, "prev"), (c, "curr"))]
+        part = _part("matched_cluster", *sides, _envelope_pairs(*envs, dt_yr, settings)[1])
+    else:
+        p, c = p.reset_index(drop=True), c.reset_index(drop=True)
+        part = _part("matched_1to1", _feature_side(p), _feature_side(c), pair_metrics(p, c, dt_yr, settings))
+    part["review_status"] = status
+    return part
+
+
+def _apply_decisions(prev: pd.DataFrame, curr: pd.DataFrame, prev_std, curr_std, reviews: EffectiveReviews | None,
+                    dt_yr: float, settings: Settings) -> _Decided:
+    """Settle the effective review decisions on the placed frames, before any automated pass.
+
+    Each decision is checked by ``_decision_rows``; one that fails is ``not_applied`` with the reason
+    and its features stay with automation. A valid accept or manual decision becomes a forced row
+    (``review_status`` accepted / manual); a valid reject leaves its features unmatched (previous run
+    ``missing`` with hint ``rejected_by_review``, current run ``new``, ``review_status`` rejected). Both
+    take their features out of automation, so a rejected pair is never re-paired, even when each was
+    the other's only candidate. Superseded log rows are listed as ``superseded``. ``effective_reviews``
+    leaves no feature in two effective decisions; a ``reviews`` that does is a ValueError."""
+    n = (len(prev), len(curr))
+    locked, rejected = tuple(np.zeros(k, bool) for k in n), tuple(np.zeros(k, bool) for k in n)
+    parts, status = [], []
+    if reviews is not None:
+        runs = [(f, _id_rows(f), set(std.feature_id.dropna().astype(str)))
+                for f, std in ((prev, prev_std), (curr, curr_std))]
+        status = [{"decision_id": d, "decision": reviews.superseded_decisions.get(d), "applied_status": "superseded",
+                   "reason": None} for d in reviews.superseded]
+        for row in reviews.decisions.to_dict("records"):
+            rows, reason = _decision_rows(row, runs)
+            status.append({"decision_id": row["decision_id"], "decision": row["decision"],
+                           "applied_status": "not_applied" if reason else "applied", "reason": reason})
+            if reason:
+                continue
+            for mask, r in zip(locked, rows):
+                if mask[r].any():
+                    raise ValueError(f"decision {row['decision_id']} shares a feature with an earlier decision; "
+                                     f"reduce the log with review.effective_reviews first")
+                mask[r] = True
+            if row["decision"] == "reject":
+                for mask, r in zip(rejected, rows):
+                    mask[r] = True
+            else:
+                parts.append(_forced_part(prev.iloc[rows[0]], curr.iloc[rows[1]],
+                                          _DECISION_REVIEW_STATUS[row["decision"]], dt_yr, settings))
+    frame = pd.DataFrame(sorted(status, key=lambda r: r["decision_id"]), columns=DECISION_STATUS_COLUMNS,
+                         dtype=object)
+    return _Decided(parts, locked, rejected, frame)
+
+
+def match_anomalies(prev_std, curr_std, weld_map, settings: Settings, pipe, repairs=None,
+                    reviews: EffectiveReviews | None = None) -> MatchResult:
+    """Match the anomalies of two runs: review decisions (``_apply_decisions``), then 1:1 pairs, then
+    many-to-one clusters, then missing and new.
+
+    The automated passes see only the features no decision settled; with no decisions (``reviews``
+    None or empty) the table is M4's. Every anomaly of each run lands in exactly one row of the match
+    table."""
     _require_columns(weld_map, WELD_MAP_COLUMNS, "weld map")
     if repairs is not None:
         _require_columns(repairs, ("start_ft", "end_ft"), "repairs")
@@ -732,10 +868,15 @@ def match_anomalies(prev_std, curr_std, weld_map, settings: Settings, pipe, repa
     prev = _with_od(place(prev_std, weld_map, "prev", pmap), pipe, tol)
     curr = _with_od(place(curr_std, weld_map, "curr", pmap), pipe, tol)
     dt = delta_t_years(prev_std, curr_std)
-    chosen = assign_one_to_one(candidates(prev, curr, dt, settings, near_vendor_reports(prev, curr, settings)))
-    used_p, used_c = chosen.prev_i.to_numpy(int), chosen.curr_i.to_numpy(int)
-    parts = [_part("matched_1to1", _feature_side(prev.iloc[used_p]), _feature_side(curr.iloc[used_c]), chosen[METRIC_COLS])]
-    left_p, left_c = _unused(len(prev), used_p), _unused(len(curr), used_c)
+    decided = _apply_decisions(prev, curr, prev_std, curr_std, reviews, dt, settings)
+    (free_p, free_c), (rej_p, rej_c) = (~m for m in decided.locked), decided.rejected
+    ap, ac = np.flatnonzero(free_p), np.flatnonzero(free_c)
+    pa, ca = prev.iloc[ap].reset_index(drop=True), curr.iloc[ac].reset_index(drop=True)
+    chosen = assign_one_to_one(candidates(pa, ca, dt, settings, near_vendor_reports(pa, ca, settings)))
+    used_p, used_c = ap[chosen.prev_i.to_numpy(int)], ac[chosen.curr_i.to_numpy(int)]
+    parts = [*decided.parts, _part("matched_1to1", _feature_side(prev.iloc[used_p]), _feature_side(curr.iloc[used_c]),
+                                   chosen[METRIC_COLS])]
+    left_p, left_c = free_p & _unused(len(prev), used_p), free_c & _unused(len(curr), used_c)
     pk, ck = (np.flatnonzero(m & f.in_matched_row.to_numpy(bool)) for m, f in ((left_p, prev), (left_c, curr)))
     found = match_clusters(prev.iloc[pk].reset_index(drop=True), curr.iloc[ck].reset_index(drop=True), dt, settings)
     found = [(pk[p], ck[c], m) for p, c, m in found]
@@ -744,11 +885,14 @@ def match_anomalies(prev_std, curr_std, weld_map, settings: Settings, pipe, repa
         left_p[np.concatenate([p for p, _, _ in found])] = False
         left_c[np.concatenate([c for _, c, _ in found])] = False
     hints = missing_hints(prev, weld_map, repairs, settings)
-    parts.append(_unmatched_part(prev, np.flatnonzero(left_p), "prev", hints))
-    parts.append(_unmatched_part(curr, np.flatnonzero(left_c), "curr"))
+    hints[rej_p] = HINTS[3]
+    status_p, status_c = (np.where(m, _DECISION_REVIEW_STATUS["reject"], REVIEW_PENDING).astype(object)
+                          for m in (rej_p, rej_c))
+    parts.append(_unmatched_part(prev, np.flatnonzero(left_p | rej_p), "prev", hints, status_p))
+    parts.append(_unmatched_part(curr, np.flatnonzero(left_c | rej_c), "curr", None, status_c))
     table = _finish(pd.concat(parts, ignore_index=True), settings)
-    return MatchResult(table, _summary(prev_std, curr_std, dt, table, len(prev), len(curr)))
-
+    summary = _summary(prev_std, curr_std, dt, table, len(prev), len(curr), decided.status)
+    return MatchResult(table, summary, decided.status)
 
 
 # ---------------------------------------------------------------------------
@@ -757,11 +901,14 @@ def match_anomalies(prev_std, curr_std, weld_map, settings: Settings, pipe, repa
 
 
 def write_matches(result: MatchResult, out_dir: Path) -> dict[str, Path]:
+    """``match_table.csv``, ``review_status.csv`` (the decision outcomes; a header only without a log)
+    and ``match_summary.json`` in the comparison dir."""
     s = result.summary
     folder = comparison_dir(out_dir, s["prev_run_id"], s["curr_run_id"])
     folder.mkdir(parents=True, exist_ok=True)
-    paths = {"match_table.csv": folder / "match_table.csv", "match_summary.json": folder / "match_summary.json"}
+    paths = {name: folder / name for name in ("match_table.csv", "review_status.csv", "match_summary.json")}
     result.match_table.to_csv(paths["match_table.csv"], index=False, lineterminator="\n")
+    result.decision_status.to_csv(paths["review_status.csv"], index=False, lineterminator="\n")
     paths["match_summary.json"].write_text(json.dumps({"label": DRAFT_LABEL, **s}, indent=2), encoding="utf-8")
     return paths
 
@@ -820,9 +967,21 @@ def _parser() -> argparse.ArgumentParser:
     ap.add_argument("--pipe", type=Path, required=True, help="pipe_properties.csv (current-run log distance)")
     ap.add_argument("--repairs", type=Path, help="repairs_between_runs.csv (current-run log distance)")
     ap.add_argument("--truth", type=Path, help="ground_truth.csv (synthetic data only) to score against")
+    ap.add_argument("--reviews", type=Path,
+                    help=f"review decision log (default: {REVIEWS_FILE} in the comparison dir, when it exists)")
     ap.add_argument("--settings", type=Path, default=DEFAULT_SETTINGS, help="settings YAML")
     ap.add_argument("--out", type=Path, default=PROJECT_ROOT / "outputs", help="output directory")
     return ap
+
+
+def _reviews_path(args, prev: pd.DataFrame, curr: pd.DataFrame) -> Path | None:
+    """The decision log to apply: ``--reviews`` (which must exist), else the comparison dir's log if any."""
+    if args.reviews is not None:
+        if not args.reviews.is_file():
+            raise ValueError(f"reviews file {args.reviews} not found")
+        return args.reviews
+    default = comparison_dir(args.out, _run_id(prev), _run_id(curr)) / REVIEWS_FILE
+    return default if default.is_file() else None
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -832,7 +991,9 @@ def main(argv: list[str] | None = None) -> int:
         weld_map = load_weld_map(args.weld_map)
         pipe = pd.read_csv(args.pipe)
         repairs = pd.read_csv(args.repairs) if args.repairs else None
-        result = match_anomalies(prev, curr, weld_map, load_settings(args.settings), pipe, repairs)
+        reviews_path = _reviews_path(args, prev, curr)
+        reviews = effective_reviews(load_reviews(reviews_path)) if reviews_path else None
+        result = match_anomalies(prev, curr, weld_map, load_settings(args.settings), pipe, repairs, reviews)
         paths = write_matches(result, args.out)
         score = None
         if args.truth:
@@ -849,6 +1010,11 @@ def main(argv: list[str] | None = None) -> int:
     print("matches: " + ", ".join(f"{k} {v}" for k, v in s["counts_by_match_type"].items()))
     print("confidence: " + ", ".join(f"{k} {v}" for k, v in s["counts_by_confidence"].items()))
     print(f"needs review: {s['n_needs_review']} (absorbed clusters: {s['n_absorbed']})")
+    print(f"reviews: {reviews_path if reviews_path else 'none'}")
+    print("decisions: " + ", ".join(f"{k} {v}" for k, v in s["decisions"].items()))
+    print("review status: " + ", ".join(f"{k} {v}" for k, v in s["counts_by_review_status"].items()))
+    for d in result.decision_status[result.decision_status.applied_status == "not_applied"].itertuples():
+        print(f"  {d.decision_id} {d.decision} not applied: {d.reason}")
     if score is not None:
         print(f"precision {score['precision']:.4f}, recall {score['recall']:.4f} vs ground truth "
               f"({score['n_correct_links']}/{score['n_true_links']} links, "

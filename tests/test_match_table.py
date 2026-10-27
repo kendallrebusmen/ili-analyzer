@@ -186,7 +186,8 @@ def test_hand_built_table():
     assert new.prev_feature_type is None and new.confidence is None and new.missing_hint is None
     assert new.curr_pos_in_prev_ft == pytest.approx(900.0)
     assert res.summary["counts_by_match_type"] == {"matched_1to1": 1, "matched_cluster": 1, "missing": 5, "new": 1}
-    assert res.summary["counts_by_hint"] == {"in_repaired_section": 2, "near_threshold": 1, "unexplained": 2}
+    assert res.summary["counts_by_hint"] == {"in_repaired_section": 2, "near_threshold": 1, "unexplained": 2,
+                                           "rejected_by_review": 0}
     assert res.summary["counts_by_confidence"] == {"high": 1, "medium": 1, "low": 0}
     assert res.summary["n_needs_review"] == 2
 
@@ -319,7 +320,7 @@ def test_degenerate_tables_keep_columns_and_dtypes(keep_prev, keep_curr, counts)
     assert t.dtypes.to_dict() == ref.dtypes.to_dict()
     assert s["counts_by_match_type"] == counts
     assert set(s["counts_by_confidence"]) == {"high", "medium", "low"}
-    assert set(s["counts_by_hint"]) == {"in_repaired_section", "near_threshold", "unexplained"}
+    assert set(s["counts_by_hint"]) == {"in_repaired_section", "near_threshold", "unexplained", "rejected_by_review"}
     assert sum(s["counts_by_confidence"].values()) == counts["matched_1to1"] + counts["matched_cluster"]
     assert s["n_needs_review"] == int(t.needs_review.sum())
     assert (s["n_prev_anomalies"], s["n_curr_anomalies"]) == (len(keep_prev), len(keep_curr))
