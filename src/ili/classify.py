@@ -36,7 +36,7 @@ from ili.config import (DEFAULT_SETTINGS, PROJECT_ROOT, RepairCriteria, Settings
                         load_settings)
 from ili.growth import PCT_PER_FRACTION, REASON_SEP
 from ili.ingest import load_standardized
-from ili.match import clock_diff_min, load_match_table
+from ili.match import clock_diff_min, load_match_table, parse_flag_column
 from ili.reference import _require_columns, assign_segment, check_segments, lookup
 from ili.remaining_life import (PIPE_WHAT, RL_SEGMENT_COLUMNS, _as_date, _run_ids, _segment_hca,
                                 load_remaining_life_table)
@@ -438,6 +438,41 @@ CLASSIFICATION_COLUMNS = [
     "governing_rule", "requires_review", "review_reasons", "discovery_date", "discovery_date_source",
     "due_date", "due_date_basis", "worst_case_category", "worst_case_rule", "worst_case_due_date", "action_note",
 ]
+
+
+_CLASSIFICATION_FLAGS = (
+    "could_affect_hca", "top_of_pipe", "dent_metal_loss", "seam_interaction", "near_girth_weld",
+    "near_foreign_crossing", "general_corrosion", "widespread_circumferential", "dig_required_by_remaining_life",
+    "manual_immediate", "field_crack_confirmed", "upstream_needs_review", "requires_review",
+)
+_CLASSIFICATION_DATES = ("repair_by_date", "discovery_date", "due_date", "worst_case_due_date")
+_CLASSIFICATION_FLOATS = (
+    "od_in", "wt_in", "depth_pct_reported", "depth_pct_assessed", "length_in", "width_in", "p_fail", "p_safe",
+    "mop_local", "dent_depth_in", "dent_depth_pct_od",
+)
+
+
+def load_classification_table(path: Path) -> pd.DataFrame:
+    """Read a ``classification.csv`` back with its types (as ``remaining_life.load_remaining_life_table``):
+    flags are True/False/None (``match.parse_flag_column``: any case), dates are ``datetime.date`` or
+    None, ``clock_min`` is Int64, the measurements are float, and every other column (ids included)
+    stays text, empty is None. ValueError for a missing column, a bad flag or a date that is not ISO."""
+    header = pd.read_csv(path, nrows=0).columns
+    missing = [c for c in CLASSIFICATION_COLUMNS if c not in header]
+    if missing:
+        raise ValueError(f"{path}: missing column(s) {missing}")
+    numeric = (*_CLASSIFICATION_FLOATS, "clock_min")
+    as_text = [c for c in CLASSIFICATION_COLUMNS if c not in numeric]
+    df = pd.read_csv(path, dtype={c: str for c in as_text}, keep_default_na=False,
+                     na_values={c: [""] for c in numeric})
+    for c in (c for c in as_text if c not in _CLASSIFICATION_FLAGS):
+        df[c] = df[c].astype(object).where(df[c] != "", None)
+    for c in _CLASSIFICATION_FLAGS:
+        df[c] = parse_flag_column(df[c], path, c)
+    for c in _CLASSIFICATION_DATES:
+        df[c] = pd.Series([_as_date(v, f"{path}: {c}") for v in df[c]], dtype=object, index=df.index)
+    df["clock_min"] = df.clock_min.astype("Int64")
+    return df[CLASSIFICATION_COLUMNS]
 
 
 @dataclass(frozen=True)
