@@ -6,7 +6,8 @@ fully local: plotly.js is inlined once and every chart is a div without its own 
 fetched. jinja2 escapes every value; only the plotly.js bundle and the chart divs are marked safe, so a
 vendor id, a file path or the line name can never become markup. None / NaN render as an empty cell.
 
-The report is always DRAFT: every section opens with the label, a banner repeats it on each printed page,
+The report is always DRAFT: every section opens with the label, a banner carries it on screen and a page
+margin box repeats it on each printed page,
 and no wording marks it final or approved.
 
 DRAFT – for review by qualified personnel.
@@ -42,6 +43,7 @@ NOT_STATED = "not stated"
 DECIMALS = 3  # presentation only: the CSV outputs keep full precision
 COORD_DECIMALS = 6
 COORD_COLUMNS = ("lat", "lon")
+CSS_UNSAFE = "\"\\'<>&\n"  # changed by CSS string syntax or by HTML autoescaping inside <style>
 
 IMMEDIATE_COLUMNS = ["match_id", "prev_feature_id", "curr_feature_id", "feature_type", "curr_log_dist_ft",
                      "governing_rule", "triggered_rules", "action_note"]
@@ -96,12 +98,20 @@ def cell(value, column: str | None = None) -> str:
     return str(value)
 
 
-def table(df: pd.DataFrame, columns: list[str] | None = None, row_class: str | None = None) -> Table:
-    """``df[columns]`` as a ``Table``; ``row_class`` names a column whose value becomes ``cat-<value>``."""
+def table(df: pd.DataFrame, columns: list[str] | None = None, row_classes: list[str] | None = None) -> Table:
+    """``df[columns]`` as a ``Table``; ``row_classes`` gives each row's class ("" for none)."""
     columns = list(df.columns) if columns is None else list(columns)
     rows = [[cell(v, c) for c, v in zip(columns, r, strict=True)] for r in df[columns].itertuples(index=False)]
-    classes = None if row_class is None else [f"cat-{cell(v)}" for v in df[row_class]]
-    return Table(columns, rows, classes)
+    return Table(columns, rows, row_classes)
+
+
+def _css_string(text: str) -> str:
+    """``text`` for a double-quoted CSS string in an autoescaped ``<style>``: refused if it holds a character
+    that CSS or the HTML escaping would change."""
+    unsafe = sorted(set(text) & set(CSS_UNSAFE))
+    if unsafe:
+        raise ValueError(f"label {text!r} contains {unsafe}, which cannot go in the print margin box")
+    return text
 
 
 def _counts(mapping: dict, key: str) -> Table:
@@ -208,6 +218,7 @@ def _charts(inputs: ReportInputs, dig: pd.DataFrame) -> dict:
             "n_within": bt.n_within, "n": len(bt.table), "pct_within": cell(bt.pct_within),
             "unmatched": ", ".join(bt.unmatched_ids)},
         "tolerance": cell(tolerance),
+        "digs_given": inputs.digs is not None,
     }
 
 
@@ -215,9 +226,10 @@ def _methods(inputs: ReportInputs) -> dict:
     mt = inputs.match_table
     reviewed = mt[mt.needs_review.fillna(False).astype(bool)]
     tool = inputs.settings.tool.model_dump()
+    config = config_rows(inputs.settings, inputs.settings_path)
     return {
-        "config": table(config_rows(inputs.settings, inputs.settings_path).assign(
-            placeholder=lambda d: d.placeholder.map({True: "PLACEHOLDER", False: ""}))),
+        "config": table(config.assign(placeholder=config.placeholder.map({True: "PLACEHOLDER", False: ""})),
+                        row_classes=["placeholder" if p else "" for p in config.placeholder]),
         "settings_path": str(inputs.settings_path),
         "tool": Table(["setting", "value"], [[f"tool.{k}", cell(v)] for k, v in tool.items()]),
         "criteria_version": inputs.criteria.version,
@@ -242,13 +254,14 @@ def render_report(inputs: ReportInputs, changes: CategoryChangeResult, header: R
     moved = changes.table[changes.table.moved_more_severe]
     context = {
         "label": DRAFT_LABEL,
+        "label_css": _css_string(DRAFT_LABEL),
         "plotlyjs": Markup(plotly.offline.get_plotlyjs()),
         "category_colours": CATEGORY_COLOURS,
         "head": _header(inputs, header, generated_utc),
         "summary": _summary(inputs, dig),
         "quality": _data_quality(inputs),
         "growth": _growth(inputs),
-        "dig_list": table(dig, row_class="governing_category"),
+        "dig_list": table(dig, row_classes=[f"cat-{c}" for c in dig.governing_category]),
         "largest": {"n": n_largest, "growth": table(largest_growth(inputs, n_largest), LARGEST_GROWTH_COLUMNS),
                     "moved": table(moved, MOVED_COLUMNS), "n_compared": len(changes.table)},
         "charts": _charts(inputs, dig),

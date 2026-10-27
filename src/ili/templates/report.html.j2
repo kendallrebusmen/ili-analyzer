@@ -7,7 +7,7 @@
 <thead><tr>{% for c in t.columns %}<th>{{ c }}</th>{% endfor %}</tr></thead>
 <tbody>
 {% for row in t.rows %}
-<tr{% if t.row_classes %} class="{{ t.row_classes[loop.index0] }}"{% endif %}>{% for v in row %}<td>{{ v }}</td>{% endfor %}</tr>
+<tr{% if t.row_classes and t.row_classes[loop.index0] %} class="{{ t.row_classes[loop.index0] }}"{% endif %}>{% for v in row %}<td>{{ v }}</td>{% endfor %}</tr>
 {% endfor %}
 </tbody>
 </table>
@@ -65,11 +65,14 @@ tr.cat-{{ category }} td { background: {{ colour }}; }
 .formula td, .formula th { white-space: normal; font-size: 13px; }
 .chart { margin: 8px 0 16px; break-inside: avoid; }
 code { font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; font-size: 12px; }
-@page { size: landscape; margin: 14mm 10mm; }
+@page {
+  size: landscape; margin: 14mm 10mm;
+  @top-left { content: "{{ label_css }}"; color: #9b1c1c; font-weight: 600; }
+}
 @media print {
-  .draft-banner { position: fixed; top: 0; left: 0; right: 0; }
+  .draft-banner { display: none; }
   body { font-size: 11px; }
-  main { max-width: none; padding-top: 28px; }
+  main { max-width: none; padding-top: 0; }
   .table-wrap { overflow: visible; }
   thead { display: table-header-group; }
   tr { break-inside: avoid; }
@@ -213,6 +216,8 @@ reported current-run depth within ±{{ charts.tolerance }} % wall of the field d
 {% else %}
 <p>Every dig feature id is in the current run.</p>
 {% endif %}
+{% elif charts.digs_given %}
+<p>No unity chart: digs.csv has no rows.</p>
 {% else %}
 <p>No unity chart: digs.csv not provided.</p>
 {% endif %}

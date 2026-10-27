@@ -10,8 +10,8 @@ import pytest
 from ili.align_welds import DRAFT_LABEL
 from ili.category_change import category_changes
 from ili.classify import IMMEDIATE_ACTION_NOTE
-from ili.report import SECTION_IDS, ReportHeader, render_report
-from ili.report_data import pending_reviews
+from ili.report import SECTION_IDS, ReportHeader, _css_string, cell, render_report
+from ili.report_data import backtest, pending_reviews
 from test_report_inputs import _load, built  # noqa: F401  (built is the module fixture)
 
 GENERATED = datetime(2026, 10, 27, 12, 0, tzinfo=timezone.utc)
@@ -99,7 +99,21 @@ def test_every_section_present_and_labelled(report):
         assert "draft" in cls.split(), sid
         assert text.strip() == DRAFT_LABEL, sid
     assert re.search(r'class="draft-banner"[^>]*>\s*' + re.escape(DRAFT_LABEL), html)
-    assert re.search(r"@media print\s*\{[^}]*\.draft-banner\s*\{[^}]*position:\s*fixed;\s*top:\s*0", html)
+    # print: the label sits in the page's top margin box on every page; the screen banner is hidden
+    assert re.search(r'@page\s*\{[^@}]*@top-left\s*\{\s*content:\s*"' + re.escape(DRAFT_LABEL) + '"', html)
+    assert re.search(r"@media print\s*\{[^}]*\.draft-banner\s*\{\s*display:\s*none;", html)
+    assert "position: fixed" not in _style(html)
+
+
+def _style(html):
+    return html[html.index("<style>"):html.index("</style>")]
+
+
+def test_css_string_refuses_unsafe_label():
+    assert _css_string(DRAFT_LABEL) == DRAFT_LABEL
+    for bad in ('say "x"', "a\\b", "a</style>", "a & b"):
+        with pytest.raises(ValueError, match="margin box"):
+            _css_string(bad)
 
 
 def test_header(report):
@@ -200,3 +214,34 @@ def test_missing_optional_notes(report):
     assert "No map: no dig-list feature has a latitude and longitude." in charts
     assert "Foreign crossings file not provided" in _section_text(html, "data-quality")
     assert html.count('class="plotly-graph-div"') == 4
+
+
+def test_placeholder_rows_highlighted(report):
+    _, _, html = report
+    methods = _section(html, "methods")
+    assert re.search(r'<tr class="placeholder"><td>matching\.interaction_rule\.axial_spacing_in</td>', methods)
+    assert re.search(r"<tr><td>units</td>", methods)  # not a placeholder: no class
+
+
+def test_unity_sentence_and_unmatched_ids(report):
+    inputs, changes, html = report
+    tolerance = cell(inputs.settings.tool.depth_tolerance_pct_wt)
+    extra = pd.DataFrame([{"feature_id": "B-999999", "field_depth_pct": 50.0, "field_length_in": 1.0,
+                           "dig_date": "2027-01-01"}])
+    digs = pd.concat([inputs.digs, extra], ignore_index=True)
+    with_unknown = dataclasses.replace(inputs, digs=digs)
+    bt = backtest(digs, inputs.curr_std, inputs.settings)
+    assert bt.unmatched_ids == ["B-999999"] and len(bt.table) == len(inputs.digs)
+    charts = _section_text(render_report(with_unknown, changes, ReportHeader(None, None, None), GENERATED), "charts")
+    assert (f"{bt.n_within} of {len(bt.table)} digs ({cell(bt.pct_within)} %) have the reported current-run depth "
+            f"within ±{tolerance} % wall of the field depth.") in charts
+    assert "Dig feature ids not in the current run: B-999999." in charts
+    assert "Every dig feature id is in the current run." in _section_text(html, "charts")
+
+
+def test_empty_digs_file_is_not_missing(report):
+    inputs, changes, _ = report
+    empty = dataclasses.replace(inputs, digs=inputs.digs.iloc[0:0])
+    charts = _section_text(render_report(empty, changes, ReportHeader(None, None, None), GENERATED), "charts")
+    assert "No unity chart: digs.csv has no rows." in charts
+    assert "not provided" not in charts
