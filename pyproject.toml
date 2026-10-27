@@ -11,5 +11,8 @@ requires-python = ">=3.11"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+ili = ["templates/*.j2"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
