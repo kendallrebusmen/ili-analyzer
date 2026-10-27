@@ -172,3 +172,37 @@ def test_malformed_ids_and_field_counts_are_errors(tmp_path):
         path.write_text(f"{header}\nR000001,{ok}\n{row}\n", encoding="utf-8", newline="")
         with pytest.raises(ValueError, match=r"reviews\.csv: line 3.*by hand"):
             load_reviews(path)
+
+
+def test_next_id_follows_the_highest_id(tmp_path):
+    path = tmp_path / "reviews.csv"
+    for i in range(3):
+        append_review(path, "accept", [f"A{i}"], [f"B{i}"], "Pat", now=_t(i))
+    lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
+    path.write_text("".join(lines[:2] + lines[3:]), encoding="utf-8", newline="")  # R000002 removed by hand
+    assert append_review(path, "accept", ["A9"], ["B9"], "Pat", now=_t(9))["decision_id"] == "R000004"
+    assert load_reviews(path).decision_id.tolist() == ["R000001", "R000003", "R000004"]
+
+
+def test_failed_write_keeps_the_original_error_and_leaves_no_temp(tmp_path, monkeypatch):
+    path = tmp_path / "reviews.csv"
+    real = review.tempfile.NamedTemporaryFile
+
+    class FailingWrite:
+        def __init__(self, *args, **kwargs):
+            self._f = real(*args, **kwargs)
+            self.name = self._f.name
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            self._f.close()
+
+        def write(self, data):
+            raise OSError("disk full")
+
+    monkeypatch.setattr(review.tempfile, "NamedTemporaryFile", FailingWrite)
+    with pytest.raises(OSError, match="disk full"):
+        append_review(path, "accept", ["A1"], ["B1"], "Pat", now=T0)
+    assert list(tmp_path.iterdir()) == []

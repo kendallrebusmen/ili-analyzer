@@ -128,15 +128,19 @@ def _write(path: Path, columns: list[str], rows: list[dict[str, str]]) -> None:
     writer = csv.DictWriter(buf, fieldnames=columns, lineterminator="\n")
     writer.writeheader()
     writer.writerows(rows)
-    with tempfile.NamedTemporaryFile(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp",
-                                     delete=False) as tmp:
-        tmp_path = Path(tmp.name)
-        try:
+    tmp = tempfile.NamedTemporaryFile(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp", delete=False)
+    tmp_path = Path(tmp.name)
+    try:
+        with tmp:  # closed before os.replace and before any unlink (Windows cannot do either while open)
             tmp.write(buf.getvalue().encode("utf-8"))
-            tmp.close()
-            os.replace(tmp_path, path)
-        finally:
-            tmp_path.unlink(missing_ok=True)
+        os.replace(tmp_path, path)
+    finally:
+        tmp_path.unlink(missing_ok=True)
+
+
+def _next_number(rows: list[dict[str, str]], id_col: str) -> int:
+    """One past the highest id in the log, so a row removed by hand never leads to a repeated id."""
+    return max((int(r[id_col][1:]) for r in rows), default=0) + 1
 
 
 def _stamp(now: datetime | None) -> str:
@@ -167,7 +171,7 @@ def append_review(path: Path, decision: str, prev_ids: list[str], curr_ids: list
     with _APPEND_LOCK:
         rows = _read(path, REVIEW_COLUMNS, _check_review)
         row = _check_review({
-            "decision_id": f"R{len(rows) + 1:06d}", "decision": decision,
+            "decision_id": f"R{_next_number(rows, 'decision_id'):06d}", "decision": decision,
             "prev_feature_ids": ";".join(prev_ids), "curr_feature_ids": ";".join(curr_ids),
             "reviewer": reviewer, "decided_utc": _stamp(now), "note": _clean_note(note)})
         _write(path, REVIEW_COLUMNS, rows + [row])
@@ -180,7 +184,7 @@ def append_flag(path: Path, curr_feature_id: str, flag: str, value: bool, review
     with _APPEND_LOCK:
         rows = _read(path, FLAG_COLUMNS, _check_flag)
         row = _check_flag({
-            "flag_id": f"F{len(rows) + 1:06d}", "curr_feature_id": curr_feature_id, "flag": flag,
+            "flag_id": f"F{_next_number(rows, 'flag_id'):06d}", "curr_feature_id": curr_feature_id, "flag": flag,
             "value": "true" if value else "false", "reviewer": reviewer, "decided_utc": _stamp(now),
             "note": _clean_note(note)})
         _write(path, FLAG_COLUMNS, rows + [row])
