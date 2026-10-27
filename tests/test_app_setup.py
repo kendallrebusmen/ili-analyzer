@@ -15,6 +15,25 @@ ROOT = Path(__file__).resolve().parents[1]
 PAGES = ["Run setup", "Weld alignment", "Match review queue", "Growth and remaining life explorer",
          "Dig list and report export"]
 APP = str(ROOT / "app" / "streamlit_app.py")
+SCRIPT_CONFIG = ROOT / "app" / ".streamlit" / "config.toml"
+
+
+def _set_options(options: dict, where: str) -> dict:
+    from streamlit import config
+    old = {k: config.get_option(k) for k in options}
+    for k, v in options.items():
+        config._set_option(k, v, where)
+    return old
+
+
+@pytest.fixture(autouse=True)
+def script_config():
+    """The options of app/.streamlit/config.toml, as ``streamlit run app/streamlit_app.py`` applies them
+    (AppTest reads no config file); the app refuses to run without them."""
+    cfg = tomllib.loads(SCRIPT_CONFIG.read_text(encoding="utf-8"))
+    old = _set_options({f"{s}.{k}": v for s, opts in cfg.items() for k, v in opts.items()}, str(SCRIPT_CONFIG))
+    yield
+    _set_options(old, "test restore")
 
 
 @pytest.fixture(autouse=True)
@@ -66,6 +85,8 @@ def test_run_setup_runs_pipeline(synth, tmp_path):
     assert not at.error
     assert at.session_state[app_state.COMPARISON_KEY] == str(inputs.out / FOLDER)
     assert (inputs.out / FOLDER / "report.html").is_file()
+    # the page redraws after the run, so the sidebar names the new folder (it was drawn before the run)
+    assert [c.value for c in at.sidebar.caption] == [f"Comparison: {inputs.out / FOLDER}"]
 
 
 def test_run_setup_shows_failing_stderr(synth, tmp_path):
@@ -77,6 +98,7 @@ def test_run_setup_shows_failing_stderr(synth, tmp_path):
             at.text_input(key=f"setup_{name}").set_value(str(value))
     at.button[0].click().run()
     assert at.error and "match failed" in at.error[0].value and "missing.csv" in at.error[0].value
+    assert any("missing.csv" in c.value for c in at.code[-1:])  # the full stderr, under the message
 
 
 def test_run_setup_requires_inputs():
@@ -147,7 +169,58 @@ def test_load_comparison_reads_outputs_and_refreshes_on_change(ran, tmp_path):
 
 
 def test_streamlit_config_is_local():
-    cfg = tomllib.loads((ROOT / ".streamlit" / "config.toml").read_text(encoding="utf-8"))
+    # script-level config: streamlit reads it beside the script whatever the launch directory
+    cfg = tomllib.loads(SCRIPT_CONFIG.read_text(encoding="utf-8"))
     assert cfg["browser"]["gatherUsageStats"] is False
     assert cfg["server"]["address"] == "localhost"
     assert cfg["server"]["headless"] is True
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    assert "streamlit run app/streamlit_app.py --server.address localhost --browser.gatherUsageStats false" in readme
+
+
+@pytest.mark.parametrize("option, value", [("server.address", "0.0.0.0"), ("server.address", None),
+                                           ("browser.gatherUsageStats", True)])
+def test_app_refuses_to_run_when_not_local(option, value):
+    old = _set_options({option: value}, "test")
+    try:
+        at = _app().run()
+    finally:
+        _set_options(old, "test restore")
+    assert not at.exception
+    assert len(at.error) == 1 and "refuses to start" in at.error[0].value and option in at.error[0].value
+    assert any(DRAFT_LABEL in w.value for w in at.sidebar.warning) and DRAFT_LABEL in _all_text(at)
+    assert not at.text_input and not at.sidebar.radio  # no reviewer field, no page
+
+
+def test_unreadable_log_is_an_error_on_every_page_not_a_traceback(ran, tmp_path):
+    import shutil
+    from ili.review import REVIEWS_FILE, REVIEW_COLUMNS
+    _, folder = ran
+    work = tmp_path / "folder"
+    shutil.copytree(folder, work)
+    (work / REVIEWS_FILE).write_text(",".join(REVIEW_COLUMNS) + "\nR000001,approve,A,B,Pat,2026-10-27T12:00:00Z,\n",
+                                     encoding="utf-8")
+    at = _app(comparison_dir=str(work)).run()
+    for page in PAGES[1:]:
+        at.sidebar.radio(key="page").set_value(page).run()
+        assert not at.exception, page
+        assert len(at.error) == 1 and "reviews.csv: line 2" in at.error[0].value, page
+        assert DRAFT_LABEL in _all_text(at)
+
+
+def test_rerun_setup_is_the_shown_folders(ran, tmp_path):
+    """A setup run in this session for one folder is never used to rerun another folder (M7)."""
+    import dataclasses
+    import shutil
+    from ili.pipeline import write_pipeline_inputs
+    inputs, folder = ran
+    other = tmp_path / FOLDER
+    shutil.copytree(folder, other)
+    recorded = dataclasses.replace(inputs, line_name="the other folder's setup")
+    write_pipeline_inputs(recorded, other)
+    session = {app_state.INPUTS_KEY: inputs}
+    assert app_state.inputs_from_session(folder, session) is inputs
+    assert app_state.inputs_from_session(other, session) == recorded
+    (other / "pipeline_inputs.json").unlink()
+    assert app_state.inputs_from_session(other, session) is None
+    assert app_state.inputs_from_session(None, session) is inputs

@@ -9,7 +9,7 @@ import pytest
 from ili.align_welds import DRAFT_LABEL
 from ili.app_pages_results import SAVED_AFTER_RUN, explorer_rows
 from ili.review import FLAGS_FILE, load_flags
-from test_app_setup import _all_text, _app, isolated_outputs, ran  # noqa: F401  (fixtures)
+from test_app_setup import _all_text, _app, isolated_outputs, ran, script_config  # noqa: F401  (fixtures)
 
 EXPLORER = "Growth and remaining life explorer"
 EXPORT = "Dig list and report export"
@@ -113,3 +113,20 @@ def test_export_buttons_present_after_report(ran, tmp_path):
     (work / "dig_list.xlsx").unlink()
     at.run()
     assert len(at.get("download_button")) == 2
+
+
+def test_flag_save_on_a_locked_log_says_close_the_file(ran, tmp_path, monkeypatch):
+    """M3: a PermissionError (the CSV open in Excel) is a message, not a traceback."""
+    from ili import app_pages_results
+
+    def locked(*args, **kwargs):
+        raise PermissionError(13, "Permission denied", "feature_flags.csv")
+    monkeypatch.setattr(app_pages_results, "append_flag", locked)
+    _, folder = ran
+    feature = _feature(folder)
+    at, work = _page(folder, tmp_path, EXPORT, reviewer="A. Reviewer")
+    at.selectbox(key="flag_feature").set_value(feature).run()
+    at.checkbox(key=f"flag_manual_immediate_{feature}").set_value(True)
+    [b for b in at.button if b.label == "Save flags"][0].click().run()
+    assert not at.exception
+    assert [e.value for e in at.error if "feature_flags.csv could not be written" in e.value and "close it" in e.value]

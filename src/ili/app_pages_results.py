@@ -13,7 +13,7 @@ import streamlit as st
 
 from ili import app_state
 from ili.align_welds import DRAFT_LABEL
-from ili.app_pages_review import NEEDS_REVIEWER, rerun_button
+from ili.app_pages_review import NEEDS_REVIEWER, SAVED_AFTER_RUN, rerun_button, write_error
 from ili.app_pages_setup import NO_DATA
 from ili.classify import criteria_path
 from ili.config import PROJECT_ROOT, load_settings
@@ -22,7 +22,6 @@ from ili.report_charts import growth_vs_distance, rl_distribution
 from ili.report_data import dig_list, load_report_inputs
 from ili.review import FLAG_NAMES, FLAGS_FILE, append_flag, effective_flags, latest_flag_ids
 
-SAVED_AFTER_RUN = "saved after the last run — rerun to apply"
 FLAG_SAVED = "Saved — rerun the pipeline to apply"
 EXPLORER_COLUMNS = ["match_id", "match_type", "curr_feature_id", "curr_log_dist_ft", "segment_id", "raw_mpy",
                     "governing_mpy", "governing_method", "rl_yr", "rl_governing", "governing_category",
@@ -58,7 +57,7 @@ def explorer_page() -> None:
     st.title("Growth and remaining life explorer")
     st.caption(DRAFT_LABEL)
     path = app_state.comparison_from_session()
-    data = app_state.load_comparison(path) if path else None
+    data = app_state.page_data(path)
     if data is None or data.growth.empty or data.remaining_life.empty or data.classification.empty:
         st.info(NO_DATA)
         return
@@ -115,6 +114,9 @@ def _save_flags(path: Path, feature: str, wanted: dict[str, bool], current: dict
             append_flag(path / FLAGS_FILE, feature, name, wanted[name], reviewer, note or None)
     except ValueError as exc:
         st.error(str(exc))
+        return
+    except OSError as exc:  # e.g. PermissionError: the CSV is open in Excel
+        st.error(write_error(path / FLAGS_FILE, exc))
         return
     st.session_state["flag_saved"] = FLAG_SAVED
     st.rerun()
@@ -198,7 +200,7 @@ def export_page() -> None:
     st.title("Dig list and report export")
     st.caption(DRAFT_LABEL)
     path = app_state.comparison_from_session()
-    data = app_state.load_comparison(path) if path else None
+    data = app_state.page_data(path)
     if data is None or data.classification.empty:
         st.info(NO_DATA)
         return

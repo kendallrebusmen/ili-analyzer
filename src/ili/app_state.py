@@ -1,6 +1,8 @@
 """Session state and cached reads for the review app. DRAFT output only.
 
-The app never writes the comparison folder's ``pipeline_inputs.json``; only the pipeline does.
+The app never writes the comparison folder's ``pipeline_inputs.json``; only the pipeline does. The app
+and the pipeline always use the logs in the comparison folder: the ``--reviews`` / ``--flags`` paths of
+``ili.match`` / ``ili.classify`` are CLI-only.
 """
 
 import json
@@ -9,12 +11,12 @@ from pathlib import Path
 
 import pandas as pd
 
-from ili.align_welds import load_weld_map
+from ili.align_welds import comparison_dir, load_weld_map
 from ili.classify import FLAG_STATUS_FILE, load_classification_table
 from ili.config import PROJECT_ROOT
 from ili.growth import load_growth_table
 from ili.match import load_match_table
-from ili.pipeline import INPUTS_FILE, PipelineInputs, load_pipeline_inputs
+from ili.pipeline import INPUTS_FILE, PipelineInputs, _run_ids, load_pipeline_inputs
 from ili.remaining_life import load_remaining_life_table
 from ili.review import FLAGS_FILE, REVIEWS_FILE, load_flags, load_reviews
 
@@ -61,18 +63,40 @@ def comparison_from_session(session_state=None, outputs: Path | None = None) -> 
     return Path(chosen) if chosen else latest_comparison(OUTPUTS_DIR if outputs is None else outputs)
 
 
+def comparison_of(inputs: PipelineInputs) -> Path | None:
+    """The comparison folder an ingest wrote for these inputs (None before it exists)."""
+    try:
+        return comparison_dir(inputs.out, *_run_ids(inputs.out))
+    except (OSError, ValueError, KeyError, IndexError, TypeError):
+        return None
+
+
+def _same_folder(a: Path | None, b: Path) -> bool:
+    try:
+        return a is not None and Path(a).resolve() == Path(b).resolve()
+    except OSError:
+        return False
+
+
 def inputs_from_session(path: Path | None, session_state=None) -> PipelineInputs | None:
-    """The session's setup, else the one the pipeline recorded in the comparison folder, else None."""
+    """The run setup for the comparison folder shown (``path``): the session's when it ran that folder,
+    else the one the pipeline recorded in the folder, else None. A session setup of another folder is
+    never used for this one (a rerun with it would write the other folder). With no folder, the
+    session's setup."""
     if session_state is None:
         import streamlit as st
         session_state = st.session_state
     setup = session_state.get(INPUTS_KEY)
-    if setup is None and path is not None and (Path(path) / INPUTS_FILE).is_file():
+    if path is None:
+        return setup
+    if setup is not None and _same_folder(comparison_of(setup), Path(path)):
+        return setup
+    if (Path(path) / INPUTS_FILE).is_file():
         try:
-            setup = load_pipeline_inputs(Path(path) / INPUTS_FILE)
+            return load_pipeline_inputs(Path(path) / INPUTS_FILE)
         except ValueError:
-            setup = None
-    return setup
+            return None
+    return None
 
 
 def _mtimes(path: Path) -> tuple:
@@ -124,3 +148,17 @@ except ImportError:  # pragma: no cover - streamlit is a requirement
 def load_comparison(path: Path) -> ComparisonData:
     """Read the comparison folder's outputs; cached, keyed by the files' mtimes so a rerun refreshes it."""
     return _cached(str(Path(path)), _mtimes(Path(path)))
+
+
+def page_data(path: Path | None) -> ComparisonData | None:
+    """``load_comparison`` for a page; None without a folder. A file that cannot be read (a malformed
+    log row, a locked file) is shown with ``st.error``, naming the file and line, and the page stops
+    there instead of failing with a traceback."""
+    if path is None:
+        return None
+    try:
+        return load_comparison(path)
+    except (ValueError, OSError) as exc:
+        import streamlit as st
+        st.error(f"The comparison folder {path} cannot be read: {exc}")
+        st.stop()

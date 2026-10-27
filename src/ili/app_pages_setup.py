@@ -8,13 +8,15 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from ili import app_state
-from ili.align_welds import DRAFT_LABEL, comparison_dir
+from ili.align_welds import DRAFT_LABEL
+from ili.app_state import comparison_of
 from ili.config import DEFAULT_SETTINGS, PROJECT_ROOT
-from ili.pipeline import _PATH_FIELDS, _REQUIRED, STAGES, PipelineInputs, _run_ids, run_pipeline
+from ili.pipeline import _PATH_FIELDS, _REQUIRED, STAGES, PipelineInputs, StageResult, run_pipeline
 from ili.report_charts import INK, MUTED, TEMPLATE
 
 DATA_DIR = PROJECT_ROOT / "data"
 NO_DATA = "No data yet: run the pipeline on the Run setup page."
+ALL_OK = "Every stage finished with exit 0."
 SHADE = "rgba(255, 158, 74, 0.25)"
 MATCH_COLOURS = {"1:1": "#1F77B4", "1:2": "#E8833A", "2:1": "#2CA02C", "inserted": "#D62728",
                  "removed": "#7F7F7F"}
@@ -44,12 +46,30 @@ def build_inputs(values: dict[str, str]) -> PipelineInputs:
     return PipelineInputs(**kwargs)
 
 
-def comparison_of(inputs: PipelineInputs) -> Path | None:
-    """The comparison folder an ingest wrote for these inputs (None before it exists)."""
-    try:
-        return comparison_dir(inputs.out, *_run_ids(inputs.out))
-    except (OSError, ValueError, KeyError, IndexError):
-        return None
+def show_results(results: list[StageResult]) -> None:
+    """Each stage's output in an expander (open when it failed); the failing stage's last error line in
+    ``st.error`` with its full stderr below it, or a success line when every stage finished."""
+    for r in results:
+        with st.expander(f"{r.stage}: exit {r.exit_code}", expanded=r.exit_code != 0):
+            st.code(r.stdout or "(no output)")
+    failed = [r for r in results if r.exit_code != 0]
+    if failed:
+        f = failed[0]
+        lines = [line for line in f.stderr.splitlines() if line.strip()]
+        st.error(f"{f.stage} failed (exit {f.exit_code})" + (f": {lines[-1]}" if lines else ""))
+        if f.stderr.strip():
+            st.code(f.stderr)
+    elif len(results) == len(STAGES):
+        st.success(ALL_OK)
+
+
+def run_and_refresh(inputs: PipelineInputs, results_key: str) -> None:
+    """Run the pipeline, keep its results for the next script run and rerun the script, so every page
+    element (the sidebar's comparison caption included) shows the new outputs."""
+    with st.spinner("Running the pipeline"):
+        results = run_pipeline(inputs)
+    st.session_state[results_key] = results
+    st.rerun()
 
 
 def alignment_chart(weld_map: pd.DataFrame, changed: pd.DataFrame) -> go.Figure:
@@ -97,34 +117,29 @@ def run_setup_page() -> None:
         left.text_input(f.name.replace("_", " ") + (" *" if f.name in _REQUIRED else ""), key=key)
         if f.name in _PATH_FIELDS and f.name != "out":
             right.selectbox("Pick from data/", files, key=key + "_pick", on_change=_pick, args=(f.name,))
-    if not st.button("Run", type="primary"):
-        return
-    try:
-        inputs = build_inputs({f.name: st.session_state[field_key(f.name)] for f in fields(PipelineInputs)})
-    except ValueError as exc:
-        st.error(str(exc))
-        return
-    with st.spinner("Running the pipeline"):
-        results = run_pipeline(inputs)
-    st.session_state[app_state.INPUTS_KEY] = inputs
-    folder = comparison_of(inputs)
-    if folder is not None:
-        st.session_state[app_state.COMPARISON_KEY] = str(folder)
-    for r in results:
-        with st.expander(f"{r.stage}: exit {r.exit_code}", expanded=r.exit_code != 0):
-            st.code(r.stdout or "(no output)")
-    failed = [r for r in results if r.exit_code != 0]
-    if failed:
-        st.error(f"{failed[0].stage} failed (exit {failed[0].exit_code})\n\n{failed[0].stderr}")
-    elif len(results) == len(STAGES):
-        st.success("Every stage finished with exit 0.")
+    if st.button("Run", type="primary"):
+        try:
+            inputs = build_inputs({f.name: st.session_state[field_key(f.name)] for f in fields(PipelineInputs)})
+        except ValueError as exc:
+            st.error(str(exc))
+            return
+        with st.spinner("Running the pipeline"):
+            results = run_pipeline(inputs)
+        st.session_state[app_state.INPUTS_KEY] = inputs
+        folder = comparison_of(inputs)
+        if folder is not None:
+            st.session_state[app_state.COMPARISON_KEY] = str(folder)
+        st.session_state["setup_results"] = results
+        st.rerun()  # the sidebar was drawn before the run: draw it again with the new folder
+    if (results := st.session_state.pop("setup_results", None)) is not None:
+        show_results(results)
 
 
 def weld_alignment_page() -> None:
     st.title("Weld alignment")
     st.caption(DRAFT_LABEL)
     path = app_state.comparison_from_session()
-    data = app_state.load_comparison(path) if path else None
+    data = app_state.page_data(path)
     if data is None or not data.alignment_summary:
         st.info(NO_DATA)
         return

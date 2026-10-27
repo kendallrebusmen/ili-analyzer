@@ -124,7 +124,7 @@ py -3.13 -m venv .venv
 
 # The review app (local only: localhost, no telemetry). Pages: Run setup, Weld alignment, Match review
 # queue, Growth and remaining life explorer, Dig list and report export.
-.\.venv\Scripts\python.exe -m streamlit run app/streamlit_app.py --server.headless true
+.\.venv\Scripts\python.exe -m streamlit run app/streamlit_app.py --server.address localhost --browser.gatherUsageStats false
 ```
 
 Reviewers' decisions are saved in the comparison folder: match decisions in `reviews.csv` and manual flags in `feature_flags.csv`. Both are append-only logs (a correction is a new row; the latest wins). `ili.match` reads `reviews.csv` and `ili.classify` reads `feature_flags.csv` from the comparison folder by default (`--reviews` and `--flags` name other files), so a decision takes effect the next time the pipeline is rerun, from the app's Rerun button or the command above. **The logs live beside the outputs: deleting an output folder deletes the decisions.** Keep a copy of `reviews.csv` and `feature_flags.csv` before clearing outputs.
