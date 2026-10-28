@@ -102,6 +102,19 @@ code { font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; font-siz
 <dt>Generated (UTC)</dt><dd>{{ head.generated_utc }} by {{ head.generator }}</dd>
 </dl>
 {{ render_table(head.runs) }}
+<h3>Pipe summary</h3>
+<p>Values come from <code>pipe_properties.csv</code> and <code>mop_profile.csv</code>. Design pressure is
+2 &middot; SMYS &middot; t &middot; F / D with design factor F = {{ head.pipe.design_factor }}
+(<code>strength.design_factor</code>). Stress at MOP is evaluated only where both files have a row.</p>
+{{ render_table(head.pipe.by_wall_grade, "Length by nominal wall thickness (in) and grade") }}
+<dl class="facts">
+<dt>Design pressure (psig)</dt><dd>{{ head.pipe.design_pressure }}</dd>
+<dt>Stress at MOP (% SMYS)</dt><dd>{{ head.pipe.stress }}</dd>
+<dt>Installation year(s)</dt><dd>{{ head.pipe.install_years }}</dd>
+<dt>Coating(s)</dt><dd>{{ head.pipe.coatings }}</dd>
+<dt>Could-affect-HCA length</dt><dd>{{ head.pipe.hca_length_ft }} ft ({{ head.pipe.hca_pct }} % of the pipe length)</dd>
+</dl>
+{{ render_table(head.pipe.length_check, "Length check: girth-weld span of each run against the pipe table") }}
 {% for w in log_warnings %}
 <p class="warning">{{ w }}</p>
 {% endfor %}

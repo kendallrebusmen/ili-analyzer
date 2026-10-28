@@ -8,7 +8,8 @@ import pandas as pd
 from ili import config
 from ili.classify import CLASSIFICATION_COLUMNS
 from ili.report_tables import (_location_notes, anomalies_of_interest, anomaly_distribution, anomaly_distribution_table, depth_bins,
-                               dent_bins, imp_class_summary, joint_ml_counts, largest_joints)
+                               dent_bins, imp_class_summary, joint_ml_counts, largest_joints,
+                               length_check, pipe_summary)
 from ili.report_data import (DIG_LIST_CATEGORIES, DIG_LIST_COLUMNS, backtest, config_rows, criteria_rows, dig_list,
                              largest_growth, match_stats, pending_reviews)
 
@@ -519,3 +520,64 @@ def test_aoi_description_omits_missing_values():
     assert row.description == "Deepest 30% WT, 2 in long at 3:00"
     row = _aoi([{"feature_id": "A", "log_dist_ft": 5.0, "depth_pct": NAN}]).iloc[0]
     assert "Deepest" not in row.description and "nan" not in row.description
+
+
+# --- pipe summary and length check (spec 6.10) ----------------------------------------------------------
+
+def _pipe_tables(mop_rows=((0, 750, 1440.0), (750, 1000, 1200.0)), segments=None):
+    pipe = pd.DataFrame({"start_ft": [0.0, 500.0], "end_ft": [500.0, 1000.0], "od_in": [12.75, 12.75],
+                         "wt_nom_in": [0.250, 0.312], "grade": ["X52", "X52"], "smys_psi": [52000.0, 52000.0],
+                         "seam_type": ["ERW", "ERW"], "install_year": [1998.0, 2004.0],
+                         "coating_type": ["FBE", "coal tar"]})
+    mop = pd.DataFrame(mop_rows, columns=["start_ft", "end_ft", "mop_psig"])
+    if segments is None:
+        segments = pd.DataFrame({"start_ft": [0.0, 400.0], "end_ft": [400.0, 1000.0], "segment_id": ["S1", "S2"],
+                                 "could_affect_hca": ["True", "False"]})
+    settings = config.load_settings()
+    settings = settings.model_copy(update={"strength": settings.strength.model_copy(update={"design_factor": 0.72})})
+    return pipe, mop, segments, settings
+
+
+def test_pipe_summary_values():
+    summary = pipe_summary(*_pipe_tables())
+    # design pressure = 2 * SMYS * t * F / D with SMYS 52000, F 0.72, D 12.75:
+    #   t 0.250: 2*52000*0.250*0.72/12.75 = 18720/12.75 = 1468.2353 psig
+    #   t 0.312: 2*52000*0.312*0.72/12.75 = 23362.56/12.75 = 1832.3576 psig
+    assert summary.design_pressure_psig == pytest.approx((18720 / 12.75, 23362.56 / 12.75))
+    # stress at MOP = MOP * D / (2 t SMYS) * 100 over [0,500) [500,750) [750,1000):
+    #   1440*12.75/(2*0.250*52000) = 18360/26000 = 70.6154 %
+    #   1440*12.75/(2*0.312*52000) = 18360/32448 = 56.5828 %
+    #   1200*12.75/(2*0.312*52000) = 15300/32448 = 47.1524 %
+    assert summary.stress_at_mop_pct_smys == pytest.approx((15300 / 32448 * 100, 18360 / 26000 * 100))
+    # length by wall and grade: 500 ft each
+    assert summary.by_wall_grade.to_dict("records") == [{"wt_nom_in": 0.250, "grade": "X52", "length_ft": 500.0},
+                                                        {"wt_nom_in": 0.312, "grade": "X52", "length_ft": 500.0}]
+    assert summary.install_years == [1998, 2004] and summary.coatings == ["FBE", "coal tar"]
+    # HCA: only S1 (0-400 ft) of a 1000 ft pipe
+    assert summary.hca_length_ft == 400.0 and summary.hca_pct == pytest.approx(40.0)
+
+
+def test_pipe_summary_skips_intervals_without_a_mop_row():
+    # MOP covers 0-250 only (1440 psig on t 0.250): the rest has no MOP and is skipped, not an error
+    summary = pipe_summary(*_pipe_tables(mop_rows=((0, 250, 1440.0),)))
+    assert summary.stress_at_mop_pct_smys == pytest.approx((18360 / 26000 * 100,) * 2)
+    assert pipe_summary(*_pipe_tables(mop_rows=((2000, 3000, 1440.0),))).stress_at_mop_pct_smys is None
+
+
+def test_pipe_summary_hca_flag_may_be_boolean():
+    segments = pd.DataFrame({"start_ft": [0.0], "end_ft": [250.0], "segment_id": ["S1"], "could_affect_hca": [True]})
+    assert pipe_summary(*_pipe_tables(segments=segments)).hca_pct == pytest.approx(25.0)
+
+
+def test_length_check():
+    pipe = _pipe_tables()[0]
+    prev = _std([{"feature_type": "girth_weld", "log_dist_ft": 10.0}, {"feature_type": "girth_weld", "log_dist_ft": 990.0},
+                 {"log_dist_ft": 2000.0}], run_id="P")
+    curr = _std([{"feature_type": "girth_weld", "log_dist_ft": 0.0}, {"feature_type": "girth_weld", "log_dist_ft": 1010.0}],
+                run_id="C")
+    out = length_check(prev, curr, pipe)
+    # reference = 1000 - 0 = 1000 ft; P: 990 - 10 = 980 (diff -20, -2 %); C: 1010 - 0 = 1010 (diff +10, +1 %)
+    assert list(out.columns) == ["run_id", "ili_length_ft", "reference_length_ft", "diff_ft", "diff_pct"]
+    assert out.run_id.tolist() == ["P", "C"]
+    assert out.ili_length_ft.tolist() == [980.0, 1010.0] and out.reference_length_ft.tolist() == [1000.0, 1000.0]
+    assert out.diff_ft.tolist() == [-20.0, 10.0] and out.diff_pct.tolist() == pytest.approx([-2.0, 1.0])

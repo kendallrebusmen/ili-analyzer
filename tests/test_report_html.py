@@ -344,3 +344,13 @@ def test_growth_section_shows_depth_and_dent_bins_with_notes(report):
         assert f"Depth bins, {title}" in growth
     assert ">=80" in growth and "0-2" in growth
     assert "classification.girth_weld_proximity_in is not set" in growth  # the default leaves the setting null
+
+
+def test_report_header_has_pipe_summary(report):
+    inputs, _, html = report
+    text = _section_text(html, "header")
+    assert "Pipe summary" in text and "pipe_properties.csv" in text and "mop_profile.csv" in text
+    assert f"design factor F = {inputs.settings.strength.design_factor:g}" in text
+    assert "Length check" in text and "Design pressure (psig)" in text and "Stress at MOP (% SMYS)" in text
+    for run_id in (inputs.prev_std.run_id.iloc[0], inputs.curr_std.run_id.iloc[0]):
+        assert run_id in text

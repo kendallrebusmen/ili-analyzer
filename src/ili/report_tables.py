@@ -15,6 +15,7 @@ from ili.classify import near_girth_weld, seam_interaction
 from ili.config import Settings
 from ili.match import PositionMap
 from ili.reference import lookup
+from ili.remaining_life import _as_bool
 from ili.schema import FeatureType, MlOrigin, Surface
 
 IMP_CLASS_COLUMNS = ("imp_class", "n_classified", "n_previously_repaired", "n_unrepaired", "n_rl_not_evaluated")
@@ -385,3 +386,87 @@ def anomalies_of_interest(inputs) -> pd.DataFrame:
     out.insert(0, "rank", range(1, len(out) + 1))
     out["hca"] = out["hca"].astype(object)
     return out.reset_index(drop=True)
+
+
+PIPE_SUMMARY_WHAT = "pipe_properties.csv"
+WALL_GRADE_COLUMNS = ("wt_nom_in", "grade", "length_ft")
+LENGTH_CHECK_COLUMNS = ("run_id", "ili_length_ft", "reference_length_ft", "diff_ft", "diff_pct")
+
+
+@dataclass(frozen=True)
+class PipeSummary:
+    """Pipe properties summarised for the report header. ``by_wall_grade`` has columns ``wt_nom_in``, ``grade``,
+    ``length_ft``. The ``(min, max)`` pairs are None when no row can be evaluated: ``design_pressure_psig``
+    (psig) and ``stress_at_mop_pct_smys`` (percent of SMYS). ``install_years`` and ``coatings`` are sorted unique
+    values; ``hca_length_ft`` is the length (ft) of the segments that could affect an HCA and ``hca_pct`` its
+    share of the pipe length (percent; None for a pipe of no length)."""
+    by_wall_grade: pd.DataFrame
+    design_pressure_psig: tuple[float, float] | None
+    stress_at_mop_pct_smys: tuple[float, float] | None
+    install_years: list
+    coatings: list[str]
+    hca_length_ft: float
+    hca_pct: float | None
+
+
+def _range(values: np.ndarray) -> tuple[float, float] | None:
+    values = values[np.isfinite(values)]
+    return (float(values.min()), float(values.max())) if len(values) else None
+
+
+def _sorted_unique(values: pd.Series) -> list:
+    """Sorted unique non-blank values; a whole number (install year) as an int."""
+    return sorted({int(v) if isinstance(v, (float, np.floating)) and float(v).is_integer() else v
+                   for v in values.dropna() if str(v).strip() != ""})
+
+
+def pipe_summary(pipe: pd.DataFrame, mop: pd.DataFrame, segments: pd.DataFrame, settings: Settings) -> PipeSummary:
+    """The pipe summary of the report header (spec 6.10): length by wall thickness and grade; the range of
+    design pressure 2 SMYS t F / D (psig; F is ``strength.design_factor``) over the pipe rows; the range of
+    stress at MOP, MOP D / (2 t SMYS) x 100 (% SMYS), over the intervals between the union of the pipe and MOP
+    breakpoints (an interval that either table does not cover, or whose value is NaN, is skipped, not an
+    error); sorted install years and coatings; and the length of the segments with ``could_affect_hca``
+    (True or the text ``True``). A missing pipe column is a ValueError naming the file."""
+    need = ("start_ft", "end_ft", "od_in", "wt_nom_in", "grade", "smys_psi", "install_year", "coating_type")
+    missing = [c for c in need if c not in pipe.columns]
+    if missing:
+        raise ValueError(f"{PIPE_SUMMARY_WHAT} is missing column(s): {', '.join(missing)}")
+    rows = pipe.assign(length_ft=pipe.end_ft.astype(float) - pipe.start_ft.astype(float))
+    by = (rows.groupby(["wt_nom_in", "grade"], sort=True, dropna=False).length_ft.sum().reset_index()
+          [list(WALL_GRADE_COLUMNS)])
+    od, wt, smys = (rows[c].to_numpy(float) for c in ("od_in", "wt_nom_in", "smys_psi"))
+    design = 2.0 * smys * wt * settings.strength.design_factor / od
+
+    start, end = pipe.start_ft.to_numpy(float), pipe.end_ft.to_numpy(float)
+    m_start, m_end = mop.start_ft.to_numpy(float), mop.end_ft.to_numpy(float)
+    edges = np.unique(np.concatenate([start, end, m_start, m_end]))
+    stress = []
+    for x in (edges[:-1] + edges[1:]) / 2.0:  # an interval's midpoint is inside exactly one row per table
+        p_hit = np.flatnonzero((start <= x) & (x < end))
+        m_hit = np.flatnonzero((m_start <= x) & (x < m_end))
+        if len(p_hit) and len(m_hit):
+            i, j = p_hit[0], m_hit[0]
+            stress.append(float(mop.mop_psig.iloc[j]) * od[i] / (2.0 * wt[i] * smys[i]) * PCT_PER_FRACTION)
+
+    hca = np.array([_as_bool(v, "segments") for v in segments.could_affect_hca], dtype=bool)
+    hca_ft = float((segments.end_ft.to_numpy(float) - segments.start_ft.to_numpy(float))[hca].sum())
+    total = float(rows.length_ft.sum())
+    return PipeSummary(by, _range(design), _range(np.array(stress, dtype=float)),
+                       _sorted_unique(pipe.install_year), [str(c) for c in _sorted_unique(pipe.coating_type)],
+                       hca_ft, hca_ft / total * PCT_PER_FRACTION if total > 0 else None)
+
+
+def length_check(prev_std: pd.DataFrame, curr_std: pd.DataFrame, pipe: pd.DataFrame) -> pd.DataFrame:
+    """Each run's surveyed length against the pipe table's, one row per run (previous first): ``ili_length_ft``
+    is the largest minus the smallest ``log_dist_ft`` of the run's girth welds, ``reference_length_ft`` the
+    largest ``end_ft`` minus the smallest ``start_ft`` of ``pipe``, ``diff_ft`` their difference (ILI minus
+    reference) and ``diff_pct`` that as a percent of the reference. NaN where a run has no girth weld."""
+    reference = float(pipe.end_ft.astype(float).max() - pipe.start_ft.astype(float).min())
+    rows = []
+    for std in (prev_std, curr_std):
+        welds = std.log_dist_ft[std.feature_type.astype(str) == FeatureType.girth_weld.value].astype(float)
+        ili = float(welds.max() - welds.min()) if len(welds) else np.nan
+        diff = ili - reference
+        rows.append({"run_id": _run_id(std), "ili_length_ft": ili, "reference_length_ft": reference,
+                     "diff_ft": diff, "diff_pct": diff / reference * PCT_PER_FRACTION if reference else np.nan})
+    return pd.DataFrame(rows, columns=list(LENGTH_CHECK_COLUMNS))

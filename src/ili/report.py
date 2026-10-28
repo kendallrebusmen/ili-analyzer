@@ -46,7 +46,8 @@ from ili.report_charts import (CATEGORY_COLOURS, depth_vs_distance, feature_map,
 from ili.report_data import (ReportInputs, _sha256, backtest, config_rows, criteria_rows, dig_list, input_hashes,
                              largest_growth, load_report_inputs, match_stats, pending_reviews)
 from ili.report_tables import (DEPTH_COLUMNS, LOCATIONS, anomaly_distribution, anomaly_distribution_table,
-                               anomalies_of_interest, imp_class_summary, joint_ml_counts, largest_joints)
+                               anomalies_of_interest, imp_class_summary, joint_ml_counts, largest_joints,
+                               length_check, pipe_summary)
 from ili.review import FLAG_COLUMNS, REVIEW_COLUMNS
 
 TEMPLATES = Path(__file__).parent / "templates"
@@ -180,8 +181,20 @@ def _header(inputs: ReportInputs, header: ReportHeader, generated_utc: datetime)
         [role, run_id, _run_dates(std), _vendor(inputs.ingest_manifest, run_id), tool or NOT_STATED]
         for role, run_id, std, tool in (("previous", prev_id, inputs.prev_std, header.prev_tool),
                                         ("current", curr_id, inputs.curr_std, header.curr_tool))])
+    ps = pipe_summary(inputs.pipe, inputs.mop, inputs.segments, inputs.settings)
+
+    def span(pair) -> str:
+        return "not available" if pair is None else f"{cell(pair[0])} to {cell(pair[1])}"
+
+    pipe = {"by_wall_grade": table(ps.by_wall_grade),
+            "design_pressure": span(ps.design_pressure_psig), "stress": span(ps.stress_at_mop_pct_smys),
+            "install_years": cell(ps.install_years) or NOT_STATED, "coatings": cell(ps.coatings) or NOT_STATED,
+            "hca_length_ft": cell(ps.hca_length_ft),
+            "hca_pct": "not available" if ps.hca_pct is None else cell(ps.hca_pct),
+            "design_factor": cell(inputs.settings.strength.design_factor),
+            "length_check": table(length_check(inputs.prev_std, inputs.curr_std, inputs.pipe))}
     return {"line_name": header.line_name or NOT_STATED, "prev_run_id": prev_id, "curr_run_id": curr_id,
-            "runs": runs, "generated_utc": generated_utc.isoformat(timespec="seconds"),
+            "runs": runs, "pipe": pipe, "generated_utc": generated_utc.isoformat(timespec="seconds"),
             "generator": f"ili.report {__version__}"}
 
 
