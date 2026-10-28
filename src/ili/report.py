@@ -1,4 +1,4 @@
-"""Report (spec 6.10): the self-contained HTML report.
+"""Report (spec 6.10): the self-contained HTML report, and the same report as a PDF deliverable (``report_pdf``).
 
 ``render_report`` draws every section from the report inputs (``report_data``), the category changes
 (``category_change``) and the charts (``report_charts``) as they are; nothing is recomputed. The page is
@@ -46,6 +46,7 @@ from ili.report_charts import (CATEGORY_COLOURS, depth_vs_distance, elevation_ch
                                unity_chart)
 from ili.report_data import (ReportInputs, _sha256, backtest, config_rows, criteria_rows, dig_list, input_hashes,
                              largest_growth, load_report_inputs, match_stats, pending_reviews)
+from ili.report_pdf import build_pdf
 from ili.report_tables import (DEPTH_COLUMNS, LOCATIONS, anomaly_distribution, anomaly_distribution_table,
                                anomalies_of_interest, imp_class_rows, imp_class_summary, joint_ml_counts,
                                largest_joints, length_check, pipe_summary)
@@ -84,6 +85,8 @@ class ReportHeader:
     line_name: str | None
     prev_tool: str | None
     curr_tool: str | None
+    prepared_for: str | None = None  # the PDF cover's client (operator) name
+    prepared_by: str | None = None  # the PDF cover's author (company or engineer)
 
 
 @dataclass(frozen=True)
@@ -196,7 +199,8 @@ def _header(inputs: ReportInputs, header: ReportHeader, generated_utc: datetime)
             "length_check": table(length_check(inputs.prev_std, inputs.curr_std, inputs.pipe))}
     return {"line_name": header.line_name or NOT_STATED, "prev_run_id": prev_id, "curr_run_id": curr_id,
             "runs": runs, "pipe": pipe, "generated_utc": generated_utc.isoformat(timespec="seconds"),
-            "generator": f"ili.report {__version__}"}
+            "generator": f"ili.report {__version__}", "prepared_for": header.prepared_for,
+            "prepared_by": header.prepared_by}
 
 
 def _imp_class_rows(inputs: ReportInputs) -> pd.DataFrame:
@@ -399,6 +403,18 @@ def _environment() -> jinja2.Environment:
 def render_report(inputs: ReportInputs, changes: CategoryChangeResult, header: ReportHeader,
                   generated_utc: datetime) -> str:
     """The report as one self-contained HTML document (spec 6.10), sections in ``SECTION_IDS`` order."""
+    return render_html(report_context(inputs, changes, header, generated_utc))
+
+
+def render_html(context: dict) -> str:
+    """The HTML report from ``report_context``."""
+    return _environment().get_template(TEMPLATE_NAME).render(context)
+
+
+def report_context(inputs: ReportInputs, changes: CategoryChangeResult, header: ReportHeader,
+                   generated_utc: datetime) -> dict:
+    """Every section of the report, built once from the report inputs: the HTML template and the PDF
+    (``report_pdf``) both render from it, so the two always show the same values."""
     dig = dig_list(inputs)
     n_largest = inputs.settings.report.largest_changes_n
     moved = changes.table[changes.table.moved_more_severe]
@@ -422,12 +438,12 @@ def render_report(inputs: ReportInputs, changes: CategoryChangeResult, header: R
         "charts": _charts(inputs, dig),
         "methods": _methods(inputs),
     }
-    return _environment().get_template(TEMPLATE_NAME).render(context)
+    return context
 
 
 # --- dig list workbook, manifest, CLI -----------------------------------------------------------------
 
-OUTPUT_NAMES = ("category_changes.csv", "report.html", "dig_list.xlsx", "anomaly_distribution.csv",
+OUTPUT_NAMES = ("category_changes.csv", "report.html", "report.pdf", "dig_list.xlsx", "anomaly_distribution.csv",
                 "joint_ml_counts.csv", "anomalies_of_interest.csv", "imp_class.csv", "run_manifest.json")
 DATE_COLUMNS = ("due_date",)
 GIT_TIMEOUT_S = 10
@@ -543,7 +559,9 @@ def write_report(inputs: ReportInputs, header: ReportHeader, out_dir: Path,
     changes = category_changes(inputs.match_table, inputs.remaining_life, inputs.classification, inputs.curr_std,
                                inputs.pipe, inputs.mop, inputs.segments, inputs.crossings, inputs.settings,
                                inputs.criteria, prev_dates.iloc[0])
-    html = render_report(inputs, changes, header, generated_utc)
+    context = report_context(inputs, changes, header, generated_utc)
+    html = render_html(context)
+    pdf = build_pdf(context, inputs, generated_utc)
     workbook = dig_list_workbook(dig_list(inputs), inputs.settings, _sheet_label(inputs))
     distribution = anomaly_distribution_table(anomaly_distribution(inputs))
     joints = joint_ml_counts(inputs.weld_map, inputs.prev_std, inputs.curr_std)
@@ -554,6 +572,7 @@ def write_report(inputs: ReportInputs, header: ReportHeader, out_dir: Path,
     _write_all({
         "category_changes.csv": lambda p: changes.table.to_csv(p, index=False, lineterminator="\n"),
         "report.html": lambda p: p.write_text(html, encoding="utf-8"),
+        "report.pdf": lambda p: p.write_bytes(pdf),
         "dig_list.xlsx": workbook.save,
         "anomaly_distribution.csv": lambda p: distribution.to_csv(p, index=False, lineterminator="\n"),
         "joint_ml_counts.csv": lambda p: joints.to_csv(p, index=False, lineterminator="\n"),
@@ -566,7 +585,7 @@ def write_report(inputs: ReportInputs, header: ReportHeader, out_dir: Path,
 
 def _parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(prog="python -m ili.report",
-                                 description="HTML report and Excel dig list. " + DRAFT_LABEL)
+                                 description="HTML and PDF report and Excel dig list. " + DRAFT_LABEL)
     ap.add_argument("--prev", type=Path, required=True, help="standardized CSV of the previous run")
     ap.add_argument("--curr", type=Path, required=True, help="standardized CSV of the current run")
     ap.add_argument("--comparison", type=Path, required=True, help="the <prev>_vs_<curr> output folder")
@@ -586,6 +605,8 @@ def _parser() -> argparse.ArgumentParser:
     ap.add_argument("--line-name", default=None, help="pipeline name for the report header")
     ap.add_argument("--prev-tool", default=None, help="previous run's tool type for the report header")
     ap.add_argument("--curr-tool", default=None, help="current run's tool type for the report header")
+    ap.add_argument("--prepared-for", default=None, help="client (operator) named on the PDF cover")
+    ap.add_argument("--prepared-by", default=None, help="author (company or engineer) named on the PDF cover")
     return ap
 
 
@@ -597,7 +618,7 @@ def main(argv: list[str] | None = None) -> int:
         inputs = load_report_inputs(args.comparison, args.prev, args.curr, ingest_dir, args.pipe, args.mop,
                                     args.segments, args.crossings, args.digs, args.settings,
                                     criteria_path(args.criteria, settings), repairs=args.repairs)
-        header = ReportHeader(args.line_name, args.prev_tool, args.curr_tool)
+        header = ReportHeader(args.line_name, args.prev_tool, args.curr_tool, args.prepared_for, args.prepared_by)
         paths, changes = write_report(inputs, header, args.comparison, datetime.now(timezone.utc))
     except (ValueError, OSError) as exc:
         print(f"error: {exc}", file=sys.stderr)

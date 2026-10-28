@@ -58,7 +58,7 @@ def test_full_pipeline_on_synth(conservative_run):
 M11_HEADINGS = ("Pipe summary", "IMP class summary", "Anomalies of interest", "Growth summary by surface",
                 "Depth bins", "Dent bins", "Per-joint metal-loss counts", "Methods and assumptions")
 M11_OUTPUTS = ("growth_summary.json", "growth_summary.csv", "anomaly_distribution.csv", "joint_ml_counts.csv",
-               "anomalies_of_interest.csv", "imp_class.csv")
+               "anomalies_of_interest.csv", "imp_class.csv", "report.pdf")
 
 
 def test_pipeline_conservative_end_to_end(conservative_run):
@@ -191,6 +191,17 @@ def test_inputs_round_trip_and_errors(tmp_path):
         load_pipeline_inputs(bad)
     with pytest.raises(ValueError):
         run_pipeline(replace(inputs), until="nope")
+
+
+def test_report_argv_passes_the_pdf_cover_names(tmp_path):
+    inputs = PipelineInputs(prev_tally=tmp_path / "a.csv", prev_map=tmp_path / "ma.yaml", curr_tally=tmp_path / "b.xlsx",
+                            curr_map=tmp_path / "mb.yaml", pipe=tmp_path / "p.csv", mop=tmp_path / "m.csv",
+                            segments=tmp_path / "s.csv", next_inspection=tmp_path / "n.csv", out=tmp_path / "o",
+                            prepared_for="Operator X", prepared_by="Engineer Y")
+    argv = pipeline._argv("report", inputs, "prev", "curr")
+    assert argv[argv.index("--prepared-for") + 1] == "Operator X"
+    assert argv[argv.index("--prepared-by") + 1] == "Engineer Y"
+    assert "--prepared-for" not in pipeline._argv("report", replace(inputs, prepared_for=None), "prev", "curr")
 
 
 def test_busy_run_returns_at_once_and_streams_survive(synth, tmp_path, monkeypatch):

@@ -495,3 +495,28 @@ Builds the spec amendment above on synthetic data. Defaults are unchanged: with 
 - `growth.shrinking_rate_mpy` is null by default. Until it is set, `pit_to_pit` rows with a decreased depth are flagged for review rather than given a rate (review reason `no_governing`).
 - Every new threshold with a `PLACEHOLDER` comment in `config/settings.yaml` needs sign-off.
 - M12 (parity with the consultant on real data) waits for the user's explicit approval under spec Section 2.
+
+## PDF report deliverable (2026-10-28)
+
+- **Requested by the user:** a professional PDF of the report, fit to hand to another operator. Built with
+  ReportLab (layout) and matplotlib (charts): both install as pure wheels on Windows with no system libraries, as
+  spec Section 3 requires. Fonts are DejaVu Sans from matplotlib's own data folder, so nothing is fetched or
+  installed system-wide. `pypdf` is pinned for the tests only.
+- **One source of content.** `report.report_context` builds every section once; `report.html` and `report.pdf`
+  both render from it, so they cannot disagree. The PDF recomputes nothing; it only formats (thousands separators,
+  engineering decimals per column, category names in words, Yes/No for flags). The CSV and Excel outputs keep full
+  precision.
+- **Always DRAFT.** Every page carries the DRAFT label in its footer and a light diagonal watermark; the cover
+  states the status and that every result needs review by a qualified integrity engineer. Nothing in it says final
+  or approved; the "not final" warning appears while reviews are pending, as in the HTML.
+- **Layout.** US Letter. Cover; contents; 1 executive summary (key figures, warnings, immediate conditions, IMP
+  class summary, anomalies of interest, reinspection intervals); 2 pipeline and inspections; 3 repair conditions
+  (immediate, 60-day, 180-day rows of the dig list, landscape, rows tinted by category); 4 growth and remaining life;
+  5 anomaly distribution with orientation and elevation charts; 6 data quality and review status; Appendix A methods
+  and settings (PLACEHOLDER rows highlighted; the full formulas stay in `report.html`); Appendix B input-file
+  fingerprints; Appendix C the IMP-scheduled anomalies (landscape). The dig list prints 16 columns; the Excel dig
+  list keeps all of them.
+- **Cover names** come from `--prepared-for` / `--prepared-by` (report CLI, pipeline inputs, and the app's Run
+  setup page); "not stated" when blank. Every piece of data text is escaped before ReportLab's paragraph markup.
+- `report.pdf` is a ninth report output, written with the others through `_write_all`, so a failure to build it
+  leaves every existing output as it was.
