@@ -31,6 +31,7 @@ from ili.config import RepairCriteria, Settings, load_repair_criteria, load_sett
 from ili.growth import load_growth_table
 from ili.ingest import load_standardized
 from ili.match import load_match_table
+from ili.reference import load_repairs
 from ili.remaining_life import load_remaining_life_table
 from ili.review import FLAG_COLUMNS, FLAGS_FILE, REVIEW_COLUMNS, REVIEWS_FILE, load_flags, load_reviews
 
@@ -305,7 +306,7 @@ def load_report_inputs(comparison: Path, prev_std: Path, curr_std: Path, ingest_
         growth=load_growth_table(files["growth"]),
         growth_segments=_read_csv(files["growth_segments"]),
         growth_by_surface=_read_csv(files["growth_by_surface"]), weld_map=load_weld_map(files["weld_map"]),
-        repairs=_read_csv(files["repairs"]) if repairs is not None else None,
+        repairs=load_repairs(files["repairs"]) if repairs is not None else None,
         remaining_life=load_remaining_life_table(files["remaining_life"]),
         intervals=_read_csv(files["intervals"]),
         classification=load_classification_table(files["classification"]),

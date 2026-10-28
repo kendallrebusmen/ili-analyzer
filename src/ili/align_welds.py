@@ -30,6 +30,7 @@ import pandas as pd
 
 from ili.config import DEFAULT_SETTINGS, PROJECT_ROOT, AlignmentCfg, load_settings
 from ili.ingest import load_standardized
+from ili.reference import load_repairs, normalize_repairs
 from ili.schema import ANCHOR_TYPES
 from ili.validation import score_alignment, write_metrics
 
@@ -300,8 +301,8 @@ def align_welds(prev_std: pd.DataFrame, curr_std: pd.DataFrame, settings, repair
     pj, cj = build_joints(prev_std), build_joints(curr_std)
     if pj.empty or cj.empty:
         raise ValueError("each run needs at least two girth welds to align")
-    if repairs is not None and not {"start_ft", "end_ft"} <= set(repairs.columns):
-        raise ValueError("repairs need start_ft and end_ft columns (current-run log distance)")
+    if repairs is not None:  # start_ft, end_ft (current-run log distance) and a spec 5.2 repair_type
+        repairs = normalize_repairs(repairs, "repairs")
     pairs = match_anchors(pj, cj, cfg)
     plen, clen = pj.length_ft.to_numpy(), cj.length_ft.to_numpy()
 
@@ -318,7 +319,7 @@ def align_welds(prev_std: pd.DataFrame, curr_std: pd.DataFrame, settings, repair
         hi = cpos[-1] + (x - ppos[-1]) / log_map.scale
         return np.where(x < ppos[0], lo, np.where(x > ppos[-1], hi, np.interp(x, ppos, cpos)))
 
-    if repairs is not None and "repair_type" in repairs.columns:  # recoats and sleeves leave the joints in place
+    if repairs is not None:  # recoats and sleeves leave the joints in place
         repairs = repairs[repairs.repair_type.isin(JOINT_REPAIR_TYPES)]
     spans = np.empty((0, 2)) if repairs is None or repairs.empty else         repairs[["start_ft", "end_ft"]].to_numpy(dtype=float)
     cmid = ((cj.start_ft + cj.end_ft) / 2).to_numpy()
@@ -524,7 +525,7 @@ def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
         prev, curr = load_standardized(args.prev), load_standardized(args.curr)
-        repairs = pd.read_csv(args.repairs) if args.repairs else None
+        repairs = load_repairs(args.repairs) if args.repairs else None
         result = align_welds(prev, curr, load_settings(args.settings), repairs)
         paths = write_alignment(result, args.out)
         score = None

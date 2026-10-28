@@ -138,7 +138,7 @@ def _runs():
         (ml, 900.0, "Cnew", 25.0, 50, 1.0),
     ], date(2026, 6, 15))
     pipe = pd.DataFrame({"start_ft": [0.0], "end_ft": [2000.0], "od_in": [12.75]})
-    repairs = pd.DataFrame({"start_ft": [1390.0], "end_ft": [1410.0]})
+    repairs = pd.DataFrame({"start_ft": [1390.0], "end_ft": [1410.0], "repair_type": ["pipe_replacement"]})
     return prev, curr, wm, pipe, repairs
 
 

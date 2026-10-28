@@ -1,9 +1,13 @@
-"""Reference tables keyed to current-run log distance: value lookup by position and segments.
+"""Reference tables keyed to current-run log distance: value lookup by position, segments, and the repairs log.
 
-Shared by the match step (pipe properties) and the growth step (segments, HCA).
+Shared by the match step (pipe properties), the growth step (segments, HCA), and every step that reads
+``repairs_between_runs.csv`` (``load_repairs`` / ``normalize_repairs``).
 """
 
 from __future__ import annotations
+
+import re
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -12,12 +16,50 @@ from ili.config import Settings
 from ili.units import FT_PER_MI
 
 SEGMENT_COLUMNS = ("start_ft", "end_ft", "segment_id")
+REPAIR_COLUMNS = ("start_ft", "end_ft", "repair_type")
+REPAIR_TYPES = ("sleeve", "cutout", "recoat", "pipe_replacement")  # spec 5.2 repairs_between_runs vocabulary
+_REPAIR_TYPE_SEPARATORS = re.compile(r"[\s-]+")  # a run of spaces or hyphens becomes one underscore
 
 
 def _require_columns(df: pd.DataFrame, cols: tuple, what: str) -> None:
     missing = [c for c in cols if c not in df.columns]
     if missing:
         raise ValueError(f"{what} is missing required column(s) {missing}")
+
+
+def _repair_type_key(value) -> str | None:
+    """``repair_type`` stripped, casefolded, with spaces/hyphens as ``_``; None for a blank."""
+    if value is None or (not isinstance(value, str) and pd.isna(value)):
+        return None
+    text = str(value).strip().casefold()
+    return _REPAIR_TYPE_SEPARATORS.sub("_", text) if text else None
+
+
+def normalize_repairs(repairs: pd.DataFrame, what: str = "repairs table") -> pd.DataFrame:
+    """A copy of a ``repairs_between_runs`` table with ``repair_type`` normalised (strip, casefold, spaces and
+    hyphens to ``_``), so " PIPE REPLACEMENT " is ``pipe_replacement``. ValueError naming ``what`` (the file)
+    for a missing ``start_ft``, ``end_ft`` or ``repair_type`` column, or for any type (blank included) outside
+    ``REPAIR_TYPES`` (spec 5.2), listing the offending values."""
+    _require_columns(repairs, REPAIR_COLUMNS, what)
+    keys = [_repair_type_key(v) for v in repairs.repair_type]
+    bad = list(dict.fromkeys("blank" if k is None else repr(v)
+                             for v, k in zip(repairs.repair_type, keys) if k not in REPAIR_TYPES))
+    if bad:
+        raise ValueError(f"{what}: repair_type {', '.join(bad)} is not one of {', '.join(REPAIR_TYPES)} "
+                         "(spec 5.2)")
+    out = repairs.copy()
+    out["repair_type"] = pd.Series(keys, index=repairs.index, dtype=object)
+    return out
+
+
+def load_repairs(path: Path) -> pd.DataFrame:
+    """Read ``repairs_between_runs.csv`` and ``normalize_repairs`` it; every error names the file (an empty or
+    malformed file included)."""
+    try:
+        repairs = pd.read_csv(path)
+    except (pd.errors.EmptyDataError, pd.errors.ParserError) as exc:
+        raise ValueError(f"{path}: unreadable CSV: {exc}") from None
+    return normalize_repairs(repairs, str(path))
 
 
 def lookup(table: pd.DataFrame, pos_ft, column: str, tol_ft: float, what: str = "reference table",

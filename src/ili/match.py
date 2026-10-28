@@ -25,7 +25,7 @@ from scipy.sparse.csgraph import connected_components
 from ili.align_welds import DRAFT_LABEL, comparison_dir, load_weld_map
 from ili.config import DEFAULT_SETTINGS, PROJECT_ROOT, Settings, ToolCfg, load_settings
 from ili.ingest import load_standardized
-from ili.reference import lookup
+from ili.reference import load_repairs, lookup, normalize_repairs
 from ili.review import REVIEWS_FILE, EffectiveReviews, effective_reviews, load_reviews_hashed
 from ili.schema import ANOMALY_TYPES
 from ili.units import CLOCK_MINUTES, wrap_clock_min
@@ -905,7 +905,7 @@ def match_anomalies(prev_std, curr_std, weld_map, settings: Settings, pipe, repa
     table."""
     _require_columns(weld_map, WELD_MAP_COLUMNS, "weld map")
     if repairs is not None:
-        _require_columns(repairs, ("start_ft", "end_ft"), "repairs")
+        repairs = normalize_repairs(repairs, "repairs")
     tol = settings.alignment.anchor_tol_ft
     pmap = PositionMap.from_weld_map(weld_map)
     prev = _with_od(place(prev_std, weld_map, "prev", pmap), pipe, tol)
@@ -1043,7 +1043,7 @@ def main(argv: list[str] | None = None) -> int:
         prev, curr = load_standardized(args.prev), load_standardized(args.curr)
         weld_map = load_weld_map(args.weld_map)
         pipe = pd.read_csv(args.pipe)
-        repairs = pd.read_csv(args.repairs) if args.repairs else None
+        repairs = load_repairs(args.repairs) if args.repairs else None
         reviews_path = _reviews_path(args, prev, curr)
         log, digest = load_reviews_hashed(reviews_path) if reviews_path else (None, None)
         reviews = effective_reviews(log) if reviews_path else None

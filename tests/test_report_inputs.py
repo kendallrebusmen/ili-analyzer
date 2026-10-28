@@ -142,6 +142,21 @@ def test_repairs_and_growth_summary_loaded(built):
     assert "match_type" in inputs.weld_map.columns
 
 
+def test_report_repairs_are_normalised_and_checked(built, tmp_path):
+    data = built[0]
+    rep = pd.read_csv(data / "reference" / "repairs_between_runs.csv")
+    path = tmp_path / "repairs_between_runs.csv"
+    rep.assign(repair_type=rep.repair_type.str.upper()).to_csv(path, index=False)
+    data_dir, out, std, folder = built
+    args = (folder, std / "2021_vendorA.csv", std / "2026_vendorB.csv", out,
+            data / "reference" / "pipe_properties.csv", data / "reference" / "mop_profile.csv",
+            data / "reference" / "hca_segments.csv", None, None, config.DEFAULT_SETTINGS, config.DEFAULT_CRITERIA)
+    assert load_report_inputs(*args, repairs=path).repairs.repair_type.tolist() == rep.repair_type.tolist()
+    rep.assign(repair_type="patch").to_csv(path, index=False)
+    with pytest.raises(ValueError, match=r"repairs_between_runs\.csv.*'patch'"):
+        load_report_inputs(*args, repairs=path)
+
+
 def _settings_file(tmp_path, section, key, value):
     raw = yaml.safe_load(config.DEFAULT_SETTINGS.read_text(encoding="utf-8"))
     raw[section][key] = value

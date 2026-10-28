@@ -112,10 +112,13 @@ def test_shrinking_fixed_only_when_depth_drops(settings):
 
 def test_in_recoat():
     import pandas as pd
-    rep = pd.DataFrame({"start_ft": [10.0, 50.0], "end_ft": [20.0, 60.0], "repair_type": ["recoat", "sleeve"]})
+    rep = pd.DataFrame({"start_ft": [10.0, 50.0], "end_ft": [20.0, 60.0], "repair_type": ["Recoat", "sleeve"]})
     assert growth.in_recoat([5.0, 10.0, 20.0, 55.0], rep).tolist() == [False, True, True, False]
     assert not growth.in_recoat([15.0], None).any()
-    assert not growth.in_recoat([15.0], rep[["start_ft", "end_ft"]]).any()
+    with pytest.raises(ValueError, match="repair_type"):  # no longer silently all False
+        growth.in_recoat([15.0], rep[["start_ft", "end_ft"]])
+    with pytest.raises(ValueError, match="'patch'"):
+        growth.in_recoat([15.0], rep.assign(repair_type=["patch", "sleeve"]))
 
 
 def test_segment_percentile_in_stats_excludes_rows(settings):

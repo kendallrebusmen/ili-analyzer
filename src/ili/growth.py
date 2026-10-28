@@ -28,7 +28,8 @@ from ili.align_welds import DRAFT_LABEL, comparison_dir
 from ili.config import DEFAULT_SETTINGS, PROJECT_ROOT, GrowthMethod, Settings, ToolCfg, load_settings
 from ili.ingest import load_standardized
 from ili.match import MILS_PER_IN, delta_t_years, load_match_table, parse_flag_column
-from ili.reference import _require_columns, assign_segment, check_segments, lookup, segment_table
+from ili.reference import (_require_columns, assign_segment, check_segments, load_repairs, lookup, normalize_repairs,
+                           segment_table)
 from ili.schema import FeatureType
 from ili.units import sigma_from_tolerance
 from ili.validation import score_growth, write_metrics
@@ -94,15 +95,14 @@ def shrinking_fixed_rate(d_prev_in, d_curr_in, cls, settings: Settings):
 
 
 def in_recoat(pos_ft, repairs: pd.DataFrame | None) -> np.ndarray:
-    """True where the position (ft) lies inside any ``repair_type == "recoat"`` span, ends inclusive. All
-    False when there is no repairs table or it has no ``repair_type`` column."""
+    """True where the position (ft) lies inside any ``recoat`` span (``repair_type`` normalised by
+    ``reference.normalize_repairs``), ends inclusive. All False when there is no repairs table; ValueError for
+    a table without ``start_ft``, ``end_ft`` or ``repair_type`` or with a type outside spec 5.2."""
     pos = np.asarray(pos_ft, dtype=float)
     out = np.zeros(len(pos), dtype=bool)
-    if repairs is None or "repair_type" not in repairs.columns:
+    if repairs is None:
         return out
-    missing = [c for c in ("start_ft", "end_ft") if c not in repairs.columns]
-    if missing:
-        raise ValueError(f"repairs table is missing column(s): {', '.join(missing)}")
+    repairs = normalize_repairs(repairs, "repairs table")
     for span in repairs[repairs.repair_type == RECOAT_TYPE].itertuples(index=False):
         out |= (pos >= float(span.start_ft)) & (pos <= float(span.end_ft))
     return out
@@ -599,7 +599,7 @@ def main(argv: list[str] | None = None) -> int:
                              "it predates M11, re-run ili.match")
         pipe = pd.read_csv(args.pipe)
         segments = pd.read_csv(args.segments) if args.segments else None
-        repairs = pd.read_csv(args.repairs) if args.repairs else None
+        repairs = load_repairs(args.repairs) if args.repairs else None
         seg_table = segment_table(settings, segments, *_line_extent(curr))
         result = compute_growth(matches, delta_t_years(prev, curr), _run_year(prev), _run_year(curr), pipe,
                                 seg_table, settings, prev_run_id=str(prev.run_id.iloc[0]),

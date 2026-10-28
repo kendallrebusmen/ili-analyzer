@@ -5,11 +5,60 @@ import pytest
 from ili.align_welds import align_welds
 from ili.config import load_settings
 from ili.match import load_match_table, lookup_od, match_anomalies, write_matches
-from ili.reference import assign_segment, lookup, segment_table
+from ili.reference import REPAIR_TYPES, assign_segment, load_repairs, lookup, normalize_repairs, segment_table
 from ili.synth import SynthParams, generate
 from ili.units import FT_PER_MI
 
 S = load_settings()
+
+
+def _repairs(*types):
+    n = len(types)
+    return pd.DataFrame({"start_ft": [10.0 * i for i in range(n)], "end_ft": [10.0 * i + 5 for i in range(n)],
+                         "repair_type": list(types)})
+
+
+def test_repair_vocabulary_is_spec_5_2():
+    assert REPAIR_TYPES == ("sleeve", "cutout", "recoat", "pipe_replacement")
+
+
+def test_normalize_repairs_accepts_case_space_and_hyphen_variants():
+    raw = _repairs("Recoat", " PIPE REPLACEMENT ", "pipe-replacement", "sleeve", "CUTOUT")
+    out = normalize_repairs(raw, "repairs.csv")
+    assert out.repair_type.tolist() == ["recoat", "pipe_replacement", "pipe_replacement", "sleeve", "cutout"]
+    assert raw.repair_type.iloc[0] == "Recoat"  # the input is not modified
+    assert normalize_repairs(out, "again").repair_type.tolist() == out.repair_type.tolist()
+
+
+def test_normalize_repairs_rejects_unknown_types_and_missing_columns():
+    with pytest.raises(ValueError, match=r"repairs\.csv.*'patch'"):
+        normalize_repairs(_repairs("recoat", "patch"), "repairs.csv")
+    with pytest.raises(ValueError, match="blank"):
+        normalize_repairs(_repairs("recoat", None), "repairs.csv")
+    with pytest.raises(ValueError, match=r"repairs\.csv.*repair_type"):
+        normalize_repairs(_repairs("recoat").drop(columns="repair_type"), "repairs.csv")
+    with pytest.raises(ValueError, match="end_ft"):
+        normalize_repairs(_repairs("recoat").drop(columns="end_ft"), "repairs.csv")
+
+
+def test_load_repairs_names_the_file(tmp_path):
+    path = tmp_path / "repairs_between_runs.csv"
+    _repairs(" Sleeve", "Recoat").to_csv(path, index=False)
+    assert load_repairs(path).repair_type.tolist() == ["sleeve", "recoat"]
+    _repairs("patch").to_csv(path, index=False)
+    with pytest.raises(ValueError, match="repairs_between_runs.csv"):
+        load_repairs(path)
+    path.write_text("", encoding="utf-8")
+    with pytest.raises(ValueError, match="repairs_between_runs.csv"):
+        load_repairs(path)
+
+
+def test_match_requires_repair_type(tmp_path):
+    r = generate(SynthParams(line_miles=1, seed=3))
+    wm = align_welds(r.prev_std, r.curr_std, S).weld_map
+    no_type = r.reference["repairs_between_runs"].drop(columns="repair_type")
+    with pytest.raises(ValueError, match="repair_type"):
+        match_anomalies(r.prev_std, r.curr_std, wm, S, r.reference["pipe_properties"], no_type)
 
 
 def _tbl():

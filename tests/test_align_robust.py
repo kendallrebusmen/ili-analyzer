@@ -177,3 +177,14 @@ def test_alignment_ignores_recoat_span(line):
     with_recoat = align_welds(line.prev_std, line.curr_std, SETTINGS, recoat).weld_map
     without = align_welds(line.prev_std, line.curr_std, SETTINGS, None).weld_map
     pd.testing.assert_frame_equal(with_recoat, without)
+    spelled = align_welds(line.prev_std, line.curr_std, SETTINGS, recoat.assign(repair_type=" Recoat")).weld_map
+    pd.testing.assert_frame_equal(spelled, without)
+
+
+def test_alignment_normalises_and_requires_repair_type(line):
+    rep = line.reference["repairs_between_runs"]
+    base = align_welds(line.prev_std, line.curr_std, SETTINGS, rep).weld_map
+    loud = rep.assign(repair_type=rep.repair_type.str.upper().str.replace("_", " "))
+    pd.testing.assert_frame_equal(align_welds(line.prev_std, line.curr_std, SETTINGS, loud).weld_map, base)
+    with pytest.raises(ValueError, match="repair_type"):
+        align_welds(line.prev_std, line.curr_std, SETTINGS, rep.drop(columns="repair_type"))
