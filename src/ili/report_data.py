@@ -70,6 +70,7 @@ RECORDED_SETTINGS = (
         "girth_weld_proximity_in", "crossing_proximity_ft", "seam_clock_min", "seam_clock_tol_min",
         "general_corrosion_min_dim_in", "widespread_circ_min_width_frac", "due_days", "discovery_max_days")),
     ("growth", "governing_profile", "growth.governing_profile"),
+    ("growth", "exclude_recoated_from_stats", "growth.exclude_recoated_from_stats"),
     ("classification", "depth_basis", "strength.depth_basis"),
     ("classification", "depth_tolerance_pct_wt", "tool.depth_tolerance_pct_wt"),
 )

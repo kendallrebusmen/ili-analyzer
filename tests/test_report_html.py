@@ -358,7 +358,39 @@ def test_report_html_has_imp_class_and_profile(report):
     assert "approved" not in summary.lower() and "final" not in summary.lower().replace("not final", "")
     growth = _section_text(html, "growth")
     assert "conservative" in growth and "Growth summary by surface" in growth
-    assert "excluding_recoated" in growth and "recoated feature(s)" in growth
+    assert "excluding_recoated" in growth and "rows inside recoat spans, whatever the setting" in growth
+
+
+def _growth_text(inputs, changes, settings=None, **summary):
+    """The growth section rendered with ``summary`` keys replacing growth_summary.json's (and other settings)."""
+    bare = dataclasses.replace(inputs, summaries={**inputs.summaries, "growth": {**inputs.summaries["growth"],
+                                                                                 **summary}},
+                               settings=settings or inputs.settings)
+    return _section_text(render_report(bare, changes, ReportHeader(None, None, None), GENERATED), "growth")
+
+
+def test_recoat_note_sits_with_the_segment_statistics(report):
+    inputs, changes, html = report
+    text = _growth_text(inputs, changes, repairs_file_given=True, n_excluded_recoated=3)
+    note = ("3 recoated feature(s) left out of the segment and joint percentiles and these statistics "
+            "(exclude_recoated_from_stats: true).")
+    assert note in text
+    assert text.index("Growth summary by surface") < text.index(note) < text.index("Per-segment statistics")
+    assert "% of matched features in the statistics (recoated left out when the setting is on)" in text
+    off = inputs.settings.model_copy(update={"growth": inputs.settings.growth.model_copy(
+        update={"exclude_recoated_from_stats": False})})
+    text = _growth_text(inputs, changes, settings=off, repairs_file_given=True, n_excluded_recoated=0)
+    assert ("No recoated feature was left out of the segment and joint percentiles and these statistics, because "
+            "exclude_recoated_from_stats is false.") in text
+    assert "No repairs file was given to the growth step" in _growth_text(inputs, changes, repairs_file_given=False)
+
+
+def test_methods_say_what_the_joint_and_shrinking_rates_leave_out(report):
+    _, _, html = report
+    text = _section_text(html, "methods")
+    assert ("recoated features (when exclude_recoated_from_stats is true) and non-finite raw rates are left out"
+            in text)
+    assert "empty when shrinking_rate_mpy is null (under pit_to_pit the row is then no_governing)" in text
 
 
 def test_growth_section_shows_depth_and_dent_bins_with_notes(report):

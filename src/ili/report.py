@@ -254,15 +254,34 @@ def _data_quality(inputs: ReportInputs) -> dict:
     }
 
 
+STATS_SCOPE = "the segment and joint percentiles and these statistics"
+
+
+def recoat_note(summary: dict, settings: Settings) -> str:
+    """What the recoat exclusion left out of the percentiles and the per-segment statistics, from
+    ``growth_summary.json`` (``repairs_file_given``, ``n_excluded_recoated``) and
+    ``growth.exclude_recoated_from_stats`` (checked against the summary when it records it)."""
+    if summary.get("repairs_file_given") is False:
+        return f"No repairs file was given to the growth step, so no recoated feature was left out of {STATS_SCOPE}."
+    if not settings.growth.exclude_recoated_from_stats:
+        return (f"No recoated feature was left out of {STATS_SCOPE}, because exclude_recoated_from_stats is "
+                "false.")
+    n = summary.get("n_excluded_recoated")
+    if n is None:
+        return f"growth_summary.json does not record how many recoated features were left out of {STATS_SCOPE}."
+    return f"{n} recoated feature(s) left out of {STATS_SCOPE} (exclude_recoated_from_stats: true)."
+
+
 def _growth(inputs: ReportInputs) -> dict:
     summary = inputs.summaries["growth"]
     pct_negative = cell(summary.get("pct_negative_raw"))
     return {
         "segments": table(inputs.growth_segments),
         "profile": summary.get("governing_profile"),
-        "n_excluded_recoated": summary.get("n_excluded_recoated"),
+        "recoat_note": recoat_note(summary, inputs.settings),
         "by_surface": table(inputs.growth_by_surface),
-        "pct_negative_raw": f"{pct_negative} % of matched features" if pct_negative else "not available",
+        "pct_negative_raw": (f"{pct_negative} % of matched features in the statistics (recoated left out when the "
+                             "setting is on)") if pct_negative else "not available",
         "methods": _counts(summary.get("counts_by_governing_method") or {}, "governing_method"),
         "histograms": Markup(figure_div(growth_histograms(inputs))),
     }

@@ -426,7 +426,7 @@ def growth_summary_by_surface(features: pd.DataFrame, curr_year: int) -> pd.Data
 
 
 def _summary(features: pd.DataFrame, dt_yr: float, prev_year: int, curr_year: int, settings: Settings,
-             prev_run_id: str | None, curr_run_id: str | None) -> dict:
+             prev_run_id: str | None, curr_run_id: str | None, repairs_file_given: bool) -> dict:
     g = settings.growth
     raw = features.raw_mpy[(features.history_class == "matched") & features.in_stats].to_numpy(float)
     by_class = features.history_class.value_counts()
@@ -438,6 +438,8 @@ def _summary(features: pd.DataFrame, dt_yr: float, prev_year: int, curr_year: in
         "delta_t_years": float(dt_yr), "prev_year": int(prev_year), "curr_year": int(curr_year),
         "n_features": len(features),
         "governing_profile": g.governing_profile,
+        "repairs_file_given": bool(repairs_file_given),
+        "exclude_recoated_from_stats": bool(g.exclude_recoated_from_stats),
         "n_excluded_recoated": int((features.in_recoat & ~features.in_stats).sum()),
         "joint_percentile": float(g.joint_percentile),
         "joint_percentile_min_matches": int(g.joint_percentile_min_matches),
@@ -514,7 +516,7 @@ def compute_growth(match_table: pd.DataFrame, dt_yr: float, prev_year: int, curr
     f["length_in"] = rows.curr_length_in.to_numpy(float)
     f["length_rate_ipy"] = length_growth_rate(f.length_in, f.governing_mpy, d_curr, settings)
     f = f[FEATURE_COLUMNS]
-    summary = _summary(f, dt_yr, prev_year, curr_year, settings, prev_run_id, curr_run_id)
+    summary = _summary(f, dt_yr, prev_year, curr_year, settings, prev_run_id, curr_run_id, repairs is not None)
     return GrowthResult(f, segment_stats(f, seg_table, p_by_seg), summary, growth_summary_by_surface(f, curr_year))
 
 

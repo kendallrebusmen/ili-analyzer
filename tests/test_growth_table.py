@@ -446,6 +446,8 @@ def test_recoated_rows_left_out_of_distributions(settings):
     assert on.summary["n_excluded_recoated"] == 1 and off.summary["n_excluded_recoated"] == 0
     # no recoat in the repairs: nothing excluded, same numbers as exclusion off
     assert none.summary["n_excluded_recoated"] == 0
+    assert on.summary["repairs_file_given"] and not none.summary["repairs_file_given"]
+    assert on.summary["exclude_recoated_from_stats"] and not off.summary["exclude_recoated_from_stats"]
     assert _by_id(none).governing_mpy.tolist() == f_off.governing_mpy.tolist()
 
 

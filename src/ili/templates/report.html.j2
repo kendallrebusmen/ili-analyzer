@@ -194,10 +194,11 @@ anomalies_of_interest.csv has the same rows.</p>
 <p class="draft">{{ label }}</p>
 <h2>Growth</h2>
 <p>Governing growth profile: <code>{{ growth.profile if growth.profile else "not recorded" }}</code>
-(<code>growth.governing_profile</code>).
-{% if growth.n_excluded_recoated is not none %}{{ growth.n_excluded_recoated }} recoated feature(s) are left out of the
-"excluding_recoated" statistics below.{% endif %}</p>
+(<code>growth.governing_profile</code>).</p>
+<p>In the growth summary by surface the <code>excluding_recoated</code> rows leave out rows inside recoat spans, whatever the
+setting (spans from repairs_between_runs.csv given to the growth step); the <code>all</code> rows keep them.</p>
 {{ render_table(growth.by_surface, "Growth summary by surface") }}
+<p>{{ growth.recoat_note }}</p>
 <p>Negative raw growth rates: {{ growth.pct_negative_raw }} (included in the segment percentiles).</p>
 {{ render_table(growth.segments, "Per-segment statistics") }}
 {{ render_table(growth.methods, "Features by governing method") }}
@@ -321,13 +322,13 @@ reported current-run depth within ±{{ charts.tolerance }} % wall of the field d
 <tbody>
 <tr><td>raw</td><td>(d_curr − d_prev) / Δt</td></tr>
 <tr><td>tolerance_adjusted</td><td>(Δd + k·σ_diff) / Δt, σ_diff = √(σ_prev² + σ_curr²); floor min_rate_mpy</td></tr>
-<tr><td>segment_percentile</td><td>P-th percentile of raw matched growth in the segment, negatives included; floor min_rate_mpy</td></tr>
+<tr><td>segment_percentile</td><td>P-th percentile of raw matched growth in the segment, negatives included, recoated features left out when exclude_recoated_from_stats is true; floor min_rate_mpy</td></tr>
 <tr><td>new_feature</td><td>(d_curr − reporting_threshold) / Δt</td></tr>
 <tr><td>full_life</td><td>d_curr / (current run year − install_year)</td></tr>
 <tr><td>default_rate</td><td>fixed rate from config (IMP default)</td></tr>
 <tr><td>half_life</td><td>d_curr / ((current run year − install_year) / 2); assumes corrosion started at mid-life, so twice the whole-life rate</td></tr>
-<tr><td>joint_percentile</td><td><code>joint_percentile</code>-th percentile of the raw rates of matched features in the same current-run joint; only when the joint has at least <code>joint_percentile_min_matches</code> matched features, otherwise empty; floor min_rate_mpy</td></tr>
-<tr><td>shrinking_fixed</td><td>fixed rate <code>shrinking_rate_mpy</code>, for matched features whose reported depth decreased between runs (a depth drop is sizing noise, not negative growth)</td></tr>
+<tr><td>joint_percentile</td><td><code>joint_percentile</code>-th percentile of the raw rates of matched features in the same current-run joint (recoated features (when exclude_recoated_from_stats is true) and non-finite raw rates are left out); only when the joint has at least <code>joint_percentile_min_matches</code> matched features, otherwise empty; floor min_rate_mpy</td></tr>
+<tr><td>shrinking_fixed</td><td>fixed rate <code>shrinking_rate_mpy</code>, for matched features whose reported depth decreased between runs (a depth drop is sizing noise, not negative growth); empty when shrinking_rate_mpy is null (under pit_to_pit the row is then no_governing)</td></tr>
 </tbody></table></div>
 <p>The <code>pit_to_pit</code> rule (a matched feature grew when Δd ≥ 0, and decreased when Δd &lt; 0):</p>
 <div class="table-wrap formula"><table>
