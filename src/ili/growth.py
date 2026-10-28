@@ -158,12 +158,13 @@ SEGMENT_STAT_COLUMNS = [
 
 @dataclass
 class GrowthResult:
-    """One row per current-run metal-loss feature, per-segment diagnostics, and a JSON-ready summary."""
+    """One row per current-run metal-loss feature, per-segment diagnostics, a JSON-ready summary, and the growth
+    summary by surface (``growth_summary.csv``)."""
 
     features: pd.DataFrame
     segments: pd.DataFrame
     summary: dict
-    by_surface: pd.DataFrame | None = None
+    by_surface: pd.DataFrame
 
 
 def _none_for_nan(values: pd.Series, kind: type) -> pd.Series:

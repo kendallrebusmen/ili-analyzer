@@ -4,7 +4,7 @@ that they describe one comparison made with one set of criteria.
 ``load_report_inputs`` reads the M2-M7 outputs with their own loaders, so every table arrives with the
 types its producer wrote. It refuses (``ValueError`` naming the files) a missing required file, outputs
 from different runs, an ingest folder that did not ingest both runs, a classification made with other
-criteria than the ones now on disk, settings that differ from the values the M6 and M7 summaries record
+criteria than the ones now on disk, settings that differ from the values the M5-M7 summaries record
 (``RECORDED_SETTINGS``), and a dig file without the columns the report needs. Validation issues are kept
 for the two compared runs only. ``input_hashes`` fingerprints every file read, for the
 report's methods appendix and the run manifest.
@@ -33,7 +33,7 @@ from ili.ingest import load_standardized
 from ili.match import load_match_table
 from ili.reference import load_repairs
 from ili.report_tables import imp_class_rows
-from ili.remaining_life import load_remaining_life_table
+from ili.remaining_life import RL_FEATURE_COLUMNS, load_remaining_life_table
 from ili.review import FLAG_COLUMNS, FLAGS_FILE, REVIEW_COLUMNS, REVIEWS_FILE, load_flags, load_reviews
 
 SUMMARY_FILES = {
@@ -60,7 +60,8 @@ _ID_COLUMNS = ("match_id", "curr_feature_id", "feature_id", "segment_id", "decis
 REVIEW_STATUS_COLUMNS = ["decision_id", "decision", "applied_status", "reason"]  # match's review_status.csv
 CLUSTER_SEP = ";"  # a matched cluster's member feature ids are joined with this (M4)
 # Settings the summaries record, as (summary, summary key, dotted settings key). The report refuses settings
-# that differ from them; alignment, matching and growth settings are not recorded and are used as they are.
+# that differ from them. Alignment and matching settings, and the growth settings other than the profile and
+# the consultant-practice values below, are not recorded and are used as they are.
 RECORDED_SETTINGS = (
     *(("remaining_life", key, f"{section}.{key}") for section, key in (
         ("strength", "method"), ("strength", "design_factor"), ("strength", "depth_basis"),
@@ -72,11 +73,14 @@ RECORDED_SETTINGS = (
         "girth_weld_proximity_in", "crossing_proximity_ft", "seam_clock_min", "seam_clock_tol_min",
         "general_corrosion_min_dim_in", "widespread_circ_min_width_frac", "due_days", "discovery_max_days")),
     ("growth", "governing_profile", "growth.governing_profile"),
-    ("growth", "exclude_recoated_from_stats", "growth.exclude_recoated_from_stats"),
+    *(("growth", key, f"growth.{key}") for key in (
+        "exclude_recoated_from_stats", "joint_percentile", "joint_percentile_min_matches", "shrinking_rate_mpy")),
     ("classification", "depth_basis", "strength.depth_basis"),
     ("classification", "depth_tolerance_pct_wt", "tool.depth_tolerance_pct_wt"),
 )
 SETTING_REL_TOL = 1e-9  # recorded numbers round-trip through JSON; a real edit is far larger
+PRE_M11 = ("{folder} predates M11 ({detail}): re-run the pipeline on it; the saved reviews (reviews.csv) and "
+           "flags (feature_flags.csv) re-apply")
 
 
 @dataclass(frozen=True)
@@ -244,6 +248,8 @@ def load_report_inputs(comparison: Path, prev_std: Path, curr_std: Path, ingest_
         **{r: "a reference file given to the report" for r in ("pipe", "mop", "segments", "crossings", "digs", "repairs")},
         **{r: "a configuration file given to the report" for r in ("settings", "criteria")},
     }
+    if files["growth"].is_file() and not files["growth_by_surface"].is_file():  # M5 wrote both since M11
+        raise ValueError(PRE_M11.format(folder=comparison, detail="it has growth.csv but no growth_summary.csv"))
     for role, path in files.items():
         _require(path, role.replace("_", " "),
                  context=contexts.get(role, f"the report needs it alongside {comparison}"))
@@ -293,6 +299,12 @@ def load_report_inputs(comparison: Path, prev_std: Path, curr_std: Path, ingest_
         if missing:
             raise ValueError(f"{files['digs']}: missing column(s) {missing}")
 
+    remaining = load_remaining_life_table(files["remaining_life"])
+    absent = [c for c in RL_FEATURE_COLUMNS if c not in remaining.columns]
+    if absent:
+        raise ValueError(PRE_M11.format(folder=comparison, detail=f"remaining_life.csv lacks column(s) "
+                                                                  f"{', '.join(absent)}"))
+
     reviews = load_reviews(files["reviews"]) if "reviews" in files else pd.DataFrame(columns=REVIEW_COLUMNS)
     flags = load_flags(files["flags"]) if "flags" in files else pd.DataFrame(columns=FLAG_COLUMNS)
     review_status = (_read_csv(files["review_status"]) if "review_status" in files
@@ -308,7 +320,7 @@ def load_report_inputs(comparison: Path, prev_std: Path, curr_std: Path, ingest_
         growth_segments=_read_csv(files["growth_segments"]),
         growth_by_surface=_read_csv(files["growth_by_surface"]), weld_map=load_weld_map(files["weld_map"]),
         repairs=load_repairs(files["repairs"]) if repairs is not None else None,
-        remaining_life=load_remaining_life_table(files["remaining_life"]),
+        remaining_life=remaining,
         intervals=_read_csv(files["intervals"]),
         classification=load_classification_table(files["classification"]),
         changed_sections=_read_csv(files["changed_sections"]),

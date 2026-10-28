@@ -11,10 +11,10 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
-from ili.classify import near_girth_weld, seam_interaction
+from ili.classify import PCT_DECIMALS, dent_depth_pct_od, near_girth_weld, seam_interaction
 from ili.config import Settings
 from ili.match import PositionMap
-from ili.reference import _require_columns, lookup
+from ili.reference import _require_columns, covered, lookup
 from ili.remaining_life import _as_bool
 from ili.schema import FeatureType, MlOrigin, Surface
 
@@ -27,7 +27,7 @@ LOCATIONS = ("all", "girth_weld", "long_seam")
 DEPTH_COLUMNS = ("run_id", "location", "bin", "ext_corrosion", "int_corrosion", "manufacturing", "total",
                  "n_location_unknown")
 DENT_COLUMNS = ("run_id", "bin", *LOCATIONS, "n_girth_weld_unknown", "n_long_seam_unknown")
-BIN_DECIMALS = 9  # a percentage is rounded before binning so 0.9 in on 15 in is exactly 6 (as report_data.backtest)
+BIN_DECIMALS = PCT_DECIMALS  # a percentage is rounded before binning so 0.9 in on 15 in is exactly 6 (as classify)
 PCT_PER_FRACTION = 100.0
 PIPE_WHAT = "pipe properties table"
 
@@ -190,8 +190,8 @@ def dent_bins(std: pd.DataFrame, od_in: np.ndarray, settings: Settings) -> pd.Da
     od = np.asarray(od_in, dtype=float)
     if len(od) != len(std):
         raise ValueError(f"od_in has {len(od)} values for {len(std)} rows")
-    with np.errstate(invalid="ignore", divide="ignore"):
-        pct = np.where(od > 0, std.dent_depth_in.to_numpy(float) / od * PCT_PER_FRACTION, np.nan).round(BIN_DECIMALS)
+    pct = dent_depth_pct_od(std.dent_depth_in.to_numpy(float), od)  # rounded to BIN_DECIMALS, as classify's
+    with np.errstate(invalid="ignore"):
         index = np.maximum(np.searchsorted(edges, pct, side="left") - 1, 0)  # right-closed; 0 is in the first bin
     binned = dent & ~np.isnan(pct) & (pct >= 0)
     flags = _locations(std, settings)
@@ -253,16 +253,25 @@ def anomaly_distribution(inputs) -> AnomalyDistribution:
     """Depth bins and dent bins for the previous and the current run (spec 6.10). Dent ODs come from the pipe
     properties (``inputs.pipe``) at each dent's current-run position; the previous run's positions are first
     mapped onto the current run with the weld map, as reference files are keyed to current-run distance. A
-    dent position the pipe table does not cover is a ValueError naming the run."""
+    previous-run dent whose mapped position the pipe table does not cover (or that has no position) has an
+    unknown OD: it is in no dent bin and a note gives the count. A current-run dent position the pipe table
+    does not cover is a ValueError naming the run."""
     settings = inputs.settings
     tol = settings.alignment.anchor_tol_ft
     pmap = PositionMap.from_weld_map(inputs.weld_map)
-    depth, dent = [], []
+    depth, dent, od_notes = [], [], []
     for std, is_prev in ((inputs.prev_std, True), (inputs.curr_std, False)):
         pos = std.log_dist_ft.to_numpy(float)
         if is_prev:
             pos = pmap.to_curr(pos)
         is_dent = std.feature_type.astype(str).eq(FeatureType.dent.value).to_numpy(bool)
+        if is_prev:  # mapped outside the pipe table: OD unknown, counted rather than an error
+            outside = is_dent & ~covered(inputs.pipe, pos, tol)
+            if outside.any():
+                od_notes.append(Note("dent", "all", f"pipe OD: {int(outside.sum())} dent(s) of run {_run_id(std)} "
+                                                    "map to a position outside the pipe properties table (or have "
+                                                    "no position), so their OD is unknown and they are in no bin"))
+            is_dent = is_dent & ~outside
         od = np.full(len(std), np.nan)
         if is_dent.any():
             try:
@@ -272,7 +281,7 @@ def anomaly_distribution(inputs) -> AnomalyDistribution:
         depth.append(depth_bins(std, settings))
         dent.append(dent_bins(std, od, settings))
     depth, dent = pd.concat(depth, ignore_index=True), pd.concat(dent, ignore_index=True)
-    return AnomalyDistribution(depth, dent, _location_notes(depth, dent, settings))
+    return AnomalyDistribution(depth, dent, od_notes + _location_notes(depth, dent, settings))
 
 
 def anomaly_distribution_table(result: AnomalyDistribution) -> pd.DataFrame:
@@ -328,13 +337,14 @@ def joint_ml_counts(weld_map: pd.DataFrame, prev_std: pd.DataFrame, curr_std: pd
 
 
 def largest_joints(counts: pd.DataFrame, n: int) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """The ``n`` joints with the largest ``curr_total`` and the ``n`` with the largest ``change_total``, ties
-    broken by ``curr_start_ft`` (ascending). A row blank in the ranked column is not ranked."""
-    def top(column: str) -> pd.DataFrame:
-        ranked = counts[counts[column].notna()]
+    """The ``n`` joints with the largest ``curr_total`` and the ``n`` with the largest increase (``change_total``
+    above 0; none when no joint increased), ties broken by ``curr_start_ft`` (ascending). A row blank in the
+    ranked column is not ranked."""
+    def top(ranked: pd.DataFrame, column: str) -> pd.DataFrame:
         return (ranked.sort_values([column, "curr_start_ft"], ascending=[False, True], kind="stable")
                 .head(n).reset_index(drop=True))
-    return top("curr_total"), top("change_total")
+    increased = counts.change_total.fillna(0).to_numpy(int) > 0  # blank (NA) is not an increase
+    return top(counts[counts.curr_total.notna()], "curr_total"), top(counts[increased], "change_total")
 
 
 AOI_COLUMNS = ("rank", "start_ft", "end_ft", "surfaces", "origins", "max_depth_pct", "n_anomalies", "min_rl_yr",
@@ -412,7 +422,8 @@ def anomalies_of_interest(inputs) -> pd.DataFrame:
                            + (f" at {_clock_text(deepest.clock_min)}" if pd.notna(deepest.clock_min) else ""))
         others = depth.drop(deepest.name).dropna()
         if len(g) > 1 and not others.empty:
-            clauses.append(f"others {others.min():g}-{others.max():g}% WT")
+            lo, hi = others.min(), others.max()
+            clauses.append(f"others {lo:g}% WT" if lo == hi else f"others {lo:g}-{hi:g}% WT")
         clauses += _repair_clauses(start, end, inputs.repairs)
         rows.append({"start_ft": start, "end_ft": end,
                      "surfaces": ", ".join(sorted(set(g.surface.dropna().astype(str)))),

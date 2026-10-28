@@ -366,15 +366,30 @@ def test_dent_bins_count_unknown_locations():
     assert out.n_girth_weld_unknown.eq(2).all() and out.girth_weld.sum() == 0
 
 
-def test_dent_od_lookup_error_names_the_run():
-    prev = _std([{"feature_type": "dent", "dent_depth_in": 0.2, "log_dist_ft": 120.0, "depth_pct": NAN}], "P")
-    curr = _std([{"feature_type": "metal_loss"}], "C")
-    weld_map = pd.DataFrame({"match_type": ["1:1"], "prev_start_ft": [0.0], "prev_length_ft": [200.0],
-                             "curr_start_ft": [0.0], "curr_length_ft": [200.0]})
+def _dent_runs(prev_pos, curr_rows):
+    prev = _std([{"feature_type": "dent", "dent_depth_in": 0.2, "log_dist_ft": x, "depth_pct": NAN}
+                 for x in prev_pos], "P")
+    curr = _std(curr_rows, "C")
+    weld_map = pd.DataFrame({"match_type": ["1:1"], "prev_start_ft": [0.0], "prev_length_ft": [8000.0],
+                             "curr_start_ft": [0.0], "curr_length_ft": [8000.0]})
     pipe = pd.DataFrame({"start_ft": [5000.0], "end_ft": [6000.0], "od_in": [10.0]})
-    inputs = SimpleNamespace(prev_std=prev, curr_std=curr, weld_map=weld_map, pipe=pipe,
-                             settings=config.load_settings())
-    with pytest.raises(ValueError, match="dent-bin OD lookup failed for run P"):
+    return SimpleNamespace(prev_std=prev, curr_std=curr, weld_map=weld_map, pipe=pipe,
+                           settings=config.load_settings())
+
+
+def test_previous_dent_outside_the_pipe_table_is_od_unknown():
+    result = anomaly_distribution(_dent_runs([120.0, 130.0, 5500.0], [{"feature_type": "metal_loss"}]))
+    prev = result.dent[result.dent.run_id == "P"]
+    assert prev["all"].sum() == 1  # only the dent inside the pipe table is binned
+    notes = [n for n in result.notes if n.table == "dent" and n.location == "all"]
+    assert len(notes) == 1
+    assert "2 dent(s) of run P" in notes[0].text and "outside the pipe properties table" in notes[0].text
+
+
+def test_current_dent_outside_the_pipe_table_is_an_error_naming_the_run():
+    inputs = _dent_runs([5500.0], [{"feature_type": "dent", "dent_depth_in": 0.2, "log_dist_ft": 120.0,
+                                    "depth_pct": NAN}])
+    with pytest.raises(ValueError, match="dent-bin OD lookup failed for run C"):
         anomaly_distribution(inputs)
 
 
@@ -470,6 +485,18 @@ def test_largest_joints_rank_and_break_ties_by_position():
     assert list(by_change.curr_gw_ids) == ["C2", "C1"] and len(by_change) == 2
 
 
+def test_largest_increase_lists_only_joints_that_increased():
+    wm = _wm(("1:1", "P1", None, "C1", None, 30.0), ("1:1", "P2", None, "C2", None, 20.0),
+             ("1:1", "P3", None, "C3", None, 10.0))
+    prev = _ml(("P1", "EXT"), ("P2", "EXT"), ("P2", "EXT"), ("P3", "EXT"))
+    curr = _ml(("C1", "EXT"), ("C1", "EXT"), ("C2", "EXT"), ("C3", "EXT"))  # +1, -1, 0
+    _, by_change = largest_joints(joint_ml_counts(wm, prev, curr), 3)
+    assert list(by_change.curr_gw_ids) == ["C1"]
+    _, none = largest_joints(joint_ml_counts(wm, prev, prev.assign(us_gw_id=prev.us_gw_id.str.replace("P", "C"))),
+                             3)
+    assert none.empty
+
+
 def _aoi(features, rl=None, repairs=None, **report):
     """``anomalies_of_interest`` over hand-built metal loss: ``features`` are dicts with feature_id, log_dist_ft
     and optional depth_pct, length_in, width_in, clock_min, surface, ml_origin; ``rl`` maps a remaining_life
@@ -538,6 +565,13 @@ def test_aoi_description_text():
                                "overlaps recoat repair of 2023-12-15")
     assert row.surfaces == "EXT, INT" and row.origins == "corrosion, manufacturing"
     assert row.min_rl_yr == 4.0 and row.max_depth_pct == 62.5 and row.n_anomalies == 3 and row.hca is True
+
+
+def test_aoi_description_single_other_member_is_not_a_range():
+    feats = [{"feature_id": "A", "log_dist_ft": 100.0, "depth_pct": 45.0},
+             {"feature_id": "B", "log_dist_ft": 101.0, "depth_pct": 31.7}]
+    assert "others 31.7% WT" in _aoi(feats).description.iloc[0]
+    assert "31.7-31.7" not in _aoi(feats).description.iloc[0]
 
 
 def test_aoi_description_single_and_clock_edges():

@@ -222,7 +222,11 @@ setting (spans from repairs_between_runs.csv given to the growth step); the <cod
 <h3>Per-joint metal-loss counts</h3>
 <p>Metal loss per current-run joint and its matched previous-run joint(s), by surface (<code>other</code> is MID, UNK or blank), counted from each run's own tally by upstream girth weld; no anomaly matching is used. A blank count means the joint has no counterpart in that run. joint_ml_counts.csv lists every joint.</p>
 {{ render_table(joints.by_count, "The " ~ joints.n ~ " joints with the most metal loss in the current run (report.largest_changes_n)") }}
-{{ render_table(joints.by_change, "The " ~ joints.n ~ " joints with the largest increase in metal loss (report.largest_changes_n)") }}
+{% if joints.by_change.rows %}
+{{ render_table(joints.by_change, "The " ~ joints.n ~ " joints with the largest increase in metal loss (report.largest_changes_n; only joints whose count increased)") }}
+{% else %}
+<p>No joint increased in metal loss.</p>
+{% endif %}
 </section>
 
 <section id="dig-list">
@@ -304,7 +308,7 @@ reported current-run depth within ±{{ charts.tolerance }} % wall of the field d
 <p class="draft">{{ label }}</p>
 <h2>Methods and assumptions</h2>
 <h3>Configuration</h3>
-{{ render_table(methods.config, "Every setting used, from " ~ methods.settings_path ~ ". Strength, remaining-life and classification values, and the tool tolerances they use, were verified against the M6 and M7 summaries; alignment, matching and growth values (and the other tool values) are the settings at report time, as no summary records them. PLACEHOLDER values need integrity-engineer sign-off.") }}
+{{ render_table(methods.config, "Every setting used, from " ~ methods.settings_path ~ ". Strength, remaining-life and classification values, and the tool tolerances they use, were verified against the M6 and M7 summaries, and the growth profile, recoat exclusion, joint percentile settings and shrinking rate against the M5 summary; alignment, matching and the other growth values (and the other tool values) are the settings at report time, as no summary records them. PLACEHOLDER values need integrity-engineer sign-off.") }}
 <h3>Tool tolerances</h3>
 {{ render_table(methods.tool) }}
 
@@ -386,7 +390,8 @@ criterion is already met at τ = 0.</p>
 <tr><td>Dig flag</td><td>dig_required_by_remaining_life when RL × rl_factor &lt; years to the segment's next planned assessment
 (missing dates: config defaults, HCA 5 years not to exceed 68 months, non-HCA 10 years)</td></tr>
 <tr><td>Reinspection interval</td><td>min over the segment's features of RL × rl_factor, capped at the regulatory maximum</td></tr>
-<tr><td>Next-assessment projection</td><td>depth, pressures, ERF and FPR at τ_next, the years to the segment's next assessment; exceeds_80pct_next when depth(τ_next) ≥ 0.80·t (values kept, flagged); burst_next_psig, safe_next_psig, erf_next and fpr_next are blank where depth(τ_next) ≥ t (projected through the wall), as a pressure for a through-wall pit is not meaningful</td></tr>
+<tr><td>Condition dates</td><td>tau_80_date, tau_burst_date, tau_safe_date = run_date + ⌊τ·365.25⌋ days (rounded down, never a day late); blank when τ is NaN or the criterion is not met within horizon_yr</td></tr>
+<tr><td>Next-assessment projection</td><td>depth, pressures, ERF and FPR at τ_next, the years to the segment's next assessment, projected from the assessed depth (reported + tolerance under the default <code>reported_plus_tolerance</code> basis), not the reported depth;exceeds_80pct_next when depth(τ_next) ≥ 0.80·t (values kept, flagged); burst_next_psig, safe_next_psig, erf_next and fpr_next are blank where depth(τ_next) ≥ t (projected through the wall), as a pressure for a through-wall pit is not meaningful</td></tr>
 </tbody></table></div>
 
 <p><strong>Pipe summary</strong> (spec 6.10, item 1): design pressure and operating stress.</p>

@@ -451,6 +451,12 @@ def test_recoated_rows_left_out_of_distributions(settings):
     assert _by_id(none).governing_mpy.tolist() == f_off.governing_mpy.tolist()
 
 
+def test_growth_result_by_surface_is_required():
+    import dataclasses
+    field = {f.name: f for f in dataclasses.fields(growth.GrowthResult)}["by_surface"]
+    assert field.default is dataclasses.MISSING and field.default_factory is dataclasses.MISSING
+
+
 def test_no_recoat_leaves_governing_unchanged(settings):
     rows = SEG_A_MATCHED + [_row("N1", "new", 400.0, d_curr=18.0)]
     base = _by_id(_run(rows, settings))

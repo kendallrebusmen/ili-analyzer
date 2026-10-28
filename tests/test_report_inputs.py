@@ -105,6 +105,18 @@ def test_digs_missing_column_is_error(built, tmp_path):
                            None, bad, config.DEFAULT_SETTINGS, config.DEFAULT_CRITERIA)
 
 
+def test_pre_m11_comparison_folder_says_to_rerun(built, tmp_path):
+    folder = _copy_comparison(built, tmp_path)
+    (folder / "growth_summary.csv").unlink()
+    with pytest.raises(ValueError, match=r"predates M11.*growth_summary\.csv.*re-run the pipeline.*re-apply"):
+        _load(built, comparison=folder)
+    folder = _copy_comparison(built, tmp_path / "rl")
+    rl = pd.read_csv(folder / "remaining_life.csv")
+    rl.drop(columns=["erf", "failure_mode"]).to_csv(folder / "remaining_life.csv", index=False)
+    with pytest.raises(ValueError, match=r"predates M11.*remaining_life\.csv.*erf.*failure_mode.*re-run the pipeline"):
+        _load(built, comparison=folder)
+
+
 def test_optional_inputs_absent(built):
     inputs = _load(built, crossings=False, digs=False, repairs=False)
     assert inputs.crossings is None and inputs.digs is None and inputs.repairs is None
@@ -171,6 +183,10 @@ def _settings_file(tmp_path, section, key, value):
     ("strength", "method", "original_b31g", "remaining_life_summary.json"),
     ("classification", "discovery_max_days", 170, "classification_summary.json"),
     ("classification", "due_days", {"60_day": 60, "180_day": 170}, "classification_summary.json"),
+    ("growth", "joint_percentile", 75, "growth_summary.json"),  # recorded by M5 (M11)
+    ("growth", "joint_percentile_min_matches", 5, "growth_summary.json"),
+    ("growth", "shrinking_rate_mpy", 2.5, "growth_summary.json"),
+    ("growth", "exclude_recoated_from_stats", False, "growth_summary.json"),
 ])
 def test_settings_changed_since_classification_is_error(built, tmp_path, section, key, value, summary):
     changed = _settings_file(tmp_path, section, key, value)

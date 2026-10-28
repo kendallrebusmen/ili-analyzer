@@ -57,7 +57,8 @@ def test_full_pipeline_on_synth(conservative_run):
 
 M11_HEADINGS = ("Pipe summary", "IMP class summary", "Anomalies of interest", "Growth summary by surface",
                 "Depth bins", "Dent bins", "Per-joint metal-loss counts", "Methods and assumptions")
-M11_OUTPUTS = ("growth_summary.json", "anomaly_distribution.csv", "joint_ml_counts.csv", "anomalies_of_interest.csv")
+M11_OUTPUTS = ("growth_summary.json", "growth_summary.csv", "anomaly_distribution.csv", "joint_ml_counts.csv",
+               "anomalies_of_interest.csv", "imp_class.csv")
 
 
 def test_pipeline_conservative_end_to_end(conservative_run):

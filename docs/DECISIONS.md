@@ -440,7 +440,7 @@ Interpretations of `docs/SPEC.md` and choices the spec leaves open. Newest at th
 
 ## M11: consultant-practice methods and outputs (2026-10-28)
 
-Builds the spec amendment above on synthetic data. Defaults are unchanged: with default settings every existing number is the same on the same input. The decisions below were user-approved before the work began (1-10) or made during it.
+Builds the spec amendment above on synthetic data. Defaults are unchanged: with default settings every existing number is the same on the same input, as long as the repairs file has no `recoat` span. With a recoat span, `exclude_recoated_from_stats: true` (the spec default) leaves the recoated rows out of the segment percentiles and so changes them: on the synthetic data 69 governing rates rose, by at most 0.18 mpy. The decisions below were user-approved before the work began (1-10) or made during it.
 
 - **Profiles (spec 6.5).**
   - `conservative` is the existing `growth.governing` lists, unchanged. `pit_to_pit` is the fixed logic exactly as spec 6.5 words it.
@@ -455,11 +455,12 @@ Builds the spec amendment above on synthetic data. Defaults are unchanged: with 
   - Recoated rows are left out of the statistics: the segment and joint distributions and the summary statistics (raw statistics, percent negative, raw histogram). The growth summary by surface reports both scopes, with and without recoated rows. The rows keep their own rates.
   - Alignment ignores `recoat` and `sleeve` spans. Match's `in_repaired_section` hint still uses every span.
   - "Previously repaired" means the current-run position is in any `repairs_between_runs.csv` span (any type, ends inclusive). It is blank when no repairs file is given.
-  - The growth CLI requires `curr_us_gw_id`, `curr_surface` and `curr_ml_origin` in a loaded match table (ValueError: re-run match), because a stale table would silently turn the joint percentile into NaN. `compute_growth` stays lenient for hand-built tables. A repairs table without `start_ft` / `end_ft` raises a ValueError naming them.
+  - The growth CLI requires `curr_us_gw_id`, `curr_surface` and `curr_ml_origin` in a loaded match table (ValueError: re-run match), because a stale table would silently turn the joint percentile into NaN. `compute_growth` stays lenient for hand-built tables. A repairs table is validated by one shared loader (see the final-review fixes below).
 - **Growth summary.** The maximum depth in inches is the inches of the deepest feature (by percent), not an independent maximum over inches. The consultant's summary describes one deepest feature, and the half-life and whole-life rates are of that same feature.
 - **Strength and remaining life.**
   - Failure mode is blank when tau_80 or tau_burst is NaN, or both are infinite. ERF and FPR are blank where P_safe or MOP is not a finite positive number.
-  - Condition dates and next-assessment projections are columns of `remaining_life.csv` and appear in the dig list.
+  - Condition dates and next-assessment projections are columns of `remaining_life.csv`. The dig list carries the projected pressures, ERF and FPR and `exceeds_80pct_next`; the condition dates and the projected depth are in `remaining_life.csv` only.
+  - Condition dates are run_date + ⌊τ × 365.25⌋ days (never a day late). Projections start from the assessed depth (reported + tolerance under the default `reported_plus_tolerance` basis), as every remaining-life calculation does.
 - **IMP class summary.**
   - The "YTC < N" row uses `rl_yr`, else `rl_upper_bound_yr`. A row with neither falls in "None" and is counted in `n_rl_not_evaluated`.
   - `n_rl_not_evaluated` counts metal-loss rows only, in every class. Dents and gouges never have a remaining life, so counting them would swamp the column. The template text says so.
@@ -468,7 +469,7 @@ Builds the spec amendment above on synthetic data. Defaults are unchanged: with 
   - Depth bins are left-closed (`[70, 80)`, `>= 80`); dent bins are right-closed (`[0, 2]`, `(2, 6]`, `> 6`).
   - Percentages are rounded to 9 decimals before binning, so an exact edge lands the same way as in the back-test.
   - Rows that cannot be binned are counted, not dropped: `n_location_unknown` per run and location, and `n_girth_weld_unknown` / `n_long_seam_unknown` in the dent table, where locations are columns. The HTML shows the notes beside each table, since the CSV is a standalone deliverable.
-  - A dent whose OD lookup fails raises an error naming the run id. The report fails on a bad reference table, as it does elsewhere.
+  - A current-run dent whose OD lookup fails raises an error naming the run id. The report fails on a bad reference table, as it does elsewhere. A previous-run dent whose mapped position falls outside the pipe table is not an error (see the final-review fixes below).
 - **Anomalies of interest (`anomalies_of_interest.csv`).** Rows with no position cannot be placed and are left out of the grouping, so a missing `log_dist_ft` never merges into the last group. A missing length or width is omitted from the group description.
 - **Pipe summary and length check.** The HCA percentage is the union of the HCA intervals, clipped to the pipe extent, divided by the reference length (largest end minus smallest start). It cannot exceed 100 %, and equals the simple sum on a contiguous table.
 - **Charts.**
@@ -476,9 +477,21 @@ Builds the spec amendment above on synthetic data. Defaults are unchanged: with 
   - The orientation chart keeps 0 minutes at the top (12 o'clock). Tick labels run "12:00", "1:00", ... "12:00" so the top and bottom both read 12:00.
 - **Flags.** The growth and report CLIs take `--repairs`, and the pipeline passes it to both.
 
+**Final-review fixes (2026-10-28).**
+
+- **Projections past the wall.** Depth is projected linearly to the next assessment, so it can pass the wall. `remaining_life.csv` gains `exceeds_80pct_next` (projected depth ≥ 0.80 × wall, `WALL_LOSS_LIMIT`). Where the projected depth reaches the wall (≥ 100 %), `burst_next_psig`, `safe_next_psig`, `erf_next` and `fpr_next` are blank: a pressure for a through-wall pit is not meaningful. Between 80 % and 100 % the values are kept and flagged. The dig list carries the flag and the methods appendix states both rules.
+- **Recoat note.** The number of recoated features left out, with `exclude_recoated_from_stats`, now sits with the per-segment statistics and the negative-raw-rate line it affects (or says none were left out, because the setting is false or no repairs file was given). The by-surface `excluding_recoated` rows are described separately: rows inside recoat spans, whatever the setting. `growth_summary.json` records `repairs_file_given` and `exclude_recoated_from_stats`, and the report checks the latter, `joint_percentile`, `joint_percentile_min_matches` and `shrinking_rate_mpy` against the settings (`RECORDED_SETTINGS`).
+- **Anomalies of interest** rank by each member's `rl_yr`, else its `rl_upper_bound_yr`, as the IMP class summary and the M6 dig rule do. `min_rl_is_bound` is True when only a bound attains the group's minimum (False when a member's own RL does, blank without a minimum). A single other member is described as "others 31.7% WT", not a range.
+- **Repairs vocabulary.** One loader, `reference.load_repairs` / `normalize_repairs`, reads `repairs_between_runs.csv` for alignment, match, growth and the report. It requires `start_ft`, `end_ft` and `repair_type`, normalises the type (strip, casefold, spaces and hyphens to `_`) and refuses anything outside spec 5.2's `sleeve`, `cutout`, `recoat`, `pipe_replacement`, naming the file and the values. A table without `repair_type` is now an error everywhere (before, growth treated it as no recoat and alignment kept every span).
+- **Per-feature IMP class.** `imp_class.csv` (a new report output, eight in all) gives each classified feature's `imp_class`, `rl_basis_yr` (RL, else the bound), `rl_is_bound`, `rl_not_evaluated` and `previously_repaired` (blank without a repairs file). The IMP class summary is aggregated from those rows, and the dig list carries `imp_class` and `previously_repaired`.
+- **Previous-run dents outside the pipe table (overturns the T10 ruling).** A previous-run dent whose position, mapped onto the current run, falls outside the pipe table has an unknown OD: it is left out of the dent bins and a note gives the count. A current-run dent outside the pipe table still raises, naming the run.
+- **Dent depth as % OD** is rounded to 9 decimals (`classify.PCT_DECIMALS`) by one helper, `classify.dent_depth_pct_od`, that the classification and the dent bins share. A 6.000000000000001 % dent is 6 % in both, so it is in the `(2, 6]` bin and does not meet a "deeper than 6 %" rule.
+- **Per-joint counts.** The "largest increase" table lists only joints whose count rose; the report says when no joint increased.
+- **A comparison folder made before M11** (no `growth_summary.csv`, or a `remaining_life.csv` without the M11 columns) is refused with a message to re-run the pipeline; the saved reviews and flags re-apply.
+
 **Open for the integrity engineer.**
 
 - Open Questions 4, 10, 11 and 12 (spec Section 10) remain open. Open Question 4 is the growth method and percentile, 10 the consultant's parameters (`shrinking_rate_mpy`, joint percentile, minimum matches per joint), 11 whether a B31.8S response is wanted for a Part 195 line, and 12 whether 5 years is the right "YTC < N yrs" threshold. Until they are answered, `conservative` stays the default.
-- `growth.shrinking_rate_mpy` is null by default. Until it is set, `pit_to_pit` rows with a decreased depth are flagged for review rather than given a rate (they are flagged in the review reasons).
+- `growth.shrinking_rate_mpy` is null by default. Until it is set, `pit_to_pit` rows with a decreased depth are flagged for review rather than given a rate (review reason `no_governing`).
 - Every new threshold with a `PLACEHOLDER` comment in `config/settings.yaml` needs sign-off.
 - M12 (parity with the consultant on real data) waits for the user's explicit approval under spec Section 2.

@@ -74,11 +74,7 @@ def lookup(table: pd.DataFrame, pos_ft, column: str, tol_ft: float, what: str = 
     table = table.sort_values("start_ft", kind="stable")
     start, end, val = (table[c].to_numpy(float) for c in ("start_ft", "end_ft", column))
     x = np.asarray(pos_ft, dtype=float)
-    k = np.clip(np.searchsorted(start, x, side="right") - 1, 0, len(start) - 1)
-    alt = np.minimum(k + 1, len(start) - 1)  # in a gap between rows the next row may be nearer
-    d_k, d_alt = (np.maximum(np.maximum(start[j] - x, x - end[j]), 0.0) for j in (k, alt))
-    use_alt = d_alt < d_k
-    near, row = np.where(use_alt, d_alt, d_k), np.where(use_alt, alt, k)
+    row, near = _nearest_row(start, end, x)
     bad = ~(near <= tol_ft)
     if bad.any():
         raise ValueError(f"position {x[bad][0]:.3f} ft is outside the {what} by more than {tol_ft} ft")
@@ -87,6 +83,28 @@ def lookup(table: pd.DataFrame, pos_ft, column: str, tol_ft: float, what: str = 
         r = row[np.isnan(got)][0]
         raise ValueError(f"{what.removesuffix(' table')} row starting at {start[r]:.3f} ft has no {column}")
     return got
+
+
+def _nearest_row(start: np.ndarray, end: np.ndarray, x: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """For rows sorted by ``start``: the index of the row covering each position (``[start, end)``), else the
+    nearest row, and the distance (ft) to it (0 inside a row, NaN for a NaN position)."""
+    k = np.clip(np.searchsorted(start, x, side="right") - 1, 0, len(start) - 1)
+    alt = np.minimum(k + 1, len(start) - 1)  # in a gap between rows the next row may be nearer
+    d_k, d_alt = (np.maximum(np.maximum(start[j] - x, x - end[j]), 0.0) for j in (k, alt))
+    use_alt = d_alt < d_k
+    return np.where(use_alt, alt, k), np.where(use_alt, d_alt, d_k)
+
+
+def covered(table: pd.DataFrame, pos_ft, tol_ft: float) -> np.ndarray:
+    """True where ``lookup`` would find a row for the position: inside a row or within ``tol_ft`` of the table.
+    False for a NaN position and for every position of an empty table."""
+    x = np.asarray(pos_ft, dtype=float)
+    _require_columns(table, ("start_ft", "end_ft"), "reference")
+    if table.empty:
+        return np.zeros(len(x), dtype=bool)
+    table = table.sort_values("start_ft", kind="stable")
+    _, near = _nearest_row(table.start_ft.to_numpy(float), table.end_ft.to_numpy(float), x)
+    return near <= tol_ft  # False for NaN
 
 
 def check_segments(seg: pd.DataFrame) -> None:

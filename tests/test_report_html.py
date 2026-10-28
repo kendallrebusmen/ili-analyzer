@@ -292,8 +292,9 @@ def test_methods_caption_says_which_settings_are_verified(report):
     _, _, html = report
     text = _section_text(html, "methods")
     assert ("Strength, remaining-life and classification values, and the tool tolerances they use, were verified "
-            "against the M6 and M7 summaries; alignment, matching and growth values (and the other tool values) are "
-            "the settings at report time, as no summary records them.") in text
+            "against the M6 and M7 summaries, and the growth profile, recoat exclusion, joint percentile settings and "
+            "shrinking rate against the M5 summary; alignment, matching and the other growth values (and the other "
+            "tool values) are the settings at report time, as no summary records them.") in text
 
 
 def test_methods_lists_new_formulas(report):
@@ -316,6 +317,9 @@ def test_methods_lists_new_formulas(report):
 def test_methods_states_the_next_assessment_projection_rules(report):
     _, _, html = report
     text = _section_text(html, "methods")
+    assert "run_date + ⌊τ·365.25⌋ days" in text
+    assert ("projected from the assessed depth (reported + tolerance under the default reported_plus_tolerance "
+            "basis)") in text
     assert "exceeds_80pct_next when depth(τ_next) ≥ 0.80·t" in text
     assert ("burst_next_psig, safe_next_psig, erf_next and fpr_next are blank where depth(τ_next) ≥ t (projected "
             "through the wall)") in text
@@ -371,6 +375,17 @@ def _growth_text(inputs, changes, settings=None, **summary):
                                                                                  **summary}},
                                settings=settings or inputs.settings)
     return _section_text(render_report(bare, changes, ReportHeader(None, None, None), GENERATED), "growth")
+
+
+def test_no_joint_increased_message(report, monkeypatch):
+    import ili.report as report_mod
+    inputs, changes, html = report
+    assert "joints with the largest increase in metal loss" in _section_text(html, "growth")
+    real = report_mod.largest_joints
+    monkeypatch.setattr(report_mod, "largest_joints", lambda counts, n: (real(counts, n)[0], real(counts, n)[1][:0]))
+    text = _section_text(render_report(inputs, changes, ReportHeader(None, None, None), GENERATED), "growth")
+    assert "No joint increased in metal loss." in text
+    assert "joints with the largest increase in metal loss" not in text
 
 
 def test_recoat_note_sits_with_the_segment_statistics(report):

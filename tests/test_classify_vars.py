@@ -11,7 +11,7 @@ import pytest
 
 from ili import growth, reference
 from ili.align_welds import align_welds
-from ili.classify import (VARIABLE_COLUMNS, assessed_depth_pct, dent_metal_loss, feature_variables,
+from ili.classify import (VARIABLE_COLUMNS, assessed_depth_pct, dent_depth_pct_od, dent_metal_loss, feature_variables,
                           general_corrosion, near_foreign_crossing, near_girth_weld, seam_interaction,
                           top_of_pipe, variable_dicts, widespread_circumferential)
 from ili.config import load_repair_criteria, load_settings
@@ -208,6 +208,20 @@ def test_dent_variables(settings):
     assert d["D3"]["depth_pct_reported"] == 12.0 and d["D3"]["depth_pct_assessed"] == pytest.approx(22.0)
     assert d["D1"]["depth_pct_assessed"] is None
     assert not v.upstream_review_reasons.fillna("").str.contains("rl_missing").any()
+
+
+def test_dent_depth_pct_od_is_rounded_as_the_dent_bins(settings):
+    from ili.report_tables import dent_bins
+    assert 0.645 / 10.75 * 100 > 6.0  # the bare division lands one ulp above the 6 % edge
+    v = run([mrow("D6", "dent", pos=6020.0, clock_min=0, dent_depth_in=0.645, dent_metal_loss=False)],
+            settings=settings)
+    assert one(v, "D6")["dent_depth_pct_od"] == 6.0  # not "deeper than 6 %"
+    assert dent_depth_pct_od([0.645, NAN, 0.3], [10.75, 10.75, 0.0]).tolist()[0] == 6.0
+    assert np.isnan(dent_depth_pct_od([0.645, NAN, 0.3], [10.75, 10.75, 0.0])[1:]).all()
+    std = pd.DataFrame({"run_id": ["R"], "feature_type": ["dent"], "dent_depth_in": [0.645], "log_dist_ft": [6020.0],
+                        "length_in": [2.0], "clock_min": [0], "seam_interaction": [False]})
+    bins = dent_bins(std, np.array([10.75]), settings).set_index("bin")["all"]
+    assert bins["2-6"] == 1 and bins[">6"] == 0  # the same feature is in the 2-6 bin
 
 
 @pytest.mark.parametrize("clock, top", [(0, True), (240, True), (241, False), (479, False), (480, True),
