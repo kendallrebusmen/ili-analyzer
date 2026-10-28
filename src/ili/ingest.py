@@ -26,13 +26,16 @@ from typing import Literal
 import numpy as np
 import openpyxl
 import pandas as pd
+import xlrd
 import yaml
-from pydantic import BaseModel, ConfigDict, ValidationInfo, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator, model_validator
 
 import ili
 from ili.config import PROJECT_ROOT
 from ili.schema import STANDARD_COLUMNS, FeatureType, MlOrigin, Surface
 from ili.units import CLOCK_MINUTES, FT_PER_M, IN_PER_MM, hhmm_to_clock_min
+
+MINUTES_PER_DAY = 24 * 60  # an Excel time is a fraction of a day
 
 # ml_origin is derived from the feature-type code (``VendorMap.ml_origins``), not read from a column.
 MAPPABLE_FIELDS = [c for c in STANDARD_COLUMNS if c not in ("run_id", "run_date", "ml_origin")]
@@ -60,9 +63,10 @@ class _Strict(BaseModel):
 
 
 class FileSpec(_Strict):
-    format: Literal["csv", "excel"]
+    format: Literal["csv", "excel", "xls"]  # excel = .xlsx (openpyxl); xls = the older binary format (xlrd)
     sheet: str | None = None
     header_row: int = 1  # 1-based
+    skip_rows: int = Field(default=0, ge=0)  # rows right after the header that are not data (e.g. a units row)
 
 
 class RunDateSpec(_Strict):
@@ -99,12 +103,40 @@ class VendorMap(_Strict):
     run_date: RunDateSpec | None = None
     columns: dict[str, str]
     units: Units
-    clock_format: Literal["hhmm", "degrees", "decimal_hours"]
+    clock_format: Literal["hhmm", "degrees", "decimal_hours", "day_fraction"]  # day_fraction: an Excel time
     feature_types: dict[str, FeatureType]
     surfaces: dict[str, Surface]
     ml_origins: dict[str, MlOrigin] = {}   # metal-loss feature-type code -> origin; absent code = unknown
     true_values: list[str]
     false_values: list[str]
+    negate: list[str] = []  # numeric fields the vendor writes with the opposite sign (e.g. "to u/s weld" < 0)
+    fill_down: list[str] = []  # fields given only on some rows (e.g. the weld rows): blanks take the value above
+    feature_id_from_row: bool = False  # no id column: each feature is named "row-<source row>" of the vendor file
+
+    @field_validator("negate")
+    @classmethod
+    def _numeric_fields(cls, names: list[str]) -> list[str]:
+        unknown = sorted(set(names) - set(MAPPABLE_FIELDS))
+        if unknown:
+            raise ValueError(f"negate: not mappable standard fields: {', '.join(unknown)}")
+        text = sorted(set(names) - set(UNIT_GROUP) - set(PLAIN_NUMBERS))
+        if text:
+            raise ValueError(f"negate: not numeric fields: {', '.join(text)}")
+        return names
+
+    @field_validator("fill_down")
+    @classmethod
+    def _fill_fields(cls, names: list[str]) -> list[str]:
+        unknown = sorted(set(names) - set(MAPPABLE_FIELDS))
+        if unknown:
+            raise ValueError(f"fill_down: not mappable standard fields: {', '.join(unknown)}")
+        return names
+
+    @model_validator(mode="after")
+    def _one_source_of_ids(self) -> "VendorMap":
+        if self.feature_id_from_row and "feature_id" in self.columns:
+            raise ValueError("feature_id_from_row and a feature_id column cannot both be given")
+        return self
 
     @field_validator("columns")
     @classmethod
@@ -166,6 +198,12 @@ def load_standardized(path: Path) -> pd.DataFrame:
 
 def _cell(path: Path, vmap: VendorMap, ref: str) -> str | None:
     col_letters, row = re.fullmatch(r"([A-Za-z]+)(\d+)", ref).groups()
+    if vmap.file.format == "xls":
+        book, sheet = _xls_sheet(path, vmap)
+        r, c = int(row) - 1, openpyxl.utils.column_index_from_string(col_letters) - 1
+        if r >= sheet.nrows or c >= sheet.ncols:
+            return None
+        return _xls_text(sheet.cell(r, c), book.datemode) or None
     if vmap.file.format == "excel":
         wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
         try:
@@ -203,6 +241,38 @@ def _excel_text(cell) -> str:
     return str(v)
 
 
+def _xls_text(cell, datemode: int) -> str:
+    """An .xls cell as the text a person sees in Excel: whole numbers without ".0", times of day as h:mm, dates
+    as ISO."""
+    if cell.ctype in (xlrd.XL_CELL_EMPTY, xlrd.XL_CELL_BLANK):
+        return ""
+    if cell.ctype == xlrd.XL_CELL_DATE:
+        if 0 <= cell.value < 1:  # a time of day
+            minutes = round(cell.value * MINUTES_PER_DAY)
+            return f"{minutes // 60}:{minutes % 60:02d}"
+        when = xlrd.xldate.xldate_as_datetime(cell.value, datemode)
+        return when.date().isoformat() if when.time() == dt.time(0) else when.isoformat(sep=" ")
+    if cell.ctype == xlrd.XL_CELL_NUMBER:
+        return str(int(cell.value)) if float(cell.value).is_integer() else repr(cell.value)
+    if cell.ctype == xlrd.XL_CELL_BOOLEAN:
+        return str(bool(cell.value))
+    return str(cell.value)
+
+
+def _xls_sheet(path: Path, vmap: VendorMap):
+    book = xlrd.open_workbook(str(path))
+    names = book.sheet_names()
+    if vmap.file.sheet and vmap.file.sheet not in names:
+        raise ValueError(f"{path.name}: sheet {vmap.file.sheet!r} not found (has {names})")
+    return book, (book.sheet_by_name(vmap.file.sheet) if vmap.file.sheet else book.sheet_by_index(0))
+
+
+def _xls_records(path: Path, vmap: VendorMap) -> list[tuple[int, list[str]]]:
+    book, sheet = _xls_sheet(path, vmap)
+    return [(r + 1, [_xls_text(c, book.datemode) for c in sheet.row(r)])
+            for r in range(vmap.file.header_row - 1, sheet.nrows)]
+
+
 def _excel_records(path: Path, vmap: VendorMap) -> list[tuple[int, list[str]]]:
     wb = openpyxl.load_workbook(path, data_only=True)
     try:
@@ -236,10 +306,11 @@ def read_tally(path: Path, vmap: VendorMap) -> tuple[pd.DataFrame, date | None]:
     Rows with no content at all are skipped (there is nothing in them to lose).
     """
     path = Path(path)
-    records = _csv_records(path, vmap) if vmap.file.format == "csv" else _excel_records(path, vmap)
+    reader = {"csv": _csv_records, "excel": _excel_records, "xls": _xls_records}[vmap.file.format]
+    records = reader(path, vmap)
     header = [h.strip() for h in records[0][1]]
     rows, source_rows = [], []
-    for line, fields in records[1:]:
+    for line, fields in records[1 + vmap.file.skip_rows:]:
         fields = [f.strip() for f in fields]
         if not any(fields):
             continue
@@ -293,10 +364,11 @@ def parse_clock(values: pd.Series, fmt: str) -> tuple[pd.Series, pd.Series]:
             except ValueError:
                 bad[idx] = True
         return minutes, bad
-    per_unit = {"degrees": 2.0, "decimal_hours": 60.0}[fmt]
+    per_unit = {"degrees": 2.0, "decimal_hours": 60.0, "day_fraction": float(MINUTES_PER_DAY)}[fmt]
     num = pd.to_numeric(values.where(~blank), errors="coerce")
     bad = ~blank & num.isna()
-    in_range = (num >= 0) & ((num <= 360) if fmt == "degrees" else (num < 13))
+    hours = num * 24 if fmt == "day_fraction" else num
+    in_range = (num >= 0) & ((num <= 360) if fmt == "degrees" else (hours < 13))
     m = np.rint(num * per_unit)
     m = m.where(~in_range, m % CLOCK_MINUTES)
     ok = m.notna()
@@ -332,6 +404,8 @@ def standardize(raw: pd.DataFrame, vmap: VendorMap, run_id: str, run_date: date)
     """
     src = {std: raw[col] if col else pd.Series("", index=raw.index)
            for std, col in ((f, vmap.columns.get(f)) for f in MAPPABLE_FIELDS)}
+    if vmap.feature_id_from_row:
+        src["feature_id"] = "row-" + raw.source_row.astype(str)
     out = pd.DataFrame(index=raw.index)
     out["run_id"] = run_id
     out["run_date"] = run_date
@@ -357,6 +431,8 @@ def standardize(raw: pd.DataFrame, vmap: VendorMap, run_id: str, run_date: date)
         issues.append(_issues(run_id, ident, (text != "") & num.isna(), f, text, "unparseable_number"))
         if f in UNIT_GROUP:
             num = num * TO_US[getattr(vmap.units, UNIT_GROUP[f])]
+        if f in vmap.negate:
+            num = -num
         out[f] = num.astype(float)
 
     out["clock_min"], bad = parse_clock(src["clock_min"], vmap.clock_format)
@@ -368,6 +444,9 @@ def standardize(raw: pd.DataFrame, vmap: VendorMap, run_id: str, run_date: date)
         out[f] = [True if t else (False if fl else None) for t, fl in zip(is_true, is_false)]
         out[f] = out[f].astype(object)
         issues.append(_issues(run_id, ident, (keys != "") & ~is_true & ~is_false, f, src[f], "unparseable_flag"))
+
+    for f in vmap.fill_down:  # in file order: a blank takes the last value above it (none above the first)
+        out[f] = out[f].ffill() if out[f].dtype.kind == "f" else out[f].astype(object).ffill().astype(object)
 
     out["source_row"] = raw.source_row.to_numpy()
     issues_df = pd.concat([i for i in issues if len(i)], ignore_index=True) if any(len(i) for i in issues) \

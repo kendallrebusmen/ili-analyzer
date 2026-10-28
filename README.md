@@ -202,8 +202,17 @@ are drawn with matplotlib and the text uses DejaVu Sans, which ships with matplo
 
 Copy a file in `config/vendor_maps/` and edit:
 - `columns` maps each standard field (spec §5.1) to the vendor's header; unmapped fields are left blank
-- `units`, `clock_format` (`hhmm` | `degrees` | `decimal_hours`), and `file` (csv/excel, sheet, 1-based header row)
+- `units`, `clock_format` (`hhmm` | `degrees` | `decimal_hours` | `day_fraction`, an Excel time), and `file`
+  (`csv`, `excel` for .xlsx or `xls` for the older format; sheet; 1-based header row; `skip_rows` after the header,
+  e.g. a units row)
 - the vendor's vocabulary for feature types, surfaces, and true/false flags. Matching ignores case and surrounding spaces. Any value not listed becomes a validation issue rather than being guessed.
+- optional: `negate` (numeric fields written with the opposite sign), `fill_down` (fields written only on some rows,
+  such as the joint number on the weld rows, carried down to the rows below), and `feature_id_from_row: true` (no id
+  column: each feature is named `row-<n>` after its row in the vendor file)
+
+`rosen_tally_xlsx.yaml` and `rosen_tally_xls.yaml` read ROSEN pipe tallies (the current .xlsx layout and the older
+.xls one). Real tallies go in `data/raw/` and their outputs in their own folder (e.g. `--out outputs/l930`); both
+are git-ignored.
 
 ### Synthetic generator outputs (`data/synthetic/`)
 

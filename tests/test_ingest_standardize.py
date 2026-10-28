@@ -232,3 +232,82 @@ def test_load_standardized_without_ml_origin_column(tmp_path):
     pd.concat([std, dent]).drop(columns=["ml_origin"]).to_csv(path, index=False)
     loaded = load_standardized(path)
     assert list(loaded.ml_origin) == ["unknown", None]
+
+
+# --- vendor-map options for real vendor exports (ROSEN, L930) ---------------------------------------------------
+
+
+def _map_b(**changes):
+    raw = yaml.safe_load(MAP_B.read_text(encoding="utf-8"))
+    raw.update(changes)
+    return VendorMap.model_validate(raw)
+
+
+def test_day_fraction_clock_is_an_excel_time_on_a_12_hour_face():
+    minutes, bad = parse_clock(pd.Series(["0.125", "0.484", "0.5", "0.625", "", "x", "0.6"]), "day_fraction")
+    # 0.125 day = 3:00 = 180 min; 0.484 day = 11:37; 0.5 = 12:00 wraps to 0; 0.625 = 15:00 is past 13 h: kept for
+    # validation to report, like a decimal hour of 15
+    assert minutes.tolist()[:4] == [180, 697, 0, 900]
+    assert pd.isna(minutes[4]) and bad.tolist() == [False, False, False, False, False, True, False]
+
+
+def test_negate_flips_a_numeric_field():
+    vmap = _map_b(negate=["dist_from_us_gw_ft"])
+    std, issues = standardize(_raw_b(**{"Rel. Dist [m]": "-0.5"}), vmap, "r", date(2026, 1, 1))
+    assert issues.empty and std.dist_from_us_gw_ft.iloc[0] == pytest.approx(0.5 / 0.3048)
+
+
+def test_negate_and_fill_down_accept_only_known_fields(tmp_path):
+    for option in ("negate", "fill_down"):
+        with pytest.raises(ValueError, match="nope"):
+            _map_b(**{option: ["nope"]})
+    with pytest.raises(ValueError, match="numeric"):
+        _map_b(negate=["comments"])
+
+
+def test_fill_down_carries_joint_fields_from_the_weld_rows():
+    vmap = _map_b(fill_down=["us_gw_id", "joint_length_ft", "wt_nom_in"])
+    raw = pd.concat([_raw_b(Feature="ML-CORR", **{"Ref GW": "", "Joint Len [m]": "", "WT [mm]": ""}),
+                     _raw_b(Feature="GWLD", **{"Ref GW": "10", "Joint Len [m]": "12", "WT [mm]": "9.525"}),
+                     _raw_b(Feature="ML-CORR", **{"Ref GW": "", "Joint Len [m]": "", "WT [mm]": ""}),
+                     _raw_b(Feature="ML-CORR", **{"Ref GW": "20", "Joint Len [m]": "", "WT [mm]": ""})],
+                    ignore_index=True)
+    std, _ = standardize(raw, vmap, "r", date(2026, 1, 1))
+    assert std.us_gw_id.tolist() == [None, "10", "10", "20"]  # nothing above the first weld to carry
+    assert std.wt_nom_in.iloc[2] == pytest.approx(0.375) and pd.isna(std.wt_nom_in.iloc[0])
+
+
+def test_feature_id_from_row_names_each_row_by_its_source_row():
+    raw = yaml.safe_load(MAP_B.read_text(encoding="utf-8"))
+    raw["columns"].pop("feature_id")
+    vmap = VendorMap.model_validate({**raw, "feature_id_from_row": True})
+    std, issues = standardize(_raw_b(), vmap, "r", date(2026, 1, 1))
+    assert issues.empty and std.feature_id.iloc[0] == "row-4"
+    with pytest.raises(ValueError, match="feature_id_from_row"):
+        VendorMap.model_validate({**yaml.safe_load(MAP_B.read_text(encoding="utf-8")), "feature_id_from_row": True})
+
+
+def test_xls_tally_with_a_units_row(tmp_path):
+    xlwt = pytest.importorskip("xlwt")
+    path = tmp_path / "tally.xls"
+    book = xlwt.Workbook()
+    sheet = book.add_sheet("Pipe Tally")
+    time_style = xlwt.easyxf(num_format_str="h:mm")
+    for c, h in enumerate(["J. no.", "log dist.", "event", "o'clock", "depth"]):
+        sheet.write(2, c, h)
+        sheet.write(3, c, "[units]")
+    sheet.write(4, 0, 2150.0)
+    sheet.write(4, 1, 12.5)
+    sheet.write(4, 2, "metal loss corrosion")
+    sheet.write(4, 3, 0.125, time_style)
+    sheet.write(4, 4, 20.0)
+    book.save(str(path))
+    from ili.ingest import FileSpec
+    vmap = VendorMap.model_construct(file=FileSpec(format="xls", header_row=3, skip_rows=1),
+                                     columns={"us_gw_id": "J. no.", "log_dist_ft": "log dist.",
+                                              "feature_type": "event", "clock_min": "o'clock", "depth_pct": "depth"},
+                                     run_date=None, vendor="t")
+    raw, _ = read_tally(path, vmap)
+    assert len(raw) == 1 and raw.source_row.tolist() == [5]
+    row = raw.iloc[0]
+    assert (row["J. no."], row["log dist."], row["o'clock"], row["depth"]) == ("2150", "12.5", "3:00", "20")
