@@ -46,7 +46,7 @@ from ili.report_charts import (CATEGORY_COLOURS, depth_vs_distance, feature_map,
 from ili.report_data import (ReportInputs, _sha256, backtest, config_rows, criteria_rows, dig_list, input_hashes,
                              largest_growth, load_report_inputs, match_stats, pending_reviews)
 from ili.report_tables import (DEPTH_COLUMNS, LOCATIONS, anomaly_distribution, anomaly_distribution_table,
-                               imp_class_summary)
+                               imp_class_summary, joint_ml_counts, largest_joints)
 from ili.review import FLAG_COLUMNS, REVIEW_COLUMNS
 
 TEMPLATES = Path(__file__).parent / "templates"
@@ -269,6 +269,13 @@ def _distribution(inputs: ReportInputs) -> dict:
     }
 
 
+def _joints(inputs: ReportInputs) -> dict:
+    """The per-joint metal-loss tables: the joints with the largest current count and the largest change."""
+    n = inputs.settings.report.largest_changes_n
+    by_count, by_change = largest_joints(joint_ml_counts(inputs.weld_map, inputs.prev_std, inputs.curr_std), n)
+    return {"n": n, "by_count": table(by_count), "by_change": table(by_change)}
+
+
 def _charts(inputs: ReportInputs, dig: pd.DataFrame) -> dict:
     tolerance = inputs.settings.tool.depth_tolerance_pct_wt
     bt = backtest(inputs.digs, inputs.curr_std, inputs.settings)
@@ -364,6 +371,7 @@ def render_report(inputs: ReportInputs, changes: CategoryChangeResult, header: R
         "quality": _data_quality(inputs),
         "growth": _growth(inputs),
         "distribution": _distribution(inputs),
+        "joints": _joints(inputs),
         "dig_list": table(dig, row_classes=[f"cat-{c}" for c in dig.governing_category],
                           print_columns=DIG_LIST_PRINT_COLUMNS),
         "largest": {"n": n_largest, "growth": table(largest_growth(inputs, n_largest), LARGEST_GROWTH_COLUMNS),
@@ -378,7 +386,7 @@ def render_report(inputs: ReportInputs, changes: CategoryChangeResult, header: R
 # --- dig list workbook, manifest, CLI -----------------------------------------------------------------
 
 OUTPUT_NAMES = ("category_changes.csv", "report.html", "dig_list.xlsx", "anomaly_distribution.csv",
-                "run_manifest.json")
+                "joint_ml_counts.csv", "run_manifest.json")
 DATE_COLUMNS = ("due_date",)
 GIT_TIMEOUT_S = 10
 
@@ -496,6 +504,7 @@ def write_report(inputs: ReportInputs, header: ReportHeader, out_dir: Path,
     html = render_report(inputs, changes, header, generated_utc)
     workbook = dig_list_workbook(dig_list(inputs), inputs.settings, _sheet_label(inputs))
     distribution = anomaly_distribution_table(anomaly_distribution(inputs))
+    joints = joint_ml_counts(inputs.weld_map, inputs.prev_std, inputs.curr_std)
     manifest = json.dumps(run_manifest(inputs, list(OUTPUT_NAMES), generated_utc), indent=2, allow_nan=False)
     paths = {name: Path(out_dir) / name for name in OUTPUT_NAMES}
     _write_all({
@@ -503,6 +512,7 @@ def write_report(inputs: ReportInputs, header: ReportHeader, out_dir: Path,
         "report.html": lambda p: p.write_text(html, encoding="utf-8"),
         "dig_list.xlsx": workbook.save,
         "anomaly_distribution.csv": lambda p: distribution.to_csv(p, index=False, lineterminator="\n"),
+        "joint_ml_counts.csv": lambda p: joints.to_csv(p, index=False, lineterminator="\n"),
         "run_manifest.json": lambda p: p.write_text(manifest, encoding="utf-8"),
     }, paths)
     return paths, changes

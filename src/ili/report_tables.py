@@ -254,3 +254,53 @@ def anomaly_distribution_table(result: AnomalyDistribution) -> pd.DataFrame:
         if col not in ("table", "run_id", "location", "bin"):
             out[col] = out[col].astype("Int64")
     return out
+
+
+JOINT_SIDES = ("prev", "curr")
+JOINT_COUNT_KINDS = ("ext", "int", "other", "total")
+JOINT_COUNT_COLUMNS = ("section_id", "match_type", "prev_gw_ids", "curr_gw_ids", "curr_start_ft",
+                       *(f"{side}_{kind}" for side in JOINT_SIDES for kind in JOINT_COUNT_KINDS), "change_total")
+GW_ID_SEPARATOR = ";"
+
+
+def _metal_loss_by_joint(std: pd.DataFrame) -> pd.DataFrame:
+    """One run's metal-loss counts per ``us_gw_id``: columns ``ext``, ``int``, ``other`` (surface MID, UNK or
+    blank) and ``total``. A row without an upstream girth weld is counted nowhere."""
+    ml = std[std.feature_type.astype(str).eq(FeatureType.metal_loss.value) & std.us_gw_id.notna()]
+    surface = ml.surface.astype(str)
+    kind = np.where(surface.eq(Surface.EXT.value), "ext", np.where(surface.eq(Surface.INT.value), "int", "other"))
+    counts = pd.crosstab(ml.us_gw_id.astype(str), pd.Series(kind, index=ml.index, name="kind"))
+    return counts.reindex(columns=list(JOINT_COUNT_KINDS[:3]), fill_value=0).assign(total=lambda c: c.sum(axis=1))
+
+
+def joint_ml_counts(weld_map: pd.DataFrame, prev_std: pd.DataFrame, curr_std: pd.DataFrame) -> pd.DataFrame:
+    """Metal loss per joint for both runs (spec 6.10, per-joint counts), one row per weld-map row in its order.
+    A row's counts on a side are the sums over that side's joint(s) (``*_gw_id`` and ``*_gw_id_2``, so a 2:1 or
+    1:2 row sums both), taken from each run's metal loss by ``us_gw_id``; no anomaly matching is used. A joint
+    with no metal loss counts 0; a side the row does not have (an inserted joint's previous side, a removed
+    joint's current side) is blank (``Int64`` NA). ``change_total`` is ``curr_total - prev_total``, blank when
+    either side is. ``prev_gw_ids`` / ``curr_gw_ids`` are ``;``-joined, "" for an absent side."""
+    runs = {"prev": _metal_loss_by_joint(prev_std), "curr": _metal_loss_by_joint(curr_std)}
+    out = pd.DataFrame({"section_id": weld_map.section_id.to_numpy(), "match_type": weld_map.match_type.to_numpy(),
+                        "curr_start_ft": weld_map.curr_start_ft.astype(float).to_numpy()})
+    ids = {side: [[str(v) for v in row if pd.notna(v)]
+                  for row in weld_map[[f"{side}_gw_id", f"{side}_gw_id_2"]].itertuples(index=False)]
+           for side in JOINT_SIDES}
+    for side in JOINT_SIDES:
+        out[f"{side}_gw_ids"] = [GW_ID_SEPARATOR.join(row) for row in ids[side]]
+        for kind in JOINT_COUNT_KINDS:
+            counts = runs[side][kind]
+            out[f"{side}_{kind}"] = pd.array([int(counts.reindex(row, fill_value=0).sum()) if row else pd.NA
+                                              for row in ids[side]], dtype="Int64")
+    out["change_total"] = out.curr_total - out.prev_total
+    return out[list(JOINT_COUNT_COLUMNS)]
+
+
+def largest_joints(counts: pd.DataFrame, n: int) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """The ``n`` joints with the largest ``curr_total`` and the ``n`` with the largest ``change_total``, ties
+    broken by ``curr_start_ft`` (ascending). A row blank in the ranked column is not ranked."""
+    def top(column: str) -> pd.DataFrame:
+        ranked = counts[counts[column].notna()]
+        return (ranked.sort_values([column, "curr_start_ft"], ascending=[False, True], kind="stable")
+                .head(n).reset_index(drop=True))
+    return top("curr_total"), top("change_total")

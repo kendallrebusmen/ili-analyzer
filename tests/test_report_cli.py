@@ -41,7 +41,8 @@ def test_cli_writes_outputs(built, capsys):
     capsys.readouterr()
     assert main(_argv(built, "--line-name", "Line 7")) == 0
     printed = capsys.readouterr().out
-    names = ["category_changes.csv", "report.html", "dig_list.xlsx", "anomaly_distribution.csv", "run_manifest.json"]
+    names = ["category_changes.csv", "report.html", "dig_list.xlsx", "anomaly_distribution.csv",
+             "joint_ml_counts.csv", "run_manifest.json"]
     assert all((folder / n).is_file() for n in names)
     assert DRAFT_LABEL in printed and "pending" in printed and "dig list" in printed
 
@@ -235,3 +236,20 @@ def test_report_writes_anomaly_distribution(built):
     assert (depth.n_location_unknown == 0).all()
     manifest = json.loads((folder / "run_manifest.json").read_text(encoding="utf-8"))
     assert "anomaly_distribution.csv" in manifest["outputs"]
+
+
+def test_report_writes_joint_counts(built):
+    _, _, _, folder = built
+    assert main(_argv(built)) == 0
+    out = pd.read_csv(folder / "joint_ml_counts.csv", dtype={"prev_gw_ids": str, "curr_gw_ids": str})
+    weld_map = pd.read_csv(folder / "weld_map.csv")
+    assert len(out) == len(weld_map) and list(out.columns[:5]) == [
+        "section_id", "match_type", "prev_gw_ids", "curr_gw_ids", "curr_start_ft"]
+    assert out.curr_total.sum() > 0 and out.prev_total.sum() > 0
+    both = out.dropna(subset=["curr_total"])
+    assert (both.curr_total == both.curr_ext + both.curr_int + both.curr_other).all()
+    assert out.prev_total[out.match_type == "inserted"].isna().all()
+    manifest = json.loads((folder / "run_manifest.json").read_text(encoding="utf-8"))
+    assert "joint_ml_counts.csv" in manifest["outputs"]
+    html = (folder / "report.html").read_text(encoding="utf-8")
+    assert "Per-joint metal-loss counts" in html

@@ -8,7 +8,7 @@ import pandas as pd
 from ili import config
 from ili.classify import CLASSIFICATION_COLUMNS
 from ili.report_tables import (_location_notes, anomaly_distribution, anomaly_distribution_table, depth_bins,
-                               dent_bins, imp_class_summary)
+                               dent_bins, imp_class_summary, joint_ml_counts, largest_joints)
 from ili.report_data import (DIG_LIST_CATEGORIES, DIG_LIST_COLUMNS, backtest, config_rows, criteria_rows, dig_list,
                              largest_growth, match_stats, pending_reviews)
 
@@ -365,3 +365,68 @@ def test_anomaly_distribution_maps_previous_dents_to_the_current_run():
     assert len(result.depth) == 2 * 3 * 9 and len(result.dent) == 2 * 3
     table = anomaly_distribution_table(result)
     assert set(table.table) == {"depth", "dent"} and table.columns[0] == "table"
+
+
+# --- per-joint metal-loss counts ----------------------------------------------------------------------
+
+def _wm(*rows):
+    """A weld map from (match_type, prev_gw_id, prev_gw_id_2, curr_gw_id, curr_gw_id_2, curr_start_ft) tuples, with
+    the ``align_welds`` convention: an absent joint is None (never NaN), ``*_2`` is set only for 2:1 / 1:2."""
+    cols = ["match_type", "prev_gw_id", "prev_gw_id_2", "curr_gw_id", "curr_gw_id_2", "curr_start_ft"]
+    wm = pd.DataFrame(rows, columns=cols, dtype=object)
+    wm["curr_start_ft"] = wm.curr_start_ft.astype(float)
+    wm.insert(0, "section_id", range(len(wm)))
+    return wm
+
+
+def _ml(*joints):
+    """A standardized run from (us_gw_id, surface) pairs, all metal loss; a dent row is added to a joint that
+    has any, to show only metal loss is counted."""
+    rows = [{"feature_type": "metal_loss", "us_gw_id": j, "surface": s} for j, s in joints]
+    rows.append({"feature_type": "dent", "us_gw_id": joints[0][0], "surface": "EXT"})
+    return pd.DataFrame(rows)
+
+
+def test_joint_counts_one_to_one():
+    wm = _wm(("1:1", "P1", None, "C1", None, 10.0), ("1:1", "P2", None, "C2", None, 50.0))
+    prev = _ml(("P1", "EXT"), ("P1", "INT"), ("P2", "EXT"))
+    curr = _ml(("C1", "EXT"), ("C1", "EXT"), ("C1", "MID"), ("C1", "UNK"), ("C1", None), ("C1", "INT"))
+    out = joint_ml_counts(wm, prev, curr)
+    one, two = out.iloc[0], out.iloc[1]
+    assert (one.prev_ext, one.prev_int, one.prev_other, one.prev_total) == (1, 1, 0, 2)
+    assert (one.curr_ext, one.curr_int, one.curr_other, one.curr_total) == (2, 1, 3, 6)
+    assert one.change_total == 4 and one.prev_gw_ids == "P1" and one.curr_gw_ids == "C1"
+    assert (two.prev_total, two.curr_total, two.change_total) == (1, 0, -1)  # a joint with no metal loss is 0
+    counts = [f"{s}_{k}" for s in ("prev", "curr") for k in ("ext", "int", "other", "total")] + ["change_total"]
+    assert all(str(out[c].dtype) == "Int64" for c in counts)
+
+
+def test_joint_counts_two_to_one_sums_both_prev_joints():
+    wm = _wm(("2:1", "P1", "P2", "C1", None, 10.0), ("1:2", "P3", None, "C2", "C3", 90.0))
+    prev = _ml(("P1", "EXT"), ("P2", "EXT"), ("P2", "INT"), ("P3", "INT"))
+    curr = _ml(("C1", "EXT"), ("C2", "INT"), ("C3", "INT"), ("C3", "MID"))
+    out = joint_ml_counts(wm, prev, curr)
+    first, second = out.iloc[0], out.iloc[1]
+    assert first.prev_gw_ids == "P1;P2" and first.curr_gw_ids == "C1"
+    assert (first.prev_ext, first.prev_int, first.prev_total, first.curr_total, first.change_total) == (2, 1, 3, 1, -2)
+    assert second.curr_gw_ids == "C2;C3" and (second.curr_int, second.curr_other, second.curr_total) == (2, 1, 3)
+    assert second.change_total == 2
+
+
+def test_inserted_joint_prev_blank():
+    wm = _wm(("inserted", None, None, "C1", None, 10.0), ("removed", "P2", None, None, None, np.nan))
+    out = joint_ml_counts(wm, _ml(("P2", "EXT")), _ml(("C1", "EXT")))
+    ins, rem = out.iloc[0], out.iloc[1]
+    assert ins.prev_gw_ids == "" and all(pd.isna(ins[f"prev_{k}"]) for k in ("ext", "int", "other", "total"))
+    assert ins.curr_total == 1 and pd.isna(ins.change_total)
+    assert rem.curr_gw_ids == "" and pd.isna(rem.curr_total) and rem.prev_total == 1 and pd.isna(rem.change_total)
+
+
+def test_largest_joints_rank_and_break_ties_by_position():
+    wm = _wm(("1:1", "P1", None, "C1", None, 30.0), ("1:1", "P2", None, "C2", None, 20.0),
+             ("1:1", "P3", None, "C3", None, 10.0), ("removed", "P4", None, None, None, np.nan))
+    prev = _ml(("P1", "EXT"), ("P2", "EXT"), ("P3", "EXT"), ("P4", "EXT"))
+    curr = _ml(("C1", "EXT"), ("C1", "EXT"), ("C2", "EXT"), ("C2", "EXT"), ("C3", "EXT"))
+    by_count, by_change = largest_joints(joint_ml_counts(wm, prev, curr), 2)
+    assert list(by_count.curr_gw_ids) == ["C2", "C1"]  # tie on 2: the earlier position first
+    assert list(by_change.curr_gw_ids) == ["C2", "C1"] and len(by_change) == 2
