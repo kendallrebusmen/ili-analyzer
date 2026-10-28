@@ -18,7 +18,7 @@ COLUMNS = (
     + [f"{s}_{c}" for s in ("prev", "curr") for c in (
         "feature_type", "log_dist_ft", "wm_row", "us_gw_id", "dist_from_us_gw_ft", "wt_nom_in", "depth_pct",
         "dent_depth_in", "length_in", "width_in", "clock_min", "surface", "seam_interaction", "dent_metal_loss",
-        "vendor_cluster_id")]
+        "vendor_cluster_id", "ml_origin")]
     + ["curr_pos_in_prev_ft", "axial_diff_in", "clock_diff_min", "depth_change_pct", "implausible"]
 )
 TYPES = ["matched_1to1", "matched_cluster", "missing", "new"]
@@ -140,6 +140,14 @@ def _runs():
     pipe = pd.DataFrame({"start_ft": [0.0], "end_ft": [2000.0], "od_in": [12.75]})
     repairs = pd.DataFrame({"start_ft": [1390.0], "end_ft": [1410.0]})
     return prev, curr, wm, pipe, repairs
+
+
+def test_match_table_has_origin():
+    prev, curr, wm, pipe, repairs = _runs()
+    prev.loc[prev.feature_id == "P0", "ml_origin"] = "manufacturing"
+    curr.loc[curr.feature_id == "C0", "ml_origin"] = "manufacturing"
+    t = match_anomalies(prev, curr, wm, S, pipe, repairs).match_table.set_index("match_id")
+    assert (t.loc["M00001", "prev_ml_origin"], t.loc["M00001", "curr_ml_origin"]) == ("manufacturing", "manufacturing")
 
 
 def test_hand_built_table():

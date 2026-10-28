@@ -11,7 +11,7 @@ S = load_settings()
 MIN_PER_IN = 720 / (np.pi * OD)  # clock minutes per inch of arc
 
 
-def _frame(run, pos, clock=None, length=0.3, width=0.3, depth=30.0, vendor=None, surface=None, wm=_WM1):
+def _frame(run, pos, clock=None, length=0.3, width=0.3, depth=30.0, vendor=None, surface=None, wm=_WM1, origin=None):
     n = len(pos)
     cols = {
         "length_in": [length] * n if np.isscalar(length) else list(length),
@@ -22,6 +22,7 @@ def _frame(run, pos, clock=None, length=0.3, width=0.3, depth=30.0, vendor=None,
         "clock_min": pd.array(clock if clock is not None else [100] * n, dtype="Int64"),
         "vendor_cluster_id": vendor if vendor is not None else [None] * n,
         "surface": surface if surface is not None else [None] * n,
+        "ml_origin": origin if origin is not None else [None] * n,
     }
     return _placed([("metal_loss", float(x)) for x in pos], wm, run, **cols)
 
@@ -52,6 +53,13 @@ def test_envelope_box_and_max_depth():
     e = envelope(g)
     assert e["clock_min"] == 0
     assert e["width_in"] == pytest.approx(10 * np.pi * OD / 720 + 0.3)
+
+
+def test_cluster_origin_common_else_unknown():
+    assert envelope(_frame("prev", [50.0, 50.01], origin=["corrosion", "corrosion"]))["ml_origin"] == "corrosion"
+    assert envelope(_frame("prev", [50.0, 50.01], origin=["corrosion", "manufacturing"]))["ml_origin"] == "unknown"
+    assert envelope(_frame("prev", [50.0, 50.01], origin=["manufacturing", None]))["ml_origin"] == "manufacturing"
+    assert envelope(_frame("prev", [50.0, 50.01]))["ml_origin"] is None
 
 
 def _cluster_prev(**kw):

@@ -25,8 +25,10 @@ TABLE_CHECKS = ("n_unreported", "n_duplicated", "n_wrong_side", "n_duplicate_lin
 
 # sha256 of match_table.csv (LF) from the M4 matcher (commit af4819f), before decisions existed. If the
 # synthetic generator or the automated matching is changed on purpose, regenerate both hashes.
-M4_SYNTH_SHA256 = "c8d2277f0ca6163dce66fec4aae327ee2f80134efef983aeadf4a059e4c9506b"
-M4_HAND_SHA256 = "e9379ca1de621502c9601ad09f6fd860f6d49552747b2c2c89716f1d2309a9e0"
+# M11 task 3 added the prev_/curr_ml_origin columns; the hashes were regenerated, and with those two columns
+# dropped they equal the M4 values (no matching result changed).
+M4_SYNTH_SHA256 = "2aea0503a1417d2e6cc5fff5b9d664e64ff577f29a5e6567550fe9553ddfd37b"
+M4_HAND_SHA256 = "add098fdfe3d89f58468de6c051207f774845961e4d924a528ab5a9a4c5d9f82"
 
 
 def _reviews(*rows):
