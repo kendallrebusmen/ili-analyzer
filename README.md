@@ -135,6 +135,22 @@ py -3.13 -m venv .venv
 .\.venv\Scripts\python.exe -m streamlit run app/streamlit_app.py --server.address localhost --browser.gatherUsageStats false
 ```
 
+The app's **Run setup** page is four steps:
+1. **Inspections:** the two tallies and their vendor maps.
+2. **Pipeline data:** pipe properties, MOP profile, HCA segments and next inspection dates.
+3. **Optional data,** collapsed: repairs, foreign crossings and dig results.
+4. **Report details,** collapsed: line name, discovery date, tool types, and the PDF cover's "prepared for" and "prepared by".
+
+The output folder, settings and criteria files sit under **Advanced**.
+
+Each pipeline-data and optional table can be chosen as a file or typed in ("Type it in"). The editor starts from the
+chosen file's rows, if there is one. On **Run**, typed tables are saved as the standard CSVs in
+`<output folder>/entered/`: `pipe_properties.csv`, `mop_profile.csv`, `hca_segments.csv`, `next_inspection.csv`,
+`repairs_between_runs.csv` and `foreign_crossings.csv`. The pipeline reads them like any other file, and the run
+manifest hashes them.
+
+A row missing a required value (marked *) is refused with the table and row named. Blank rows are ignored.
+
 ### The consultant's practice (M11)
 
 `growth.governing_profile` in `config/settings.yaml` picks the governing growth rule: `conservative` (the default; the
