@@ -122,6 +122,14 @@ code { font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; font-siz
 {% endif %}
 <h3>Counts by repair category</h3>
 {{ render_table(summary.category_counts, summary.n_features ~ " classified features") }}
+<h3>IMP class summary</h3>
+<p>A summary view only: the repair categories above still drive due dates. Immediate, 60-day and 180-day are the
+governing categories; "YTC &lt; {{ summary.ytc_flag_years }} yrs" is every other feature whose years to condition
+(remaining life, else its upper bound) is under <code>report.ytc_flag_years</code>; None is every other feature,
+including those with no remaining life or bound ("RL not evaluated"). Previously repaired means inside a span of
+<code>repairs_between_runs.csv</code>.
+{% if not summary.repairs_given %}No repairs file was given to the report, so the repaired columns are blank.{% endif %}</p>
+{{ render_table(summary.imp_class, "IMP class summary") }}
 <h3>Digs driven by remaining life</h3>
 <p>{{ summary.n_rl_dig }} of {{ summary.n_rl_feature }} features have <code>dig_required_by_remaining_life</code>
 (remaining life × rl_factor is shorter than the time to the next planned assessment);
@@ -166,6 +174,11 @@ code { font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; font-siz
 <section id="growth">
 <p class="draft">{{ label }}</p>
 <h2>Growth</h2>
+<p>Governing growth profile: <code>{{ growth.profile if growth.profile else "not recorded" }}</code>
+(<code>growth.governing_profile</code>).
+{% if growth.n_excluded_recoated is not none %}{{ growth.n_excluded_recoated }} recoated feature(s) are left out of the
+"excluding_recoated" statistics below.{% endif %}</p>
+{{ render_table(growth.by_surface, "Growth summary by surface") }}
 <p>Negative raw growth rates: {{ growth.pct_negative_raw }} (included in the segment percentiles).</p>
 {{ render_table(growth.segments, "Per-segment statistics") }}
 {{ render_table(growth.methods, "Features by governing method") }}

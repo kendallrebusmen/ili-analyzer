@@ -45,6 +45,7 @@ from ili.report_charts import (CATEGORY_COLOURS, depth_vs_distance, feature_map,
                                growth_vs_distance, rl_distribution, unity_chart)
 from ili.report_data import (ReportInputs, _sha256, backtest, config_rows, criteria_rows, dig_list, input_hashes,
                              largest_growth, load_report_inputs, match_stats, pending_reviews)
+from ili.report_tables import imp_class_summary
 from ili.review import FLAG_COLUMNS, REVIEW_COLUMNS
 
 TEMPLATES = Path(__file__).parent / "templates"
@@ -191,6 +192,10 @@ def _summary(inputs: ReportInputs, dig: pd.DataFrame) -> dict:
         "immediate_note": IMMEDIATE_ACTION_NOTE,
         "category_counts": Table(["category", "count"], [[c, cell(n)] for c, n in counts.items()],
                                  [f"cat-{c}" for c in counts.index]),
+        "imp_class": table(imp_class_summary(cls, inputs.match_table, inputs.remaining_life, inputs.repairs,
+                                             inputs.settings)),
+        "ytc_flag_years": cell(inputs.settings.report.ytc_flag_years),
+        "repairs_given": inputs.repairs is not None,
         "n_features": len(cls),
         "n_rl_dig": int(inputs.remaining_life.dig_required_by_remaining_life.eq(True).sum()),
         "n_rl_feature": len(inputs.remaining_life),
@@ -237,6 +242,9 @@ def _growth(inputs: ReportInputs) -> dict:
     pct_negative = cell(summary.get("pct_negative_raw"))
     return {
         "segments": table(inputs.growth_segments),
+        "profile": summary.get("governing_profile"),
+        "n_excluded_recoated": summary.get("n_excluded_recoated"),
+        "by_surface": table(inputs.growth_by_surface),
         "pct_negative_raw": f"{pct_negative} % of matched features" if pct_negative else "not available",
         "methods": _counts(summary.get("counts_by_governing_method") or {}, "governing_method"),
         "histograms": Markup(figure_div(growth_histograms(inputs))),
@@ -489,6 +497,8 @@ def _parser() -> argparse.ArgumentParser:
     ap.add_argument("--segments", type=Path, required=True, help="hca_segments.csv")
     ap.add_argument("--crossings", type=Path, default=None, help="foreign_crossings.csv (optional)")
     ap.add_argument("--digs", type=Path, default=None, help="digs.csv, field results for the back-test (optional)")
+    ap.add_argument("--repairs", type=Path, default=None,
+                    help="repairs_between_runs.csv (optional; counts previously repaired anomalies)")
     ap.add_argument("--ingest-dir", type=Path, default=None,
                     help="folder with ingest_manifest.json and validation_issues.csv (default: the parent of "
                          "--curr's folder)")
@@ -508,7 +518,7 @@ def main(argv: list[str] | None = None) -> int:
         ingest_dir = args.ingest_dir or args.curr.resolve().parent.parent
         inputs = load_report_inputs(args.comparison, args.prev, args.curr, ingest_dir, args.pipe, args.mop,
                                     args.segments, args.crossings, args.digs, args.settings,
-                                    criteria_path(args.criteria, settings))
+                                    criteria_path(args.criteria, settings), repairs=args.repairs)
         header = ReportHeader(args.line_name, args.prev_tool, args.curr_tool)
         paths, changes = write_report(inputs, header, args.comparison, datetime.now(timezone.utc))
     except (ValueError, OSError) as exc:

@@ -85,6 +85,11 @@ cp_overlay:
 report:                             # presentation only; changes no number in the analysis
   largest_changes_n: 20             # rows in the "largest changes" table
   dig_list_sheet: "Dig list"        # worksheet name in the Excel dig list
+  ytc_flag_years: 5                 # years; PLACEHOLDER - "YTC < N yrs" row of the IMP class summary
+  depth_bins_pct_wt: [0, 10, 20, 30, 40, 50, 60, 70, 80]   # % of wall; strictly increasing from 0; last bin is >= 80
+  dent_bins_pct_od: [0, 2, 6]       # % of OD; strictly increasing from 0; last bin is > 6
+  aoi_group_ft: 2.0                 # ft; PLACEHOLDER - anomalies within this distance form one group
+  aoi_count: 10                     # groups listed in "anomalies of interest"
 
 review:                             # presentation only; changes no number in the analysis
   nearby_window_ft: 10              # the review page's nearby-features window (ft)

@@ -96,7 +96,7 @@ def _argv(stage: str, i: PipelineInputs, prev_id: str | None, curr_id: str | Non
                 *settings, "--out", out]
     return ["--prev", prev, "--curr", curr, "--comparison", str(folder), "--pipe", str(i.pipe),
             "--mop", str(i.mop), "--segments", str(i.segments), *_optional("--crossings", i.crossings),
-            *_optional("--digs", i.digs), "--ingest-dir", out, *settings, *_optional("--criteria", i.criteria),
+            *_optional("--digs", i.digs), *_optional("--repairs", i.repairs), "--ingest-dir", out, *settings, *_optional("--criteria", i.criteria),
             *_optional("--line-name", i.line_name), *_optional("--prev-tool", i.prev_tool),
             *_optional("--curr-tool", i.curr_tool)]
 

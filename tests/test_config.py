@@ -197,3 +197,11 @@ def test_min_matches_positive_int(tmp_path, value):
     path = _write_settings(tmp_path, lambda r: r["growth"].update(joint_percentile_min_matches=value))
     with pytest.raises(ValueError):
         load_settings(path)
+
+
+@pytest.mark.parametrize("key", ["depth_bins_pct_wt", "dent_bins_pct_od"])
+@pytest.mark.parametrize("bins", [[0, 10, 10], [5, 10], [0, 20, 10], []])
+def test_bins_must_increase(tmp_path, key, bins):
+    path = _write_settings(tmp_path, lambda r: r["report"].update({key: bins}))
+    with pytest.raises(ValueError, match=key):
+        load_settings(path)

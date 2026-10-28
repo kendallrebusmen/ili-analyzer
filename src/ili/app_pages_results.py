@@ -166,7 +166,8 @@ def _compute_view(path: str, prev_id: str, curr_id: str, setup, stamps: tuple):
         inputs = load_report_inputs(
             Path(path), out / "standardized" / f"{prev_id}.csv", out / "standardized" / f"{curr_id}.csv", out,
             _absolute(setup.pipe), _absolute(setup.mop), _absolute(setup.segments), _absolute(setup.crossings),
-            _absolute(setup.digs), settings_path, criteria_path(_absolute(setup.criteria), settings))
+            _absolute(setup.digs), settings_path, criteria_path(_absolute(setup.criteria), settings),
+            repairs=_absolute(setup.repairs))
         return dig_list(inputs), inputs.log_warnings, None
     except (ValueError, OSError, KeyError) as exc:
         return None, [], str(exc)

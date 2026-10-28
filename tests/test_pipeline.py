@@ -202,3 +202,12 @@ def test_pipeline_passes_repairs_to_growth(tmp_path):
     assert argv[argv.index("--repairs") + 1] == str(ref / "repairs_between_runs.csv")
     assert "--repairs" not in pipeline._argv("growth", _inputs(tmp_path, tmp_path / "out", repairs=None),
                                              "2021_vendorA", "2026_vendorB")
+
+
+def test_pipeline_passes_repairs_to_report(tmp_path):
+    ref = tmp_path / "ref"
+    with_rep = _inputs(tmp_path, tmp_path / "out", repairs=ref / "repairs_between_runs.csv")
+    argv = pipeline._argv("report", with_rep, "2021_vendorA", "2026_vendorB")
+    assert argv[argv.index("--repairs") + 1] == str(ref / "repairs_between_runs.csv")
+    assert "--repairs" not in pipeline._argv("report", _inputs(tmp_path, tmp_path / "out", repairs=None),
+                                             "2021_vendorA", "2026_vendorB")

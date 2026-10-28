@@ -25,6 +25,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from ili.align_welds import load_weld_map
 from ili.classify import CATEGORY_PRIORITY, FLAG_STATUS_COLUMNS, FLAG_STATUS_FILE, load_classification_table
 from ili.config import RepairCriteria, Settings, load_repair_criteria, load_settings
 from ili.growth import load_growth_table
@@ -53,7 +54,7 @@ DIG_LIST_COLUMNS = (
     "triggered_rules", "due_date", "due_date_basis", "worst_case_category", "requires_review",
     "review_reasons", "action_note",
 )
-_ID_COLUMNS = ("match_id", "curr_feature_id", "feature_id", "segment_id", "decision_id")
+_ID_COLUMNS = ("match_id", "curr_feature_id", "feature_id", "segment_id", "decision_id", "deepest_curr_feature_id")
 REVIEW_STATUS_COLUMNS = ["decision_id", "decision", "applied_status", "reason"]  # match's review_status.csv
 CLUSTER_SEP = ";"  # a matched cluster's member feature ids are joined with this (M4)
 # Settings the summaries record, as (summary, summary key, dotted settings key). The report refuses settings
@@ -68,6 +69,7 @@ RECORDED_SETTINGS = (
     *(("classification", key, f"classification.{key}") for key in (
         "girth_weld_proximity_in", "crossing_proximity_ft", "seam_clock_min", "seam_clock_tol_min",
         "general_corrosion_min_dim_in", "widespread_circ_min_width_frac", "due_days", "discovery_max_days")),
+    ("growth", "governing_profile", "growth.governing_profile"),
     ("classification", "depth_basis", "strength.depth_basis"),
     ("classification", "depth_tolerance_pct_wt", "tool.depth_tolerance_pct_wt"),
 )
@@ -81,6 +83,9 @@ class ReportInputs:
     match_table: pd.DataFrame
     growth: pd.DataFrame
     growth_segments: pd.DataFrame
+    growth_by_surface: pd.DataFrame  # growth_summary.csv: the consultant's CGR summary, EXT/INT x with/without recoats
+    weld_map: pd.DataFrame  # weld_map.csv (align_welds.load_weld_map)
+    repairs: pd.DataFrame | None  # repairs_between_runs.csv, when given
     remaining_life: pd.DataFrame
     intervals: pd.DataFrame
     classification: pd.DataFrame
@@ -199,15 +204,16 @@ def _log_warnings(comparison: Path, summaries: dict[str, dict]) -> list[str]:
 
 def load_report_inputs(comparison: Path, prev_std: Path, curr_std: Path, ingest_dir: Path, pipe: Path, mop: Path,
                        segments: Path, crossings: Path | None, digs: Path | None, settings_path: Path,
-                       criteria_path: Path) -> ReportInputs:
+                       criteria_path: Path, *, repairs: Path | None = None) -> ReportInputs:
     """Load and cross-check everything the report reads. ``comparison`` is the
     ``<prev>_vs_<curr>`` folder; ``ingest_dir`` holds ``ingest_manifest.json`` and
-    ``validation_issues.csv``; ``crossings`` and ``digs`` are optional (None)."""
+    ``validation_issues.csv``; ``crossings``, ``digs`` and ``repairs`` (repairs_between_runs.csv) are optional (None)."""
     comparison, ingest_dir = Path(comparison), Path(ingest_dir)
     files = {
         "prev_std": Path(prev_std), "curr_std": Path(curr_std),
         "match_table": comparison / "match_table.csv", "growth": comparison / "growth.csv",
         "growth_segments": comparison / "growth_segments.csv",
+        "growth_by_surface": comparison / "growth_summary.csv", "weld_map": comparison / "weld_map.csv",
         "remaining_life": comparison / "remaining_life.csv",
         "intervals": comparison / "reinspection_intervals.csv",
         "classification": comparison / "classification.csv",
@@ -226,11 +232,13 @@ def load_report_inputs(comparison: Path, prev_std: Path, curr_std: Path, ingest_
         files["crossings"] = Path(crossings)
     if digs is not None:
         files["digs"] = Path(digs)
+    if repairs is not None:
+        files["repairs"] = Path(repairs)
     contexts = {
         "ingest_manifest": f"an ingest output, looked for in {ingest_dir}",
         "validation_issues": f"an ingest output, looked for in {ingest_dir}",
         "prev_std": "a standardized run given to the report", "curr_std": "a standardized run given to the report",
-        **{r: "a reference file given to the report" for r in ("pipe", "mop", "segments", "crossings", "digs")},
+        **{r: "a reference file given to the report" for r in ("pipe", "mop", "segments", "crossings", "digs", "repairs")},
         **{r: "a configuration file given to the report" for r in ("settings", "criteria")},
     }
     for role, path in files.items():
@@ -295,6 +303,8 @@ def load_report_inputs(comparison: Path, prev_std: Path, curr_std: Path, ingest_
         match_table=load_match_table(files["match_table"]),
         growth=load_growth_table(files["growth"]),
         growth_segments=_read_csv(files["growth_segments"]),
+        growth_by_surface=_read_csv(files["growth_by_surface"]), weld_map=load_weld_map(files["weld_map"]),
+        repairs=_read_csv(files["repairs"]) if repairs is not None else None,
         remaining_life=load_remaining_life_table(files["remaining_life"]),
         intervals=_read_csv(files["intervals"]),
         classification=load_classification_table(files["classification"]),

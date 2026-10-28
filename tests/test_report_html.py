@@ -192,6 +192,7 @@ def test_no_immediate_message(report):
 
 def test_blank_cells_not_nan(report):
     _, _, html = report
+    html = html.replace("<tr><td>None</td>", "<tr>")  # the IMP class named "None" (spec 6.8) is a label, not a blank
     for bad in (">nan<", ">None<", ">NaT<", ">&lt;NA&gt;<", ">NaN<"):
         assert bad not in html, bad
     assert "<td></td>" in _section(html, "dig-list")  # blanks exist, and render empty
@@ -323,3 +324,13 @@ def test_vendor_map_relative_to_project_root(tmp_path, monkeypatch):
     manifest = {"runs": [{"run_id": "R1", "vendor_map": "config/vendor_maps/synthetic_vendor_a.yaml"}]}
     assert _vendor(manifest, "R1") == "synthetic_vendor_a"
     assert _vendor({"runs": [{"run_id": "R1", "vendor_map": "config/vendor_maps/nope.yaml"}]}, "R1") == "not stated"
+
+
+def test_report_html_has_imp_class_and_profile(report):
+    inputs, _, html = report
+    summary = _section_text(html, "summary")
+    assert "IMP class summary" in summary and "YTC &lt; 5 yrs".replace("&lt;", "<") in summary
+    assert "approved" not in summary.lower() and "final" not in summary.lower().replace("not final", "")
+    growth = _section_text(html, "growth")
+    assert "conservative" in growth and "Growth summary by surface" in growth
+    assert "excluding_recoated" in growth and "recoated feature(s)" in growth

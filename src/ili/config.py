@@ -156,6 +156,18 @@ class ReportCfg(_Strict):
     # presentation only: nothing here changes a number in the analysis
     largest_changes_n: _PositiveInt  # rows in the report's "largest changes" table
     dig_list_sheet: str = Field(min_length=1)  # name of the dig list worksheet
+    ytc_flag_years: float = Field(gt=0)  # years: the "YTC < N yrs" row of the IMP class summary
+    depth_bins_pct_wt: list[float]  # % of wall; lower edges of the depth bins, the last bin is open-ended
+    dent_bins_pct_od: list[float]  # % of OD; lower edges of the dent bins, the last bin is open-ended
+    aoi_group_ft: float = Field(ge=0)  # ft: anomalies within this distance form one anomalies-of-interest group
+    aoi_count: _PositiveInt  # groups listed in anomalies of interest
+
+    @field_validator("depth_bins_pct_wt", "dent_bins_pct_od")
+    @classmethod
+    def _bins_increase_from_zero(cls, v: list[float]) -> list[float]:
+        if not v or v[0] != 0 or any(b <= a for a, b in zip(v, v[1:])):
+            raise ValueError("bin edges must start at 0 and be strictly increasing")
+        return v
 
     @field_validator("dig_list_sheet")
     @classmethod

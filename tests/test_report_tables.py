@@ -6,6 +6,7 @@ import pandas as pd
 
 from ili import config
 from ili.classify import CLASSIFICATION_COLUMNS
+from ili.report_tables import imp_class_summary
 from ili.report_data import (DIG_LIST_CATEGORIES, DIG_LIST_COLUMNS, backtest, config_rows, criteria_rows, dig_list,
                              largest_growth, match_stats, pending_reviews)
 
@@ -169,3 +170,48 @@ def test_dig_list_has_erf_fpr():
     assert i("burst_next_psig") > i("fpr") and i("fpr_next") == i("erf_next") + 1
     row = out.iloc[0]
     assert (row.erf, row.fpr, row.erf_next, row.fpr_next, row.failure_mode) == (0.8, 1.25, 0.9, 1.5, "leak")
+
+
+def _imp(rows, repairs, positions=None):
+    """``imp_class_summary`` over hand-built rows: ``rows`` are (category, rl_yr, rl_upper_bound_yr)."""
+    ids = [f"M{i}" for i in range(len(rows))]
+    cls = _cls([{"match_id": m, "curr_feature_id": f"C{m}", "governing_category": c} for m, (c, _, _) in zip(ids, rows)])
+    pos = positions if positions is not None else [100.0] * len(rows)
+    match = pd.DataFrame({"match_id": ids, "curr_log_dist_ft": pos})
+    rl = pd.DataFrame({"match_id": ids, "rl_yr": [r[1] for r in rows], "rl_upper_bound_yr": [r[2] for r in rows]})
+    return imp_class_summary(cls, match, rl, repairs, config.load_settings())
+
+
+def test_imp_class_summary_rows():
+    rows = [("immediate", 0.5, NAN), ("60_day", NAN, NAN), ("180_day", 2.0, NAN),
+            ("imp_scheduled", 4.0, NAN),   # YTC by rl_yr
+            ("evaluate", NAN, 3.0),        # no category, NaN RL, bound 3: YTC < 5
+            ("evaluate", 6.0, 1.0),        # rl_yr wins over a lower bound: None
+            ("evaluate", NAN, NAN),        # neither: None, not evaluated
+            ("evaluate", np.inf, NAN)]     # no failure within the horizon: None, evaluated
+    repairs = pd.DataFrame({"start_ft": [90.0], "end_ft": [110.0]})
+    out = _imp(rows, repairs, positions=[100.0, 500.0, 500.0, 90.0, 110.0, 500.0, 500.0, 500.0])
+    assert list(out.columns) == ["imp_class", "n_classified", "n_previously_repaired", "n_unrepaired",
+                                 "n_rl_not_evaluated"]
+    assert list(out.imp_class) == ["Immediate", "60-day", "180-day", "YTC < 5 yrs", "None"]
+    assert list(out.n_classified) == [1, 1, 1, 2, 3]
+    assert list(out.n_previously_repaired) == [1, 0, 0, 2, 0]  # span ends are inclusive
+    assert list(out.n_unrepaired) == [0, 1, 1, 0, 3]
+    assert list(out.n_rl_not_evaluated) == [0, 1, 0, 0, 1]
+    assert out.n_classified.sum() == len(rows)
+
+
+def test_imp_class_summary_no_repairs_file():
+    out = _imp([("immediate", 0.5, NAN), ("evaluate", NAN, NAN)], None)
+    assert list(out.n_classified) == [1, 0, 0, 0, 1]
+    assert out.n_previously_repaired.isna().all() and out.n_unrepaired.isna().all()
+
+
+def test_imp_class_label_follows_the_setting(tmp_path):
+    settings = config.load_settings()
+    settings.report.ytc_flag_years = 7.5
+    cls = _cls([{"match_id": "M0", "curr_feature_id": "C0", "governing_category": "evaluate"}])
+    out = imp_class_summary(cls, pd.DataFrame({"match_id": ["M0"], "curr_log_dist_ft": [1.0]}),
+                            pd.DataFrame({"match_id": ["M0"], "rl_yr": [7.0], "rl_upper_bound_yr": [NAN]}),
+                            None, settings)
+    assert out.imp_class.iloc[3] == "YTC < 7.5 yrs" and out.n_classified.iloc[3] == 1

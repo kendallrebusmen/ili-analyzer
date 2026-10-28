@@ -27,14 +27,15 @@ def built(synth, tmp_path_factory):
 
 
 def _load(built, comparison=None, std=None, crossings=True, digs=True, criteria=config.DEFAULT_CRITERIA,
-          settings=config.DEFAULT_SETTINGS):
+          settings=config.DEFAULT_SETTINGS, repairs=True):
     data, out, std0, folder = built
     std = std or std0
     ref = data / "reference"
     return load_report_inputs(comparison or folder, std / "2021_vendorA.csv", std / "2026_vendorB.csv", out,
                               ref / "pipe_properties.csv", ref / "mop_profile.csv", ref / "hca_segments.csv",
                               ref / "foreign_crossings.csv" if crossings else None,
-                              ref / "digs.csv" if digs else None, settings, criteria)
+                              ref / "digs.csv" if digs else None, settings, criteria,
+                              repairs=ref / "repairs_between_runs.csv" if repairs else None)
 
 
 def _copy_comparison(built, tmp_path):
@@ -105,9 +106,10 @@ def test_digs_missing_column_is_error(built, tmp_path):
 
 
 def test_optional_inputs_absent(built):
-    inputs = _load(built, crossings=False, digs=False)
-    assert inputs.crossings is None and inputs.digs is None
-    assert "digs" not in inputs.paths and "crossings" not in inputs.paths
+    inputs = _load(built, crossings=False, digs=False, repairs=False)
+    assert inputs.crossings is None and inputs.digs is None and inputs.repairs is None
+    assert "digs" not in inputs.paths and "crossings" not in inputs.paths and "repairs" not in inputs.paths
+    assert inputs.weld_map is not None and len(inputs.growth_by_surface) == 4  # required, always loaded
 
 
 def test_report_settings_validated(tmp_path):
@@ -117,6 +119,27 @@ def test_report_settings_validated(tmp_path):
     path.write_text(yaml.safe_dump(raw), encoding="utf-8")
     with pytest.raises(ValueError, match="largest_changes_n"):
         config.load_settings(path)
+
+
+def test_report_settings_defaults():
+    r = config.load_settings().report
+    assert r.ytc_flag_years == 5
+    assert r.depth_bins_pct_wt == [0, 10, 20, 30, 40, 50, 60, 70, 80]
+    assert r.dent_bins_pct_od == [0, 2, 6]
+    assert r.aoi_group_ft == 2.0 and r.aoi_count == 10
+
+
+def test_report_refuses_changed_profile(built, tmp_path):
+    settings = _settings_file(tmp_path, "growth", "governing_profile", "pit_to_pit")
+    with pytest.raises(ValueError, match=r"growth\.governing_profile"):
+        _load(built, settings=settings)
+
+
+def test_repairs_and_growth_summary_loaded(built):
+    inputs = _load(built)
+    assert inputs.repairs is not None and "repairs" in inputs.paths
+    assert {"surface", "scope"} <= set(inputs.growth_by_surface.columns)
+    assert "match_type" in inputs.weld_map.columns
 
 
 def _settings_file(tmp_path, section, key, value):
