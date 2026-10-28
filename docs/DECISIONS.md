@@ -437,3 +437,48 @@ Interpretations of `docs/SPEC.md` and choices the spec leaves open. Newest at th
 - **Not adopted.**
   - The consultant's "ASME B31.8S response (years)": B31.8S is the gas standard; see Open Question 11.
   - Trending across four runs: still out of scope, and the leading candidate for v2.
+
+## M11: consultant-practice methods and outputs (2026-10-28)
+
+Builds the spec amendment above on synthetic data. Defaults are unchanged: with default settings every existing number is the same on the same input. The decisions below were user-approved before the work began (1-10) or made during it.
+
+- **Profiles (spec 6.5).**
+  - `conservative` is the existing `growth.governing` lists, unchanged. `pit_to_pit` is the fixed logic exactly as spec 6.5 words it.
+  - In `pit_to_pit` a matched feature "grew" when its depth change is zero or more: its `raw` rate, floored at `min_rate_mpy`. A depth decrease takes `shrinking_fixed` (`growth.shrinking_rate_mpy`).
+  - In `pit_to_pit`, `new` features take the `joint_percentile` rate (`growth.joint_percentile`, needing at least `joint_percentile_min_matches` matches in the joint) when it is finite, else `half_life`; `no_history` features take `half_life`.
+- **Manufacturing features and `ml_origin`.**
+  - Manufacturing features still get growth rates and stay in the percentile distributions. "Corrosion" in the growth summary and depth-bin columns means `ml_origin` other than manufacturing; unknown counts as corrosion.
+  - A cluster's origin is its members' common origin, else `unknown`.
+  - Each vendor map sets `ml_origins` (code to origin). Match carries the origin through as `curr_ml_origin`.
+  - The synthetic data gains mill features and a recoat. `data/synthetic/` is not regenerated and `outputs/` is not written to by the build.
+- **Recoated areas.**
+  - Recoated rows are left out of the statistics: the segment and joint distributions and the summary statistics (raw statistics, percent negative, raw histogram). The growth summary by surface reports both scopes, with and without recoated rows. The rows keep their own rates.
+  - Alignment ignores `recoat` and `sleeve` spans. Match's `in_repaired_section` hint still uses every span.
+  - "Previously repaired" means the current-run position is in any `repairs_between_runs.csv` span (any type, ends inclusive). It is blank when no repairs file is given.
+  - The growth CLI requires `curr_us_gw_id`, `curr_surface` and `curr_ml_origin` in a loaded match table (ValueError: re-run match), because a stale table would silently turn the joint percentile into NaN. `compute_growth` stays lenient for hand-built tables. A repairs table without `start_ft` / `end_ft` raises a ValueError naming them.
+- **Growth summary.** The maximum depth in inches is the inches of the deepest feature (by percent), not an independent maximum over inches. The consultant's summary describes one deepest feature, and the half-life and whole-life rates are of that same feature.
+- **Strength and remaining life.**
+  - Failure mode is blank when tau_80 or tau_burst is NaN, or both are infinite. ERF and FPR are blank where P_safe or MOP is not a finite positive number.
+  - Condition dates and next-assessment projections are columns of `remaining_life.csv` and appear in the dig list.
+- **IMP class summary.**
+  - The "YTC < N" row uses `rl_yr`, else `rl_upper_bound_yr`. A row with neither falls in "None" and is counted in `n_rl_not_evaluated`.
+  - `n_rl_not_evaluated` counts metal-loss rows only, in every class. Dents and gouges never have a remaining life, so counting them would swamp the column. The template text says so.
+  - The summary takes the match table for positions, since classification has no position column.
+- **Depth and dent bins (`anomaly_distribution.csv`).**
+  - Depth bins are left-closed (`[70, 80)`, `>= 80`); dent bins are right-closed (`[0, 2]`, `(2, 6]`, `> 6`).
+  - Percentages are rounded to 9 decimals before binning, so an exact edge lands the same way as in the back-test.
+  - Rows that cannot be binned are counted, not dropped: `n_location_unknown` per run and location, and `n_girth_weld_unknown` / `n_long_seam_unknown` in the dent table, where locations are columns. The HTML shows the notes beside each table, since the CSV is a standalone deliverable.
+  - A dent whose OD lookup fails raises an error naming the run id. The report fails on a bad reference table, as it does elsewhere.
+- **Anomalies of interest (`anomalies_of_interest.csv`).** Rows with no position cannot be placed and are left out of the grouping, so a missing `log_dist_ft` never merges into the last group. A missing length or width is omitted from the group description.
+- **Pipe summary and length check.** The HCA percentage is the union of the HCA intervals, clipped to the pipe extent, divided by the reference length (largest end minus smallest start). It cannot exceed 100 %, and equals the simple sum on a contiguous table.
+- **Charts.**
+  - The elevation chart marks all internal metal loss, manufacturing origin included (spec 6.10: "internal metal loss marked").
+  - The orientation chart keeps 0 minutes at the top (12 o'clock). Tick labels run "12:00", "1:00", ... "12:00" so the top and bottom both read 12:00.
+- **Flags.** The growth and report CLIs take `--repairs`, and the pipeline passes it to both.
+
+**Open for the integrity engineer.**
+
+- Open Questions 4, 10, 11 and 12 (spec Section 10) remain open. Open Question 4 is the growth method and percentile, 10 the consultant's parameters (`shrinking_rate_mpy`, joint percentile, minimum matches per joint), 11 whether a B31.8S response is wanted for a Part 195 line, and 12 whether 5 years is the right "YTC < N yrs" threshold. Until they are answered, `conservative` stays the default.
+- `growth.shrinking_rate_mpy` is null by default. Until it is set, `pit_to_pit` rows with a decreased depth are flagged for review rather than given a rate (they are flagged in the review reasons).
+- Every new threshold with a `PLACEHOLDER` comment in `config/settings.yaml` needs sign-off.
+- M12 (parity with the consultant on real data) waits for the user's explicit approval under spec Section 2.

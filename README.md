@@ -24,6 +24,7 @@ Compares two in-line inspection (ILI) runs on the same 49 CFR Part 195 hazardous
 | M8 HTML report and Excel dig list | done |
 | M9 Streamlit review UI | done (awaiting review) |
 | M10 | not started |
+| M11 Consultant-practice methods and outputs (synthetic data) | done (awaiting review) |
 
 ## Setup
 
@@ -72,6 +73,7 @@ py -3.13 -m venv .venv
     --matches outputs\2021_vendorA_vs_2026_vendorB\match_table.csv `
     --pipe data\synthetic\reference\pipe_properties.csv `
     --segments data\synthetic\reference\hca_segments.csv `
+    --repairs data\synthetic\reference\repairs_between_runs.csv `
     --truth data\synthetic\ground_truth.csv
 
 # Remaining strength and life -> outputs/<prev>_vs_<curr>/remaining_life.csv, reinspection_intervals.csv, remaining_life_summary.json
@@ -94,7 +96,10 @@ py -3.13 -m venv .venv
     --crossings data\synthetic\reference\foreign_crossings.csv
 
 # Report -> outputs/<prev>_vs_<curr>/report.html, dig_list.xlsx, category_changes.csv, run_manifest.json
-# (--digs is optional field data for the back-test; --line-name, --prev-tool and --curr-tool fill the header)
+# (--digs is optional field data for the back-test; --repairs marks previously repaired and recoated features;
+# --line-name, --prev-tool and --curr-tool fill the header)
+# Also writes anomaly_distribution.csv (depth and dent bins), joint_ml_counts.csv (per-joint counts) and
+# anomalies_of_interest.csv.
 .\.venv\Scripts\python.exe -m ili.report `
     --prev outputs\standardized\2021_vendorA.csv `
     --curr outputs\standardized\2026_vendorB.csv `
@@ -103,7 +108,8 @@ py -3.13 -m venv .venv
     --mop data\synthetic\reference\mop_profile.csv `
     --segments data\synthetic\reference\hca_segments.csv `
     --crossings data\synthetic\reference\foreign_crossings.csv `
-    --digs data\synthetic\reference\digs.csv
+    --digs data\synthetic\reference\digs.csv `
+    --repairs data\synthetic\reference\repairs_between_runs.csv
 ```
 
 ### One command, and the review app
@@ -127,6 +133,34 @@ py -3.13 -m venv .venv
 # (with "Correct a decision"), Growth and remaining life explorer, Dig list and report export.
 .\.venv\Scripts\python.exe -m streamlit run app/streamlit_app.py --server.address localhost --browser.gatherUsageStats false
 ```
+
+### The consultant's practice (M11)
+
+`growth.governing_profile` in `config/settings.yaml` picks the governing growth rule: `conservative` (the default; the
+`growth.governing` lists) or `pit_to_pit` (raw pit-to-pit growth, as the consultant does it). `growth_summary.json` and
+the report state the profile in force. To run `pit_to_pit` the way the consultant's assessment did, copy
+`config\settings.yaml`, set `growth.governing_profile: pit_to_pit`, `strength.depth_basis: reported`,
+`tool.depth_tolerance_pct_wt: 0` and `growth.shrinking_rate_mpy` (null by default, `PLACEHOLDER`: until it is set,
+pit_to_pit rows whose depth decreased are flagged `needs_review`), then pass the copy:
+
+```powershell
+.\.venv\Scripts\python.exe -m ili.pipeline ... --settings config\settings_pit_to_pit.yaml --out outputs_pit_to_pit
+```
+
+`pit_to_pit` normally gives longer remaining lives than `conservative`; which one governs is the integrity engineer's
+call (spec Section 10, Open Questions 4 and 10). New outputs, in the comparison folder:
+
+| File | Contents |
+|---|---|
+| `growth_summary.json` / `growth.csv` | profile, `half_life`, `joint_percentile` and `shrinking_fixed` rates, recoat exclusion, summary by surface |
+| `remaining_life.csv` | ERF, FPR, failure mode, condition dates, values projected to the next assessment |
+| `report.html` | IMP class summary with the "YTC < N yrs" row (`report.ytc_flag_years`), pipe summary and length check, orientation and elevation charts, methods appendix |
+| `anomaly_distribution.csv` | metal-loss depth bins and dent bins (`report.depth_bins_pct_wt`, `report.dent_bins_pct_od`) |
+| `joint_ml_counts.csv` | metal-loss counts per joint, both runs, by surface |
+| `anomalies_of_interest.csv` | the largest anomaly groups (`report.aoi_group_ft`, `report.aoi_count`) |
+
+`--repairs` is accepted by `ili.growth` and `ili.report` (and passed by `ili.pipeline`). `ml_origin` (corrosion,
+manufacturing, unknown) comes from each vendor map's `ml_origins`. Decisions: `docs/DECISIONS.md` (M11).
 
 Reviewers' decisions are saved in the comparison folder: match decisions in `reviews.csv` and manual flags in `feature_flags.csv`. Both are append-only logs (a correction is a new row; the latest wins). `ili.match` reads `reviews.csv` and `ili.classify` reads `feature_flags.csv` from the comparison folder by default (`--reviews` and `--flags` name other files on those two commands only; the app and `ili.pipeline` always use the comparison folder's logs), so a decision takes effect the next time the pipeline is rerun, from the app's Rerun button or the command above. **The logs live beside the outputs: deleting an output folder deletes the decisions.** Keep a copy of `reviews.csv` and `feature_flags.csv` before clearing outputs.
 
