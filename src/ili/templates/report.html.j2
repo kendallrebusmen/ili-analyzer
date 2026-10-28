@@ -141,7 +141,8 @@ governing categories; "YTC &lt; {{ summary.ytc_flag_years }} yrs" is every other
 (remaining life, else its upper bound) is under <code>report.ytc_flag_years</code>; None is every other feature,
 including those with no remaining life or bound. "RL not evaluated" counts metal loss with no remaining life or
 bound (dents and gouges have none by design). Previously repaired means inside a span of
-<code>repairs_between_runs.csv</code>.
+<code>repairs_between_runs.csv</code>. imp_class.csv gives each feature's class, years to condition and whether it was
+previously repaired, and the dig list carries <code>imp_class</code> and <code>previously_repaired</code>.
 {% if not summary.repairs_given %}No repairs file was given to the report, so the repaired columns are blank.{% endif %}</p>
 {{ render_table(summary.imp_class, "IMP class summary") }}
 <h3>Digs driven by remaining life</h3>

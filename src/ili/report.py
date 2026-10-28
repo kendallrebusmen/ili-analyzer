@@ -47,8 +47,8 @@ from ili.report_charts import (CATEGORY_COLOURS, depth_vs_distance, elevation_ch
 from ili.report_data import (ReportInputs, _sha256, backtest, config_rows, criteria_rows, dig_list, input_hashes,
                              largest_growth, load_report_inputs, match_stats, pending_reviews)
 from ili.report_tables import (DEPTH_COLUMNS, LOCATIONS, anomaly_distribution, anomaly_distribution_table,
-                               anomalies_of_interest, imp_class_summary, joint_ml_counts, largest_joints,
-                               length_check, pipe_summary)
+                               anomalies_of_interest, imp_class_rows, imp_class_summary, joint_ml_counts,
+                               largest_joints, length_check, pipe_summary)
 from ili.review import FLAG_COLUMNS, REVIEW_COLUMNS
 
 TEMPLATES = Path(__file__).parent / "templates"
@@ -199,6 +199,12 @@ def _header(inputs: ReportInputs, header: ReportHeader, generated_utc: datetime)
             "generator": f"ili.report {__version__}"}
 
 
+def _imp_class_rows(inputs: ReportInputs) -> pd.DataFrame:
+    """Each classified feature's IMP class (``imp_class.csv``; the summary table is aggregated from it)."""
+    return imp_class_rows(inputs.classification, inputs.match_table, inputs.remaining_life, inputs.repairs,
+                          inputs.settings)
+
+
 def _summary(inputs: ReportInputs, dig: pd.DataFrame) -> dict:
     cls = inputs.classification
     counts = cls.governing_category.value_counts().reindex(list(CATEGORY_PRIORITY), fill_value=0)
@@ -207,8 +213,7 @@ def _summary(inputs: ReportInputs, dig: pd.DataFrame) -> dict:
         "immediate_note": IMMEDIATE_ACTION_NOTE,
         "category_counts": Table(["category", "count"], [[c, cell(n)] for c, n in counts.items()],
                                  [f"cat-{c}" for c in counts.index]),
-        "imp_class": table(imp_class_summary(cls, inputs.match_table, inputs.remaining_life, inputs.repairs,
-                                             inputs.settings)),
+        "imp_class": table(imp_class_summary(_imp_class_rows(inputs), inputs.settings, inputs.repairs is not None)),
         "ytc_flag_years": cell(inputs.settings.report.ytc_flag_years),
         "repairs_given": inputs.repairs is not None,
         "n_features": len(cls),
@@ -423,7 +428,7 @@ def render_report(inputs: ReportInputs, changes: CategoryChangeResult, header: R
 # --- dig list workbook, manifest, CLI -----------------------------------------------------------------
 
 OUTPUT_NAMES = ("category_changes.csv", "report.html", "dig_list.xlsx", "anomaly_distribution.csv",
-                "joint_ml_counts.csv", "anomalies_of_interest.csv", "run_manifest.json")
+                "joint_ml_counts.csv", "anomalies_of_interest.csv", "imp_class.csv", "run_manifest.json")
 DATE_COLUMNS = ("due_date",)
 GIT_TIMEOUT_S = 10
 
@@ -543,6 +548,7 @@ def write_report(inputs: ReportInputs, header: ReportHeader, out_dir: Path,
     distribution = anomaly_distribution_table(anomaly_distribution(inputs))
     joints = joint_ml_counts(inputs.weld_map, inputs.prev_std, inputs.curr_std)
     aoi = anomalies_of_interest(inputs)
+    imp_rows = _imp_class_rows(inputs)
     manifest = json.dumps(run_manifest(inputs, list(OUTPUT_NAMES), generated_utc), indent=2, allow_nan=False)
     paths = {name: Path(out_dir) / name for name in OUTPUT_NAMES}
     _write_all({
@@ -552,6 +558,7 @@ def write_report(inputs: ReportInputs, header: ReportHeader, out_dir: Path,
         "anomaly_distribution.csv": lambda p: distribution.to_csv(p, index=False, lineterminator="\n"),
         "joint_ml_counts.csv": lambda p: joints.to_csv(p, index=False, lineterminator="\n"),
         "anomalies_of_interest.csv": lambda p: aoi.to_csv(p, index=False, lineterminator="\n"),
+        "imp_class.csv": lambda p: imp_rows.to_csv(p, index=False, lineterminator="\n"),
         "run_manifest.json": lambda p: p.write_text(manifest, encoding="utf-8"),
     }, paths)
     return paths, changes

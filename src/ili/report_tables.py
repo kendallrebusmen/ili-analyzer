@@ -19,6 +19,8 @@ from ili.remaining_life import _as_bool
 from ili.schema import FeatureType, MlOrigin, Surface
 
 IMP_CLASS_COLUMNS = ("imp_class", "n_classified", "n_previously_repaired", "n_unrepaired", "n_rl_not_evaluated")
+IMP_CLASS_ROW_COLUMNS = ("match_id", "curr_feature_id", "feature_type", "curr_log_dist_ft", "governing_category",
+                         "imp_class", "rl_basis_yr", "rl_is_bound", "rl_not_evaluated", "previously_repaired")
 _CATEGORY_CLASSES = {"immediate": "Immediate", "60_day": "60-day", "180_day": "180-day"}  # spec 6.8
 NO_CLASS = "None"
 LOCATIONS = ("all", "girth_weld", "long_seam")
@@ -41,42 +43,61 @@ def _previously_repaired(position_ft: np.ndarray, repairs: pd.DataFrame) -> np.n
     return hit
 
 
-def imp_class_summary(classification: pd.DataFrame, match_table: pd.DataFrame, remaining_life: pd.DataFrame,
-                      repairs: pd.DataFrame | None, settings: Settings) -> pd.DataFrame:
-    """The IMP class summary (spec 6.8), one row per class: Immediate, 60-day and 180-day by
-    ``governing_category``; ``YTC < N yrs`` for any other row whose years to condition (``rl_yr``, else
-    ``rl_upper_bound_yr``) is below ``report.ytc_flag_years``; ``None`` for the rest. A row with neither
-    remaining life nor bound falls in ``None``. ``n_rl_not_evaluated`` counts, per class, the metal-loss rows
-    (``feature_type``) with neither; dents and gouges never have a remaining life and are not counted. A feature is previously repaired when its current-run position
-    (``curr_log_dist_ft`` of the match table, by ``match_id``) is inside any repair span; without a repairs
-    table ``n_previously_repaired`` and ``n_unrepaired`` are None. Summary view only; categories drive due dates."""
-    ytc = settings.report.ytc_flag_years
-    ytc_label = f"YTC < {ytc:g} yrs"
+def _ytc_label(settings: Settings) -> str:
+    return f"YTC < {settings.report.ytc_flag_years:g} yrs"
+
+
+def imp_class_rows(classification: pd.DataFrame, match_table: pd.DataFrame, remaining_life: pd.DataFrame,
+                   repairs: pd.DataFrame | None, settings: Settings) -> pd.DataFrame:
+    """Each classified feature's IMP class (spec 6.8), one row per classification row in its order, columns
+    ``IMP_CLASS_ROW_COLUMNS`` (written as ``imp_class.csv``). ``imp_class`` is Immediate, 60-day or 180-day by
+    ``governing_category``; ``YTC < N yrs`` for any other row whose years to condition ``rl_basis_yr``
+    (``rl_yr``, else ``rl_upper_bound_yr``, with ``rl_is_bound`` True when the bound is used) is below
+    ``report.ytc_flag_years``; ``None`` for the rest, including a row with neither. ``rl_not_evaluated`` is
+    True for metal loss (``feature_type``) with neither; dents and gouges never have a remaining life and are
+    never flagged. ``curr_log_dist_ft`` is the match table's (by ``match_id``); ``previously_repaired`` is True
+    where it is inside any repair span (ends inclusive), None for every row without a repairs table."""
     cls = classification.reset_index(drop=True)
     rl = remaining_life.drop_duplicates("match_id").set_index("match_id")
     keys = cls.match_id.to_numpy()
-    years = rl.rl_yr.astype(float).reindex(keys).to_numpy()
+    own = rl.rl_yr.astype(float).reindex(keys).to_numpy()
     bound = rl.rl_upper_bound_yr.astype(float).reindex(keys).to_numpy()
-    years = np.where(np.isnan(years), bound, years)  # rl_yr (inf: no failure within the horizon), else the bound
+    years = np.where(np.isnan(own), bound, own)  # rl_yr (inf: no failure within the horizon), else the bound
+    is_bound = np.isnan(own) & ~np.isnan(bound)
     not_evaluated = np.isnan(years) & cls.feature_type.eq("metal_loss").to_numpy(bool)
-    ytc_hit = years < ytc  # NaN and inf are never below
+    ytc_hit = years < settings.report.ytc_flag_years  # NaN and inf are never below
     imp = np.where(cls.governing_category.isin(_CATEGORY_CLASSES), cls.governing_category.map(_CATEGORY_CLASSES),
-                   np.where(ytc_hit, ytc_label, NO_CLASS))
-    if repairs is None:
-        repaired = None
-    else:
-        position = (match_table.drop_duplicates("match_id").set_index("match_id").curr_log_dist_ft
-                    .astype(float).reindex(keys).to_numpy())
-        repaired = _previously_repaired(position, repairs)
-    rows = []
-    for name in (*_CATEGORY_CLASSES.values(), ytc_label, NO_CLASS):
+                   np.where(ytc_hit, _ytc_label(settings), NO_CLASS))
+    position = (match_table.drop_duplicates("match_id").set_index("match_id").curr_log_dist_ft
+                .astype(float).reindex(keys).to_numpy())
+    repaired = ([None] * len(cls) if repairs is None
+                else [bool(v) for v in _previously_repaired(position, repairs)])
+    out = pd.DataFrame({
+        "match_id": cls.match_id.astype(object), "curr_feature_id": cls.curr_feature_id.astype(object),
+        "feature_type": cls.feature_type.astype(object), "curr_log_dist_ft": position,
+        "governing_category": cls.governing_category.astype(object), "imp_class": pd.Series(imp, dtype=object),
+        "rl_basis_yr": years, "rl_is_bound": is_bound, "rl_not_evaluated": not_evaluated,
+        "previously_repaired": pd.Series(repaired, dtype=object)})
+    return out[list(IMP_CLASS_ROW_COLUMNS)]
+
+
+def imp_class_summary(rows: pd.DataFrame, settings: Settings, repairs_given: bool) -> pd.DataFrame:
+    """The IMP class summary (spec 6.8), aggregated from ``imp_class_rows``: one row per class (Immediate,
+    60-day, 180-day, ``YTC < N yrs``, None) with the number classified, previously repaired and unrepaired
+    (None when ``repairs_given`` is False: the rows were built without a repairs table) and the metal loss
+    whose remaining life was not evaluated. Summary view only; categories drive due dates."""
+    imp = rows.imp_class.to_numpy(object)
+    repaired = rows.previously_repaired.fillna(False).astype(bool).to_numpy() if repairs_given else None
+    not_evaluated = rows.rl_not_evaluated.astype(bool).to_numpy()
+    out_rows = []
+    for name in (*_CATEGORY_CLASSES.values(), _ytc_label(settings), NO_CLASS):
         in_class = imp == name
         n = int(in_class.sum())
         n_repaired = None if repaired is None else int((in_class & repaired).sum())
-        rows.append({"imp_class": name, "n_classified": n, "n_previously_repaired": n_repaired,
-                     "n_unrepaired": None if n_repaired is None else n - n_repaired,
-                     "n_rl_not_evaluated": int((in_class & not_evaluated).sum())})
-    out = pd.DataFrame(rows, columns=list(IMP_CLASS_COLUMNS))
+        out_rows.append({"imp_class": name, "n_classified": n, "n_previously_repaired": n_repaired,
+                         "n_unrepaired": None if n_repaired is None else n - n_repaired,
+                         "n_rl_not_evaluated": int((in_class & not_evaluated).sum())})
+    out = pd.DataFrame(out_rows, columns=list(IMP_CLASS_COLUMNS))
     for col in ("n_previously_repaired", "n_unrepaired"):
         out[col] = out[col].astype(object)
     return out

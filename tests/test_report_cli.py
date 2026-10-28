@@ -75,7 +75,7 @@ def test_report_cli_writes_all_outputs(built, capsys):
     _, _, _, folder = built
     assert main(_argv(built, "--line-name", "Line 7")) == 0
     capsys.readouterr()
-    assert len(OUTPUT_NAMES) == 7
+    assert len(OUTPUT_NAMES) == 8
     manifest = json.loads((folder / "run_manifest.json").read_text(encoding="utf-8"))
     for name in OUTPUT_NAMES:
         assert (folder / name).is_file()
@@ -265,6 +265,18 @@ def test_report_writes_joint_counts(built):
     assert "joint_ml_counts.csv" in manifest["outputs"]
     html = (folder / "report.html").read_text(encoding="utf-8")
     assert "Per-joint metal-loss counts" in html
+
+
+def test_report_writes_imp_class_rows(built):
+    from ili.report_tables import IMP_CLASS_ROW_COLUMNS
+    _, _, _, folder = built
+    assert main(_argv(built)) == 0
+    rows = pd.read_csv(folder / "imp_class.csv", dtype={"match_id": str, "curr_feature_id": str})
+    assert tuple(rows.columns) == IMP_CLASS_ROW_COLUMNS
+    classification = pd.read_csv(folder / "classification.csv", dtype={"match_id": str})
+    assert rows.match_id.tolist() == classification.match_id.tolist()
+    manifest = json.loads((folder / "run_manifest.json").read_text(encoding="utf-8"))
+    assert "imp_class.csv" in manifest["outputs"]
 
 
 def test_report_writes_aoi(built):

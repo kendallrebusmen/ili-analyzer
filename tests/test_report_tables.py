@@ -7,9 +7,9 @@ import pandas as pd
 
 from ili import config
 from ili.classify import CLASSIFICATION_COLUMNS
-from ili.report_tables import (_location_notes, anomalies_of_interest, anomaly_distribution, anomaly_distribution_table, depth_bins,
-                               dent_bins, imp_class_summary, joint_ml_counts, largest_joints,
-                               length_check, pipe_summary)
+from ili.report_tables import (IMP_CLASS_ROW_COLUMNS, _location_notes, anomalies_of_interest, anomaly_distribution,
+                               anomaly_distribution_table, depth_bins, dent_bins, imp_class_rows, imp_class_summary,
+                               joint_ml_counts, largest_joints, length_check, pipe_summary)
 from ili.report_data import (DIG_LIST_CATEGORIES, DIG_LIST_COLUMNS, backtest, config_rows, criteria_rows, dig_list,
                              largest_growth, match_stats, pending_reviews)
 
@@ -25,7 +25,7 @@ def _cls(rows):
     return df
 
 
-def _inputs(cls_rows, rl=None, growth=None, curr_std=None):
+def _inputs(cls_rows, rl=None, growth=None, curr_std=None, repairs=None):
     """Hand-built inputs for ``dig_list``: one match-table, growth, remaining-life and curr_std row per id."""
     ids = [r["match_id"] for r in cls_rows]
     match = pd.DataFrame({
@@ -33,7 +33,7 @@ def _inputs(cls_rows, rl=None, growth=None, curr_std=None):
         "curr_us_gw_id": "G1", "curr_dist_from_us_gw_ft": 3.0, "prev_depth_pct": 20.0, "curr_depth_pct": 30.0,
         "prev_length_in": 2.0, "curr_length_in": 3.0})
     growth = pd.DataFrame({"match_id": ids, "governing_mpy": 5.0, "governing_method": "raw"})
-    rl = pd.DataFrame({"match_id": ids, "rl_yr": rl if rl is not None else [1.0] * len(ids),
+    rl = pd.DataFrame({"match_id": ids, "rl_yr": rl if rl is not None else [1.0] * len(ids), "rl_upper_bound_yr": NAN,
                        "rl_governing": "burst", "failure_mode": "leak", "erf": 0.8, "fpr": 1.25,
                        "burst_next_psig": 1500.0, "safe_next_psig": 1080.0, "erf_next": 0.9, "fpr_next": 1.5,
                        "exceeds_80pct_next": True})
@@ -41,7 +41,7 @@ def _inputs(cls_rows, rl=None, growth=None, curr_std=None):
         curr_std = pd.DataFrame({"feature_id": [r["curr_feature_id"] for r in cls_rows], "log_dist_ft": 100.0,
                                  "lat": 29.5, "lon": -95.5})
     return SimpleNamespace(classification=_cls(cls_rows), match_table=match, growth=growth, remaining_life=rl,
-                           curr_std=curr_std)
+                           curr_std=curr_std, repairs=repairs, settings=config.load_settings())
 
 
 def _row(mid, category, rl=None, due=None, **kw):
@@ -178,6 +178,16 @@ def test_dig_list_has_erf_fpr():
     assert row.exceeds_80pct_next
 
 
+def test_dig_list_has_imp_class_and_previously_repaired():
+    rows = [_row("M1", "60_day"), _row("M2", "imp_scheduled")]
+    out = dig_list(_inputs(rows, rl=[1.0, 2.0])).set_index("match_id")
+    assert out.loc["M1", "imp_class"] == "60-day" and out.loc["M2", "imp_class"] == "YTC < 5 yrs"
+    assert out.previously_repaired.isna().all()  # no repairs file
+    repairs = pd.DataFrame({"start_ft": [90.0], "end_ft": [110.0], "repair_type": ["sleeve"]})
+    out = dig_list(_inputs(rows, rl=[1.0, 2.0], repairs=repairs))
+    assert out.previously_repaired.tolist() == [True, True]
+
+
 def _imp(rows, repairs, positions=None, types=None):
     """``imp_class_summary`` over hand-built rows: ``rows`` are (category, rl_yr, rl_upper_bound_yr)."""
     ids = [f"M{i}" for i in range(len(rows))]
@@ -187,7 +197,30 @@ def _imp(rows, repairs, positions=None, types=None):
     pos = positions if positions is not None else [100.0] * len(rows)
     match = pd.DataFrame({"match_id": ids, "curr_log_dist_ft": pos})
     rl = pd.DataFrame({"match_id": ids, "rl_yr": [r[1] for r in rows], "rl_upper_bound_yr": [r[2] for r in rows]})
-    return imp_class_summary(cls, match, rl, repairs, config.load_settings())
+    settings = config.load_settings()
+    return imp_class_summary(imp_class_rows(cls, match, rl, repairs, settings), settings, repairs is not None)
+
+
+def test_imp_class_rows_per_feature():
+    ids = ["M0", "M1", "M2", "M3"]
+    cls = _cls([{"match_id": m, "curr_feature_id": f"C{m}", "governing_category": c, "feature_type": t}
+                for m, c, t in zip(ids, ["immediate", "evaluate", "evaluate", "evaluate"],
+                                   ["metal_loss", "metal_loss", "metal_loss", "dent"])])
+    match = pd.DataFrame({"match_id": ids, "curr_log_dist_ft": [100.0, 200.0, 300.0, 400.0]})
+    rl = pd.DataFrame({"match_id": ids[:3], "rl_yr": [0.5, NAN, NAN], "rl_upper_bound_yr": [0.5, 3.0, NAN]})
+    repairs = pd.DataFrame({"start_ft": [190.0], "end_ft": [210.0], "repair_type": ["recoat"]})
+    out = imp_class_rows(cls, match, rl, repairs, config.load_settings())
+    assert tuple(out.columns) == IMP_CLASS_ROW_COLUMNS == (
+        "match_id", "curr_feature_id", "feature_type", "curr_log_dist_ft", "governing_category", "imp_class",
+        "rl_basis_yr", "rl_is_bound", "rl_not_evaluated", "previously_repaired")
+    assert out.imp_class.tolist() == ["Immediate", "YTC < 5 yrs", "None", "None"]
+    assert out.rl_basis_yr.tolist()[:2] == [0.5, 3.0] and out.rl_basis_yr.iloc[2:].isna().all()
+    assert out.rl_is_bound.tolist() == [False, True, False, False]
+    assert out.rl_not_evaluated.tolist() == [False, False, True, False]  # the dent is never counted
+    assert out.previously_repaired.tolist() == [False, True, False, False]
+    assert out.curr_log_dist_ft.tolist() == [100.0, 200.0, 300.0, 400.0]
+    none = imp_class_rows(cls, match, rl, None, config.load_settings())
+    assert none.previously_repaired.tolist() == [None] * 4
 
 
 def test_imp_class_summary_rows():
@@ -231,9 +264,10 @@ def test_imp_class_label_follows_the_setting(tmp_path):
     settings = config.load_settings()
     settings.report.ytc_flag_years = 7.5
     cls = _cls([{"match_id": "M0", "curr_feature_id": "C0", "governing_category": "evaluate"}])
-    out = imp_class_summary(cls, pd.DataFrame({"match_id": ["M0"], "curr_log_dist_ft": [1.0]}),
-                            pd.DataFrame({"match_id": ["M0"], "rl_yr": [7.0], "rl_upper_bound_yr": [NAN]}),
-                            None, settings)
+    rows = imp_class_rows(cls, pd.DataFrame({"match_id": ["M0"], "curr_log_dist_ft": [1.0]}),
+                          pd.DataFrame({"match_id": ["M0"], "rl_yr": [7.0], "rl_upper_bound_yr": [NAN]}),
+                          None, settings)
+    out = imp_class_summary(rows, settings, False)
     assert out.imp_class.iloc[3] == "YTC < 7.5 yrs" and out.n_classified.iloc[3] == 1
 
 

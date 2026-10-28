@@ -12,7 +12,7 @@ from ili.category_change import category_changes
 from ili.classify import IMMEDIATE_ACTION_NOTE
 from ili.report import (DIG_LIST_PRINT_COLUMNS, MOVED_PRINT_COLUMNS, SECTION_IDS, ReportHeader, _css_string, _vendor,
                         cell, render_report)
-from ili.report_data import backtest, pending_reviews
+from ili.report_data import backtest, dig_list, pending_reviews
 from test_report_inputs import _load, built  # noqa: F401  (built is the module fixture)
 
 GENERATED = datetime(2026, 10, 27, 12, 0, tzinfo=timezone.utc)
@@ -191,8 +191,12 @@ def test_no_immediate_message(report):
 
 
 def test_blank_cells_not_nan(report):
-    _, _, html = report
-    html = html.replace("<tr><td>None</td>", "<tr>")  # the IMP class named "None" (spec 6.8) is a label, not a blank
+    inputs, _, html = report
+    # the IMP class named "None" (spec 6.8) is a label, not a blank: the summary row and the dig list's imp_class
+    html = html.replace("<tr><td>None</td>", "<tr>")
+    n_dig_none = int((dig_list(inputs).imp_class == "None").sum())
+    assert html.count('<td class="noprint">None</td>') == n_dig_none
+    html = html.replace('<td class="noprint">None</td>', "<td></td>")
     for bad in (">nan<", ">None<", ">NaT<", ">&lt;NA&gt;<", ">NaN<"):
         assert bad not in html, bad
     assert "<td></td>" in _section(html, "dig-list")  # blanks exist, and render empty

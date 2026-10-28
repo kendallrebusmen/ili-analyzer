@@ -32,6 +32,7 @@ from ili.growth import load_growth_table
 from ili.ingest import load_standardized
 from ili.match import load_match_table
 from ili.reference import load_repairs
+from ili.report_tables import imp_class_rows
 from ili.remaining_life import load_remaining_life_table
 from ili.review import FLAG_COLUMNS, FLAGS_FILE, REVIEW_COLUMNS, REVIEWS_FILE, load_flags, load_reviews
 
@@ -51,7 +52,7 @@ DIG_LIST_COLUMNS = (
     "dent_depth_pct_od",
     "governing_mpy", "governing_method",
     "p_fail", "p_safe", "mop_local", "erf", "fpr", "burst_next_psig", "safe_next_psig", "erf_next", "fpr_next",
-    "exceeds_80pct_next", "rl_yr", "rl_governing", "failure_mode",
+    "exceeds_80pct_next", "rl_yr", "rl_governing", "failure_mode", "imp_class", "previously_repaired",
     "triggered_rules", "due_date", "due_date_basis", "worst_case_category", "requires_review",
     "review_reasons", "action_note",
 )
@@ -336,7 +337,8 @@ def _lookup(source: pd.DataFrame, keys: pd.Series, columns: list[str]) -> pd.Dat
 
 def dig_list(inputs: ReportInputs) -> pd.DataFrame:
     """The classification rows in ``DIG_LIST_CATEGORIES`` with the columns ``DIG_LIST_COLUMNS``, most severe
-    category first, then shortest remaining life (none last), earliest due date (none last), match id."""
+    category first, then shortest remaining life (none last), earliest due date (none last), match id.
+    ``imp_class`` and ``previously_repaired`` are the feature's ``imp_class_rows`` values (imp_class.csv)."""
     cls = inputs.classification
     out = cls[cls.governing_category.isin(DIG_LIST_CATEGORIES)].reset_index(drop=True)
     keys = out.match_id
@@ -344,6 +346,8 @@ def dig_list(inputs: ReportInputs) -> pd.DataFrame:
         "prev_feature_id", "curr_log_dist_ft", "curr_us_gw_id", "curr_dist_from_us_gw_ft", "prev_depth_pct",
         "curr_depth_pct", "prev_length_in", "curr_length_in"]))
     out = out.join(_lookup(inputs.growth, keys, ["governing_mpy", "governing_method"]))
+    imp = imp_class_rows(cls, inputs.match_table, inputs.remaining_life, inputs.repairs, inputs.settings)
+    out = out.join(_lookup(imp, keys, ["imp_class", "previously_repaired"]))
     out = out.join(_lookup(inputs.remaining_life, keys, [
         "rl_yr", "rl_governing", "failure_mode", "erf", "fpr", "burst_next_psig", "safe_next_psig", "erf_next",
         "fpr_next", "exceeds_80pct_next"]))
