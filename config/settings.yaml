@@ -41,9 +41,14 @@ growth:
   fixed_segment_length_mi: 1.0
   segment_percentile: 90            # PLACEHOLDER
   default_rate_mpy: null            # PLACEHOLDER - IMP default rate
+  governing_profile: conservative   # conservative | pit_to_pit (consultant's practice)
+  shrinking_rate_mpy: null          # PLACEHOLDER - fixed rate for matched features whose depth decreased
+  joint_percentile: 90              # PLACEHOLDER - the consultant's "Nth percentile per joint"
+  joint_percentile_min_matches: 3   # PLACEHOLDER
+  exclude_recoated_from_stats: true
   length_growth: none               # none | proportional | fixed_rate
   length_rate_ipy: 0.0
-  governing:                        # spec §6.5 default rule; configurable. Each list is maxed (largest rate wins)
+  governing:                        # the `conservative` profile's rule (spec §6.5); configurable. Each list is maxed (largest rate wins)
     matched: [segment_percentile, tolerance_adjusted]   # methods: raw | tolerance_adjusted | segment_percentile
     new: [new_feature, segment_percentile]              #          | new_feature | full_life | default_rate
     no_history: [full_life, default_rate]

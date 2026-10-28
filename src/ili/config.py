@@ -88,6 +88,11 @@ class GrowthCfg(_Strict):
     fixed_segment_length_mi: float
     segment_percentile: float
     default_rate_mpy: float | None
+    governing_profile: Literal["conservative", "pit_to_pit"]
+    shrinking_rate_mpy: float | None = Field(ge=0)  # mpy; the constraint applies only when set
+    joint_percentile: float = Field(ge=0, le=100)
+    joint_percentile_min_matches: int = Field(strict=True, ge=1)
+    exclude_recoated_from_stats: bool
     length_growth: Literal["none", "proportional", "fixed_rate"]
     length_rate_ipy: float
     governing: GoverningRule
