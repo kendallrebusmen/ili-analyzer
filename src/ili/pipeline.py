@@ -50,6 +50,8 @@ class PipelineInputs:
     line_name: str | None = None
     prev_tool: str | None = None
     curr_tool: str | None = None
+    prepared_for: str | None = None
+    prepared_by: str | None = None
 
 
 @dataclass(frozen=True)
@@ -98,7 +100,8 @@ def _argv(stage: str, i: PipelineInputs, prev_id: str | None, curr_id: str | Non
             "--mop", str(i.mop), "--segments", str(i.segments), *_optional("--crossings", i.crossings),
             *_optional("--digs", i.digs), *_optional("--repairs", i.repairs), "--ingest-dir", out, *settings, *_optional("--criteria", i.criteria),
             *_optional("--line-name", i.line_name), *_optional("--prev-tool", i.prev_tool),
-            *_optional("--curr-tool", i.curr_tool)]
+            *_optional("--curr-tool", i.curr_tool), *_optional("--prepared-for", i.prepared_for),
+            *_optional("--prepared-by", i.prepared_by)]
 
 
 # redirect_stdout swaps process-global streams and concurrent runs would write the same folder, so one run

@@ -75,11 +75,20 @@ def test_report_cli_writes_all_outputs(built, capsys):
     _, _, _, folder = built
     assert main(_argv(built, "--line-name", "Line 7")) == 0
     capsys.readouterr()
-    assert len(OUTPUT_NAMES) == 8
+    assert len(OUTPUT_NAMES) == 9
     manifest = json.loads((folder / "run_manifest.json").read_text(encoding="utf-8"))
     for name in OUTPUT_NAMES:
         assert (folder / name).is_file()
         assert name in manifest["outputs"]
+    assert (folder / "report.pdf").read_bytes().startswith(b"%PDF")
+
+
+def test_report_cli_names_the_client_and_author_on_the_pdf_cover(built):
+    from pypdf import PdfReader
+    _, _, _, folder = built
+    assert main(_argv(built, "--prepared-for", "Operator X", "--prepared-by", "Engineer Y")) == 0
+    cover = PdfReader(folder / "report.pdf").pages[0].extract_text()
+    assert "Operator X" in cover and "Engineer Y" in cover
 
 
 def test_empty_dig_list_workbook(tmp_path):
@@ -151,7 +160,7 @@ def test_dig_list_nat_is_empty_cell(tmp_path):
     assert ws.cell(3, col["due_date"]).value is None
 
 
-@pytest.mark.parametrize("target", ["render_report", "dig_list_workbook", "run_manifest"])
+@pytest.mark.parametrize("target", ["render_html", "build_pdf", "dig_list_workbook", "run_manifest"])
 def test_no_file_written_when_a_build_step_fails(built, tmp_path, monkeypatch, target):
     from ili import report
     from ili.report import ReportHeader, write_report

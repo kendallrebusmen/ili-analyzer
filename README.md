@@ -95,9 +95,10 @@ py -3.13 -m venv .venv
     --segments data\synthetic\reference\hca_segments.csv `
     --crossings data\synthetic\reference\foreign_crossings.csv
 
-# Report -> outputs/<prev>_vs_<curr>/report.html, dig_list.xlsx, category_changes.csv, run_manifest.json
+# Report -> outputs/<prev>_vs_<curr>/report.html, report.pdf, dig_list.xlsx, category_changes.csv, run_manifest.json
 # (--digs is optional field data for the back-test; --repairs marks previously repaired and recoated features;
-# --line-name, --prev-tool and --curr-tool fill the header)
+# --line-name, --prev-tool and --curr-tool fill the header; --prepared-for and --prepared-by name the client and
+# the author on the PDF cover)
 # Also writes anomaly_distribution.csv (depth and dent bins), joint_ml_counts.csv (per-joint counts),
 # anomalies_of_interest.csv and imp_class.csv (each classified feature's IMP class).
 .\.venv\Scripts\python.exe -m ili.report `
@@ -169,6 +170,17 @@ manufacturing, unknown) comes from each vendor map's `ml_origins`. Decisions: `d
 Reviewers' decisions are saved in the comparison folder: match decisions in `reviews.csv` and manual flags in `feature_flags.csv`. Both are append-only logs (a correction is a new row; the latest wins). `ili.match` reads `reviews.csv` and `ili.classify` reads `feature_flags.csv` from the comparison folder by default (`--reviews` and `--flags` name other files on those two commands only; the app and `ili.pipeline` always use the comparison folder's logs), so a decision takes effect the next time the pipeline is rerun, from the app's Rerun button or the command above. **The logs live beside the outputs: deleting an output folder deletes the decisions.** Keep a copy of `reviews.csv` and `feature_flags.csv` before clearing outputs.
 
 The run date is the third `--run` value. It can be left out when the vendor map says where the file states it (vendor B's title row). The run id is `<run year>_<run_label from the vendor map>`.
+
+### The PDF deliverable (`report.pdf`)
+
+The report step also writes `report.pdf`: the same report laid out for print as a client deliverable. It has a cover
+(line, inspections, prepared for and by, key figures), a contents page, the executive summary, the pipeline summary,
+the repair conditions (immediate, 60-day, 180-day) on landscape pages, growth and remaining life with charts, the
+anomaly distribution, data quality, and appendices: methods and settings (PLACEHOLDER rows highlighted), input-file
+fingerprints, and the anomalies scheduled by remaining life. Every page carries the DRAFT label, a page number and a
+light DRAFT watermark. It renders from the same section tables as `report.html`, so the two always agree; the charts
+are drawn with matplotlib and the text uses DejaVu Sans, which ships with matplotlib. Name the client and author with
+`--prepared-for` and `--prepared-by` (or the Run setup fields in the app).
 
 ### Adding a vendor
 
