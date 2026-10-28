@@ -272,7 +272,7 @@ def test_report_writes_aoi(built):
     assert main(_argv(built)) == 0
     out = pd.read_csv(folder / "anomalies_of_interest.csv")
     assert list(out.columns) == ["rank", "start_ft", "end_ft", "surfaces", "origins", "max_depth_pct",
-                                 "n_anomalies", "min_rl_yr", "hca", "description"]
+                                 "n_anomalies", "min_rl_yr", "min_rl_is_bound", "hca", "description"]
     assert 0 < len(out) <= config.load_settings().report.aoi_count
     assert list(out["rank"]) == list(range(1, len(out) + 1))
     manifest = json.loads((folder / "run_manifest.json").read_text(encoding="utf-8"))

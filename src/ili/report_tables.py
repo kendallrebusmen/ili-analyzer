@@ -317,7 +317,7 @@ def largest_joints(counts: pd.DataFrame, n: int) -> tuple[pd.DataFrame, pd.DataF
 
 
 AOI_COLUMNS = ("rank", "start_ft", "end_ft", "surfaces", "origins", "max_depth_pct", "n_anomalies", "min_rl_yr",
-               "hca", "description")
+               "min_rl_is_bound", "hca", "description")
 MIN_PER_HOUR = 60
 HOURS_ON_FACE = 12
 
@@ -351,24 +351,34 @@ def anomalies_of_interest(inputs) -> pd.DataFrame:
     """Groups of current-run metal loss ranked by remaining life (spec 6.10, anomalies of interest).
 
     Metal loss sorted by ``log_dist_ft`` starts a new group where the gap to the previous feature exceeds
-    ``report.aoi_group_ft`` (ft). A member's remaining life and HCA flag come from the ``remaining_life`` row
-    whose ``curr_feature_id`` (``;``-split for a cluster) holds it; no row gives NaN. ``min_rl_yr`` is the
-    finite minimum over members (NaN if none); ``hca`` is True if any member is, None if all are unknown, else
-    False. Sorted by ``min_rl_yr`` ascending (NaN last), ``max_depth_pct`` descending, ``start_ft``; the first
-    ``report.aoi_count`` rows keep ``rank`` 1... A row with no ``log_dist_ft`` is left out. The description names the deepest member, the depth range of
-    the others and every repair span overlapping the group (``repairs`` may be None)."""
+    ``report.aoi_group_ft`` (ft). A member's remaining-life basis and HCA flag come from the ``remaining_life``
+    row whose ``curr_feature_id`` (``;``-split for a cluster) holds it: ``rl_yr``, else ``rl_upper_bound_yr``
+    (as the IMP class summary and the M6 dig rule); no row gives NaN. ``min_rl_yr`` is the finite minimum of
+    that basis over members (NaN if none) and ``min_rl_is_bound`` is True when only a bound attains it (False
+    when a member's own ``rl_yr`` does, None without a minimum); ``hca`` is True if any member is, None if all
+    are unknown, else False. Sorted by ``min_rl_yr`` ascending (NaN last), ``max_depth_pct`` descending,
+    ``start_ft``; the first ``report.aoi_count`` rows keep ``rank`` 1... A row with no ``log_dist_ft`` is left
+    out. The description names the deepest member, the depth range of the others and every repair span
+    overlapping the group (``repairs`` may be None)."""
     std = inputs.curr_std
     ml = std[std.feature_type.astype(str).eq(FeatureType.metal_loss.value) & std.log_dist_ft.notna()].sort_values(
         "log_dist_ft", kind="stable").reset_index(drop=True)  # a row with no position cannot be placed
-    rl_by_id: dict[str, tuple[float, object]] = {}
+    rl_by_id: dict[str, tuple[float, bool, object]] = {}  # feature id -> (RL basis, from a bound, HCA flag)
     for row in inputs.remaining_life.itertuples(index=False):
+        own = pd.notna(row.rl_yr)
+        basis = float(row.rl_yr) if own else (float(row.rl_upper_bound_yr) if pd.notna(row.rl_upper_bound_yr)
+                                              else np.nan)
         for fid in str(row.curr_feature_id).split(GW_ID_SEPARATOR):
-            rl_by_id[fid] = (float(row.rl_yr) if pd.notna(row.rl_yr) else np.nan, row.could_affect_hca)
+            rl_by_id[fid] = (basis, not own, row.could_affect_hca)
     group = (ml.log_dist_ft.diff() > inputs.settings.report.aoi_group_ft).cumsum()
     rows = []
     for _, g in ml.groupby(group, sort=True):
-        rl = np.array([rl_by_id.get(str(f), (np.nan, None))[0] for f in g.feature_id], dtype=float)
-        flags = [rl_by_id.get(str(f), (np.nan, None))[1] for f in g.feature_id]
+        members = [rl_by_id.get(str(f), (np.nan, False, None)) for f in g.feature_id]
+        rl = np.array([m[0] for m in members], dtype=float)
+        from_bound = np.array([m[1] for m in members], dtype=bool)
+        flags = [m[2] for m in members]
+        min_rl = float(np.nanmin(rl)) if np.isfinite(rl).any() else np.nan
+        min_is_bound = None if np.isnan(min_rl) else bool(from_bound[rl == min_rl].all())
         known = [bool(f) for f in flags if pd.notna(f)]
         depth = g.depth_pct.astype(float)
         start, end = float(g.log_dist_ft.min()), float(g.log_dist_ft.max())
@@ -387,13 +397,14 @@ def anomalies_of_interest(inputs) -> pd.DataFrame:
                      "surfaces": ", ".join(sorted(set(g.surface.dropna().astype(str)))),
                      "origins": ", ".join(sorted(set(g.ml_origin.dropna().astype(str)))),
                      "max_depth_pct": float(depth.max()), "n_anomalies": len(g),
-                     "min_rl_yr": float(np.nanmin(rl)) if np.isfinite(rl).any() else np.nan,
+                     "min_rl_yr": min_rl, "min_rl_is_bound": min_is_bound,
                      "hca": any(known) if known else None, "description": "; ".join(clauses)})
     out = pd.DataFrame(rows, columns=[c for c in AOI_COLUMNS if c != "rank"])
     out = out.sort_values(["min_rl_yr", "max_depth_pct", "start_ft"], ascending=[True, False, True],
                           na_position="last", kind="stable").head(inputs.settings.report.aoi_count)
     out.insert(0, "rank", range(1, len(out) + 1))
     out["hca"] = out["hca"].astype(object)
+    out["min_rl_is_bound"] = out["min_rl_is_bound"].astype(object)
     return out.reset_index(drop=True)
 
 

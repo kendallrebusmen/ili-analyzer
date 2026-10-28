@@ -439,13 +439,14 @@ def test_largest_joints_rank_and_break_ties_by_position():
 def _aoi(features, rl=None, repairs=None, **report):
     """``anomalies_of_interest`` over hand-built metal loss: ``features`` are dicts with feature_id, log_dist_ft
     and optional depth_pct, length_in, width_in, clock_min, surface, ml_origin; ``rl`` maps a remaining_life
-    ``curr_feature_id`` (``;``-joined for a cluster) to (rl_yr, could_affect_hca)."""
+    ``curr_feature_id`` (``;``-joined for a cluster) to (rl_yr, could_affect_hca[, rl_upper_bound_yr])."""
     defaults = {"feature_type": "metal_loss", "depth_pct": 30.0, "length_in": 2.0, "width_in": 1.0,
                 "clock_min": 180.0, "surface": "EXT", "ml_origin": "corrosion"}
     curr = pd.DataFrame([{**defaults, **f} for f in features])
     rl = rl or {}
     remaining = pd.DataFrame({"match_id": [f"M{i}" for i in range(len(rl))], "curr_feature_id": list(rl),
                               "rl_yr": [v[0] for v in rl.values()],
+                              "rl_upper_bound_yr": [v[2] if len(v) > 2 else NAN for v in rl.values()],
                               "could_affect_hca": pd.array([v[1] for v in rl.values()], dtype="object")})
     settings = config.load_settings()
     settings = settings.model_copy(update={"report": settings.report.model_copy(update=report)})
@@ -471,6 +472,20 @@ def test_aoi_ranking():
     assert list(out["rank"]) == [1, 2, 3, 4]
     assert out.hca.tolist()[0] is True and out.hca.tolist()[2] is False and out.hca.tolist()[1] is None
     assert np.isnan(out.min_rl_yr.iloc[3])
+
+
+def test_aoi_ranks_by_rl_else_its_upper_bound():
+    feats = [{"feature_id": "A", "log_dist_ft": 100.0}, {"feature_id": "B", "log_dist_ft": 200.0},
+             {"feature_id": "C", "log_dist_ft": 300.0},
+             {"feature_id": "D", "log_dist_ft": 400.0}, {"feature_id": "E", "log_dist_ft": 401.0},
+             {"feature_id": "F", "log_dist_ft": 500.0}, {"feature_id": "G", "log_dist_ft": 501.0}]
+    out = _aoi(feats, rl={"A": (6.0, False), "B": (NAN, False, 2.0), "C": (NAN, False, NAN),
+                          "D": (3.0, False), "E": (NAN, False, 1.0),   # the bound is the group minimum
+                          "F": (2.5, False), "G": (NAN, False, 4.0)})  # an RL is the group minimum
+    assert list(out.start_ft) == [400.0, 200.0, 500.0, 100.0, 300.0]
+    assert out.min_rl_yr.tolist()[:4] == [1.0, 2.0, 2.5, 6.0] and np.isnan(out.min_rl_yr.iloc[4])
+    assert out.min_rl_is_bound.tolist() == [True, True, False, False, None]
+    assert list(out.columns).index("min_rl_is_bound") == list(out.columns).index("min_rl_yr") + 1
 
 
 def test_aoi_description_text():

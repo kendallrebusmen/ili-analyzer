@@ -152,7 +152,8 @@ bound (dents and gouges have none by design). Previously repaired means inside a
 {{ render_table(summary.intervals, "recommended_interval_yr: the minimum of remaining life × rl_factor over the segment's features, capped at regulatory_max_yr") }}
 <h3>Anomalies of interest</h3>
 <p>Current-run metal loss within <code>report.aoi_group_ft</code> of its neighbour forms one group; groups are ranked by
-shortest remaining life, then deepest, and the first {{ summary.aoi_count }} (<code>report.aoi_count</code>) are listed.
+shortest remaining life (each member's remaining life, else its upper bound, as for the IMP class summary;
+<code>min_rl_is_bound</code> is True when the group's minimum is a bound), then deepest, and the first {{ summary.aoi_count }} (<code>report.aoi_count</code>) are listed.
 anomalies_of_interest.csv has the same rows.</p>
 {{ render_table(summary.aoi, "Anomalies of interest") }}
 </section>
