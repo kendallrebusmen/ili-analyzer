@@ -41,7 +41,7 @@ def test_cli_writes_outputs(built, capsys):
     capsys.readouterr()
     assert main(_argv(built, "--line-name", "Line 7")) == 0
     printed = capsys.readouterr().out
-    names = ["category_changes.csv", "report.html", "dig_list.xlsx", "run_manifest.json"]
+    names = ["category_changes.csv", "report.html", "dig_list.xlsx", "anomaly_distribution.csv", "run_manifest.json"]
     assert all((folder / n).is_file() for n in names)
     assert DRAFT_LABEL in printed and "pending" in printed and "dig list" in printed
 
@@ -216,3 +216,18 @@ def test_dig_list_row_1_carries_the_discovery_warning(built, tmp_path, warning):
     paths, _ = write_report(inputs, ReportHeader(None, None, None), tmp_path, datetime.now(timezone.utc))
     a1 = openpyxl.load_workbook(paths["dig_list.xlsx"]).active["A1"].value
     assert a1 == (DRAFT_LABEL if warning is None else f"{DRAFT_LABEL} WARNING: {warning}")
+
+
+def test_report_writes_anomaly_distribution(built):
+    _, _, _, folder = built
+    assert main(_argv(built)) == 0
+    out = pd.read_csv(folder / "anomaly_distribution.csv", dtype={"bin": str})
+    settings = config.load_settings()
+    n_depth, n_dent = len(settings.report.depth_bins_pct_wt), len(settings.report.dent_bins_pct_od)
+    assert list(out.columns[:2]) == ["table", "run_id"]
+    assert set(out.table) == {"depth", "dent"}
+    assert (out.table == "depth").sum() == 2 * 3 * n_depth and (out.table == "dent").sum() == 2 * n_dent
+    depth = out[(out.table == "depth") & (out.location == "all")]
+    assert depth.total.sum() > 0 and {"2021_vendorA", "2026_vendorB"} == set(depth.run_id)
+    manifest = json.loads((folder / "run_manifest.json").read_text(encoding="utf-8"))
+    assert "anomaly_distribution.csv" in manifest["outputs"]

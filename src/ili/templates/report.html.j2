@@ -184,6 +184,17 @@ bound (dents and gouges have none by design). Previously repaired means inside a
 {{ render_table(growth.segments, "Per-segment statistics") }}
 {{ render_table(growth.methods, "Features by governing method") }}
 <div class="chart">{{ growth.histograms }}</div>
+<h3>Depth bins</h3>
+<p>Metal-loss counts by depth bin (<code>report.depth_bins_pct_wt</code>, % of wall thickness; a bin includes its lower edge). Corrosion means origin other than manufacturing.</p>
+{% for title, depth_table in distribution.depth %}
+{{ render_table(depth_table, "Depth bins, " ~ title) }}
+{% endfor %}
+<h3>Dent bins</h3>
+<p>Dent counts by depth as a percentage of OD (<code>report.dent_bins_pct_od</code>; a bin includes its upper edge).</p>
+{{ render_table(distribution.dent, "Dent bins") }}
+{% for note in distribution.notes %}
+<p>Not evaluated &mdash; {{ note }}.</p>
+{% endfor %}
 </section>
 
 <section id="dig-list">

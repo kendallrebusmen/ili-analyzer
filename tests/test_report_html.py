@@ -334,3 +334,13 @@ def test_report_html_has_imp_class_and_profile(report):
     growth = _section_text(html, "growth")
     assert "conservative" in growth and "Growth summary by surface" in growth
     assert "excluding_recoated" in growth and "recoated feature(s)" in growth
+
+
+def test_growth_section_shows_depth_and_dent_bins_with_notes(report):
+    inputs, _, html = report
+    growth = _section_text(html, "growth")
+    assert "Depth bins" in growth and "Dent bins" in growth
+    for title in ("all metal loss", "metal loss at a girth weld", "metal loss on the long seam"):
+        assert f"Depth bins, {title}" in growth
+    assert ">=80" in growth and "0-2" in growth
+    assert "classification.girth_weld_proximity_in is not set" in growth  # the default leaves the setting null

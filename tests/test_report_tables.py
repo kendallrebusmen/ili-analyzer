@@ -7,7 +7,8 @@ import pandas as pd
 
 from ili import config
 from ili.classify import CLASSIFICATION_COLUMNS
-from ili.report_tables import imp_class_summary
+from ili.report_tables import (_location_notes, anomaly_distribution, anomaly_distribution_table, depth_bins,
+                               dent_bins, imp_class_summary)
 from ili.report_data import (DIG_LIST_CATEGORIES, DIG_LIST_COLUMNS, backtest, config_rows, criteria_rows, dig_list,
                              largest_growth, match_stats, pending_reviews)
 
@@ -230,3 +231,102 @@ def test_imp_class_label_follows_the_setting(tmp_path):
                             pd.DataFrame({"match_id": ["M0"], "rl_yr": [7.0], "rl_upper_bound_yr": [NAN]}),
                             None, settings)
     assert out.imp_class.iloc[3] == "YTC < 7.5 yrs" and out.n_classified.iloc[3] == 1
+
+
+# --- depth bins and dent bins (spec 6.10) ---------------------------------------------------------------
+
+def _std(rows, run_id="R1"):
+    """A standardized run from partial rows: a metal-loss feature at mid-joint unless said otherwise."""
+    base = {"run_id": run_id, "feature_type": "metal_loss", "surface": "EXT", "ml_origin": "corrosion",
+            "depth_pct": 15.0, "dent_depth_in": NAN, "length_in": 2.0, "clock_min": 360, "seam_interaction": False,
+            "log_dist_ft": 50.0}
+    return pd.DataFrame([{**base, **r} for r in rows])
+
+
+def _count(table, location, label, column="total"):
+    row = table[(table.location == location) & (table.bin == label)]
+    assert len(row) == 1
+    return int(row[column].iloc[0])
+
+
+def test_depth_bin_edges():
+    std = _std([{"depth_pct": d} for d in (9.99, 10.0, 79.99, 80.0)])
+    out = depth_bins(std, config.load_settings())
+    assert [_count(out, "all", b) for b in ("0-10", "10-20", "70-80", ">=80")] == [1, 1, 1, 1]
+    assert out[out.location == "all"].total.sum() == 4
+    assert list(out[out.location == "all"].bin) == ["0-10", "10-20", "20-30", "30-40", "40-50", "50-60", "60-70",
+                                                    "70-80", ">=80"]
+
+
+def test_depth_bin_columns():
+    std = _std([{"surface": "EXT"}, {"surface": "INT", "ml_origin": "unknown"},
+                {"surface": "EXT", "ml_origin": "manufacturing"}, {"surface": "MID"}, {"surface": "UNK"}])
+    out = depth_bins(std, config.load_settings())
+    row = out[(out.location == "all") & (out.bin == "10-20")].iloc[0]
+    assert (row.ext_corrosion, row.int_corrosion, row.manufacturing, row.total) == (1, 1, 1, 5)
+    assert row.run_id == "R1"
+
+
+def test_depth_bins_only_count_metal_loss_with_a_depth():
+    std = _std([{"depth_pct": NAN}, {"feature_type": "dent"}, {}])
+    assert depth_bins(std, config.load_settings()).query("location == 'all'").total.sum() == 1
+
+
+def test_girth_weld_table_not_evaluated_note():
+    settings = config.load_settings()
+    assert settings.classification.girth_weld_proximity_in is None
+    welds = _std([{"feature_type": "girth_weld", "log_dist_ft": 0.0}, {"feature_type": "girth_weld", "log_dist_ft": 100.0}])
+    std = pd.concat([welds, _std([{"log_dist_ft": 50.0}, {"log_dist_ft": 0.1}])], ignore_index=True)
+    assert depth_bins(std, settings).query("location == 'girth_weld'").total.sum() == 0
+    notes = _location_notes(std, settings)
+    assert any("classification.girth_weld_proximity_in is not set" in n and "2 " in n for n in notes)
+
+
+def test_girth_weld_and_seam_columns_with_settings():
+    settings = config.load_settings()
+    settings.classification.girth_weld_proximity_in = 6.0
+    settings.classification.seam_clock_min = 360.0
+    settings.classification.seam_clock_tol_min = 30.0
+    welds = _std([{"feature_type": "girth_weld", "log_dist_ft": 0.0}, {"feature_type": "girth_weld", "log_dist_ft": 100.0}])
+    std = pd.concat([welds, _std([{"log_dist_ft": 0.2, "clock_min": 360}, {"log_dist_ft": 50.0, "clock_min": 100}])],
+                    ignore_index=True)
+    out = depth_bins(std, settings)
+    assert out.query("location == 'girth_weld'").total.sum() == 1
+    assert out.query("location == 'long_seam'").total.sum() == 1
+    assert out.query("location == 'all'").total.sum() == 2
+    assert _location_notes(std, settings) == []
+
+
+def test_dent_bin_edges():
+    std = _std([{"feature_type": "dent", "dent_depth_in": d, "depth_pct": NAN} for d in (2.0, 2.01, 6.0, 6.01, 0.0)])
+    out = dent_bins(std, np.full(5, 100.0), config.load_settings())
+    assert list(out.bin) == ["0-2", "2-6", ">6"]
+    assert list(out["all"]) == [2, 2, 1]
+    assert list(out.columns) == ["run_id", "bin", "all", "girth_weld", "long_seam"]
+
+
+def test_dent_bins_skip_unknown_od():
+    std = _std([{"feature_type": "dent", "dent_depth_in": 0.1, "depth_pct": NAN}] * 2)
+    out = dent_bins(std, np.array([10.0, NAN]), config.load_settings())
+    assert out["all"].sum() == 1
+    with pytest.raises(ValueError, match="od_in"):
+        dent_bins(std, np.array([10.0]), config.load_settings())
+
+
+def test_anomaly_distribution_maps_previous_dents_to_the_current_run():
+    """Reference files are keyed to current-run distance: a previous-run dent at 120 ft is at 220 ft in the
+    current run, where the OD is 5 in (not 10 in), so 0.2 in is 4 % OD."""
+    settings = config.load_settings()
+    prev = _std([{"feature_type": "dent", "dent_depth_in": 0.2, "log_dist_ft": 120.0, "depth_pct": NAN}], "P")
+    curr = _std([{"feature_type": "dent", "dent_depth_in": 0.2, "log_dist_ft": 120.0, "depth_pct": NAN}], "C")
+    weld_map = pd.DataFrame({"match_type": ["1:1", "1:1"], "prev_start_ft": [0.0, 100.0],
+                             "prev_length_ft": [100.0, 100.0], "curr_start_ft": [0.0, 200.0],
+                             "curr_length_ft": [100.0, 100.0]})
+    pipe = pd.DataFrame({"start_ft": [0.0, 150.0], "end_ft": [150.0, 400.0], "od_in": [10.0, 5.0]})
+    inputs = SimpleNamespace(prev_std=prev, curr_std=curr, weld_map=weld_map, pipe=pipe, settings=settings)
+    result = anomaly_distribution(inputs)
+    by_run = result.dent.set_index(["run_id", "bin"])["all"]
+    assert by_run[("P", "2-6")] == 1 and by_run[("C", "0-2")] == 1
+    assert len(result.depth) == 2 * 3 * 9 and len(result.dent) == 2 * 3
+    table = anomaly_distribution_table(result)
+    assert set(table.table) == {"depth", "dent"} and table.columns[0] == "table"
