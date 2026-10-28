@@ -42,7 +42,7 @@ def test_cli_writes_outputs(built, capsys):
     assert main(_argv(built, "--line-name", "Line 7")) == 0
     printed = capsys.readouterr().out
     names = ["category_changes.csv", "report.html", "dig_list.xlsx", "anomaly_distribution.csv",
-             "joint_ml_counts.csv", "run_manifest.json"]
+             "joint_ml_counts.csv", "anomalies_of_interest.csv", "run_manifest.json"]
     assert all((folder / n).is_file() for n in names)
     assert DRAFT_LABEL in printed and "pending" in printed and "dig list" in printed
 
@@ -253,3 +253,16 @@ def test_report_writes_joint_counts(built):
     assert "joint_ml_counts.csv" in manifest["outputs"]
     html = (folder / "report.html").read_text(encoding="utf-8")
     assert "Per-joint metal-loss counts" in html
+
+
+def test_report_writes_aoi(built):
+    _, _, _, folder = built
+    assert main(_argv(built)) == 0
+    out = pd.read_csv(folder / "anomalies_of_interest.csv")
+    assert list(out.columns) == ["rank", "start_ft", "end_ft", "surfaces", "origins", "max_depth_pct",
+                                 "n_anomalies", "min_rl_yr", "hca", "description"]
+    assert 0 < len(out) <= config.load_settings().report.aoi_count
+    assert list(out["rank"]) == list(range(1, len(out) + 1))
+    manifest = json.loads((folder / "run_manifest.json").read_text(encoding="utf-8"))
+    assert "anomalies_of_interest.csv" in manifest["outputs"]
+    assert "Anomalies of interest" in (folder / "report.html").read_text(encoding="utf-8")

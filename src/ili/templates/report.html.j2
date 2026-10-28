@@ -137,6 +137,11 @@ bound (dents and gouges have none by design). Previously repaired means inside a
 {{ summary.n_imp_scheduled }} of them are governed by no repair rule and are classified <code>imp_scheduled</code>.</p>
 <h3>Recommended reinspection interval by segment</h3>
 {{ render_table(summary.intervals, "recommended_interval_yr: the minimum of remaining life × rl_factor over the segment's features, capped at regulatory_max_yr") }}
+<h3>Anomalies of interest</h3>
+<p>Current-run metal loss within <code>report.aoi_group_ft</code> of its neighbour forms one group; groups are ranked by
+shortest remaining life, then deepest, and the first {{ summary.aoi_count }} (<code>report.aoi_count</code>) are listed.
+anomalies_of_interest.csv has the same rows.</p>
+{{ render_table(summary.aoi, "Anomalies of interest") }}
 </section>
 
 <section id="data-quality">

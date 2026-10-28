@@ -46,7 +46,7 @@ from ili.report_charts import (CATEGORY_COLOURS, depth_vs_distance, feature_map,
 from ili.report_data import (ReportInputs, _sha256, backtest, config_rows, criteria_rows, dig_list, input_hashes,
                              largest_growth, load_report_inputs, match_stats, pending_reviews)
 from ili.report_tables import (DEPTH_COLUMNS, LOCATIONS, anomaly_distribution, anomaly_distribution_table,
-                               imp_class_summary, joint_ml_counts, largest_joints)
+                               anomalies_of_interest, imp_class_summary, joint_ml_counts, largest_joints)
 from ili.review import FLAG_COLUMNS, REVIEW_COLUMNS
 
 TEMPLATES = Path(__file__).parent / "templates"
@@ -202,6 +202,8 @@ def _summary(inputs: ReportInputs, dig: pd.DataFrame) -> dict:
         "n_rl_feature": len(inputs.remaining_life),
         "n_imp_scheduled": int(counts["imp_scheduled"]),
         "intervals": table(inputs.intervals),
+        "aoi": table(anomalies_of_interest(inputs)),
+        "aoi_count": cell(inputs.settings.report.aoi_count),
         "discovery_warning": inputs.summaries["classification"].get("discovery_warning"),
     }
 
@@ -386,7 +388,7 @@ def render_report(inputs: ReportInputs, changes: CategoryChangeResult, header: R
 # --- dig list workbook, manifest, CLI -----------------------------------------------------------------
 
 OUTPUT_NAMES = ("category_changes.csv", "report.html", "dig_list.xlsx", "anomaly_distribution.csv",
-                "joint_ml_counts.csv", "run_manifest.json")
+                "joint_ml_counts.csv", "anomalies_of_interest.csv", "run_manifest.json")
 DATE_COLUMNS = ("due_date",)
 GIT_TIMEOUT_S = 10
 
@@ -505,6 +507,7 @@ def write_report(inputs: ReportInputs, header: ReportHeader, out_dir: Path,
     workbook = dig_list_workbook(dig_list(inputs), inputs.settings, _sheet_label(inputs))
     distribution = anomaly_distribution_table(anomaly_distribution(inputs))
     joints = joint_ml_counts(inputs.weld_map, inputs.prev_std, inputs.curr_std)
+    aoi = anomalies_of_interest(inputs)
     manifest = json.dumps(run_manifest(inputs, list(OUTPUT_NAMES), generated_utc), indent=2, allow_nan=False)
     paths = {name: Path(out_dir) / name for name in OUTPUT_NAMES}
     _write_all({
@@ -513,6 +516,7 @@ def write_report(inputs: ReportInputs, header: ReportHeader, out_dir: Path,
         "dig_list.xlsx": workbook.save,
         "anomaly_distribution.csv": lambda p: distribution.to_csv(p, index=False, lineterminator="\n"),
         "joint_ml_counts.csv": lambda p: joints.to_csv(p, index=False, lineterminator="\n"),
+        "anomalies_of_interest.csv": lambda p: aoi.to_csv(p, index=False, lineterminator="\n"),
         "run_manifest.json": lambda p: p.write_text(manifest, encoding="utf-8"),
     }, paths)
     return paths, changes

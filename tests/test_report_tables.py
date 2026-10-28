@@ -7,7 +7,7 @@ import pandas as pd
 
 from ili import config
 from ili.classify import CLASSIFICATION_COLUMNS
-from ili.report_tables import (_location_notes, anomaly_distribution, anomaly_distribution_table, depth_bins,
+from ili.report_tables import (_location_notes, anomalies_of_interest, anomaly_distribution, anomaly_distribution_table, depth_bins,
                                dent_bins, imp_class_summary, joint_ml_counts, largest_joints)
 from ili.report_data import (DIG_LIST_CATEGORIES, DIG_LIST_COLUMNS, backtest, config_rows, criteria_rows, dig_list,
                              largest_growth, match_stats, pending_reviews)
@@ -430,3 +430,77 @@ def test_largest_joints_rank_and_break_ties_by_position():
     by_count, by_change = largest_joints(joint_ml_counts(wm, prev, curr), 2)
     assert list(by_count.curr_gw_ids) == ["C2", "C1"]  # tie on 2: the earlier position first
     assert list(by_change.curr_gw_ids) == ["C2", "C1"] and len(by_change) == 2
+
+
+def _aoi(features, rl=None, repairs=None, **report):
+    """``anomalies_of_interest`` over hand-built metal loss: ``features`` are dicts with feature_id, log_dist_ft
+    and optional depth_pct, length_in, width_in, clock_min, surface, ml_origin; ``rl`` maps a remaining_life
+    ``curr_feature_id`` (``;``-joined for a cluster) to (rl_yr, could_affect_hca)."""
+    defaults = {"feature_type": "metal_loss", "depth_pct": 30.0, "length_in": 2.0, "width_in": 1.0,
+                "clock_min": 180.0, "surface": "EXT", "ml_origin": "corrosion"}
+    curr = pd.DataFrame([{**defaults, **f} for f in features])
+    rl = rl or {}
+    remaining = pd.DataFrame({"match_id": [f"M{i}" for i in range(len(rl))], "curr_feature_id": list(rl),
+                              "rl_yr": [v[0] for v in rl.values()],
+                              "could_affect_hca": pd.array([v[1] for v in rl.values()], dtype="object")})
+    settings = config.load_settings()
+    settings = settings.model_copy(update={"report": settings.report.model_copy(update=report)})
+    return anomalies_of_interest(SimpleNamespace(curr_std=curr, remaining_life=remaining, repairs=repairs,
+                                                 settings=settings))
+
+
+def test_aoi_grouping_gap():
+    out = _aoi([{"feature_id": "A", "log_dist_ft": 100.0}, {"feature_id": "B", "log_dist_ft": 101.5},
+                {"feature_id": "C", "log_dist_ft": 104.0}], aoi_group_ft=2.0)
+    assert len(out) == 2
+    two = out[out.n_anomalies == 2].iloc[0]
+    assert (two.start_ft, two.end_ft) == (100.0, 101.5)
+
+
+def test_aoi_ranking():
+    feats = [{"feature_id": "A", "log_dist_ft": 100.0, "depth_pct": 50.0},
+             {"feature_id": "B", "log_dist_ft": 200.0, "depth_pct": 60.0},
+             {"feature_id": "C", "log_dist_ft": 300.0, "depth_pct": 40.0},
+             {"feature_id": "D", "log_dist_ft": 400.0, "depth_pct": 90.0}]
+    out = _aoi(feats, rl={"A": (3.0, False), "B": (3.0, None), "C": (1.0, True)})
+    assert list(out.start_ft) == [300.0, 200.0, 100.0, 400.0]  # shortest RL, tie deepest, no RL last
+    assert list(out["rank"]) == [1, 2, 3, 4]
+    assert out.hca.tolist()[0] is True and out.hca.tolist()[2] is False and out.hca.tolist()[1] is None
+    assert np.isnan(out.min_rl_yr.iloc[3])
+
+
+def test_aoi_description_text():
+    feats = [{"feature_id": "A", "log_dist_ft": 100.0, "depth_pct": 45.0, "length_in": 3.5, "width_in": 2.0,
+              "clock_min": 0.0, "ml_origin": "corrosion"},
+             {"feature_id": "B", "log_dist_ft": 101.0, "depth_pct": 62.5, "length_in": 4.0, "width_in": 1.5,
+              "clock_min": 150.0, "ml_origin": "manufacturing", "surface": "INT"},
+             {"feature_id": "C", "log_dist_ft": 101.5, "depth_pct": 20.0}]
+    repairs = pd.DataFrame({"start_ft": [101.2, 50.0, 99.0], "end_ft": [110.0, 60.0, 100.0],
+                            "repair_type": ["recoat", "sleeve", "pipe_replacement"],
+                            "repair_date": ["2023-12-15", "2023-01-01", "2023-06-30"]})
+    out = _aoi(feats, rl={"A;B": (4.0, True), "C": (9.0, False)}, repairs=repairs)
+    row = out.iloc[0]
+    assert row.description == ("Deepest 62.5% WT, 4 in long, 1.5 in wide at 2:30; others 20-45% WT; "
+                               "overlaps pipe replacement repair of 2023-06-30; "
+                               "overlaps recoat repair of 2023-12-15")
+    assert row.surfaces == "EXT, INT" and row.origins == "corrosion, manufacturing"
+    assert row.min_rl_yr == 4.0 and row.max_depth_pct == 62.5 and row.n_anomalies == 3 and row.hca is True
+
+
+def test_aoi_description_single_and_clock_edges():
+    one = _aoi([{"feature_id": "A", "log_dist_ft": 5.0, "clock_min": 360.0}]).iloc[0]
+    assert one.description == "Deepest 30% WT, 2 in long, 1 in wide at 6:00"
+    assert _aoi([{"feature_id": "A", "log_dist_ft": 5.0, "clock_min": 30.0}]).description.iloc[0].endswith("at 12:30")
+    assert " at " not in _aoi([{"feature_id": "A", "log_dist_ft": 5.0, "clock_min": NAN}]).description.iloc[0]
+
+
+def test_aoi_no_repairs_file():
+    out = _aoi([{"feature_id": "A", "log_dist_ft": 5.0}], repairs=None)
+    assert "repair" not in out.description.iloc[0]
+    miss = pd.DataFrame({"start_ft": [50.0], "end_ft": [60.0], "repair_type": ["recoat"], "repair_date": ["2023-01-01"]})
+    assert "repair" not in _aoi([{"feature_id": "A", "log_dist_ft": 5.0}], repairs=miss).description.iloc[0]
+
+
+def test_aoi_keeps_aoi_count_rows():
+    feats = [{"feature_id": f"F{i}", "log_dist_ft": 100.0 * i} for i in range(5)]
+    assert len(_aoi(feats, aoi_count=3)) == 3

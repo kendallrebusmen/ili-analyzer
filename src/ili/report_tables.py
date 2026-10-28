@@ -304,3 +304,80 @@ def largest_joints(counts: pd.DataFrame, n: int) -> tuple[pd.DataFrame, pd.DataF
         return (ranked.sort_values([column, "curr_start_ft"], ascending=[False, True], kind="stable")
                 .head(n).reset_index(drop=True))
     return top("curr_total"), top("change_total")
+
+
+AOI_COLUMNS = ("rank", "start_ft", "end_ft", "surfaces", "origins", "max_depth_pct", "n_anomalies", "min_rl_yr",
+               "hca", "description")
+MIN_PER_HOUR = 60
+HOURS_ON_FACE = 12
+
+
+def _clock_text(clock_min: float) -> str:
+    """``h:mm`` on the 12-hour face from minutes past 12 o'clock (0 and 360 give 12:00 and 6:00); "" if NaN."""
+    if pd.isna(clock_min):
+        return ""
+    hour, minute = divmod(int(round(clock_min)) % (HOURS_ON_FACE * MIN_PER_HOUR), MIN_PER_HOUR)
+    return f"{hour or HOURS_ON_FACE}:{minute:02d}"
+
+
+def _repair_clauses(start_ft: float, end_ft: float, repairs: pd.DataFrame | None) -> list[str]:
+    """One "overlaps <type> repair of <date>" clause per repair span touching [start_ft, end_ft] (ends
+    inclusive), ordered by the repair's start; none when there is no repairs table."""
+    if repairs is None or repairs.empty:
+        return []
+    lo, hi = repairs.start_ft.astype(float), repairs.end_ft.astype(float)
+    hit = repairs[(np.minimum(lo, hi) <= end_ft) & (np.maximum(lo, hi) >= start_ft)]
+    hit = hit.assign(_start=np.minimum(hit.start_ft.astype(float), hit.end_ft.astype(float))).sort_values(
+        "_start", kind="stable")
+    clauses = []
+    for repair in hit.itertuples(index=False):
+        kind = str(repair.repair_type).replace("_", " ")
+        when = repair.repair_date
+        clauses.append(f"overlaps {kind} repair" + ("" if pd.isna(when) else f" of {str(when)[:10]}"))
+    return clauses
+
+
+def anomalies_of_interest(inputs) -> pd.DataFrame:
+    """Groups of current-run metal loss ranked by remaining life (spec 6.10, anomalies of interest).
+
+    Metal loss sorted by ``log_dist_ft`` starts a new group where the gap to the previous feature exceeds
+    ``report.aoi_group_ft`` (ft). A member's remaining life and HCA flag come from the ``remaining_life`` row
+    whose ``curr_feature_id`` (``;``-split for a cluster) holds it; no row gives NaN. ``min_rl_yr`` is the
+    finite minimum over members (NaN if none); ``hca`` is True if any member is, None if all are unknown, else
+    False. Sorted by ``min_rl_yr`` ascending (NaN last), ``max_depth_pct`` descending, ``start_ft``; the first
+    ``report.aoi_count`` rows keep ``rank`` 1... The description names the deepest member, the depth range of
+    the others and every repair span overlapping the group (``repairs`` may be None)."""
+    std = inputs.curr_std
+    ml = std[std.feature_type.astype(str).eq(FeatureType.metal_loss.value)].sort_values(
+        "log_dist_ft", kind="stable").reset_index(drop=True)
+    rl_by_id: dict[str, tuple[float, object]] = {}
+    for row in inputs.remaining_life.itertuples(index=False):
+        for fid in str(row.curr_feature_id).split(GW_ID_SEPARATOR):
+            rl_by_id[fid] = (float(row.rl_yr) if pd.notna(row.rl_yr) else np.nan, row.could_affect_hca)
+    group = (ml.log_dist_ft.diff() > inputs.settings.report.aoi_group_ft).cumsum()
+    rows = []
+    for _, g in ml.groupby(group, sort=True):
+        rl = np.array([rl_by_id.get(str(f), (np.nan, None))[0] for f in g.feature_id], dtype=float)
+        flags = [rl_by_id.get(str(f), (np.nan, None))[1] for f in g.feature_id]
+        known = [bool(f) for f in flags if pd.notna(f)]
+        depth = g.depth_pct.astype(float)
+        start, end = float(g.log_dist_ft.min()), float(g.log_dist_ft.max())
+        deepest = g.loc[depth.fillna(-np.inf).idxmax()]
+        clauses = [f"Deepest {deepest.depth_pct:g}% WT, {deepest.length_in:g} in long, {deepest.width_in:g} in wide"
+                   + (f" at {_clock_text(deepest.clock_min)}" if pd.notna(deepest.clock_min) else "")]
+        others = depth.drop(deepest.name).dropna()
+        if len(g) > 1 and not others.empty:
+            clauses.append(f"others {others.min():g}-{others.max():g}% WT")
+        clauses += _repair_clauses(start, end, inputs.repairs)
+        rows.append({"start_ft": start, "end_ft": end,
+                     "surfaces": ", ".join(sorted(set(g.surface.dropna().astype(str)))),
+                     "origins": ", ".join(sorted(set(g.ml_origin.dropna().astype(str)))),
+                     "max_depth_pct": float(depth.max()), "n_anomalies": len(g),
+                     "min_rl_yr": float(np.nanmin(rl)) if np.isfinite(rl).any() else np.nan,
+                     "hca": any(known) if known else None, "description": "; ".join(clauses)})
+    out = pd.DataFrame(rows, columns=[c for c in AOI_COLUMNS if c != "rank"])
+    out = out.sort_values(["min_rl_yr", "max_depth_pct", "start_ft"], ascending=[True, False, True],
+                          na_position="last", kind="stable").head(inputs.settings.report.aoi_count)
+    out.insert(0, "rank", range(1, len(out) + 1))
+    out["hca"] = out["hca"].astype(object)
+    return out.reset_index(drop=True)
