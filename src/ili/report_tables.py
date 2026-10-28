@@ -345,11 +345,11 @@ def anomalies_of_interest(inputs) -> pd.DataFrame:
     whose ``curr_feature_id`` (``;``-split for a cluster) holds it; no row gives NaN. ``min_rl_yr`` is the
     finite minimum over members (NaN if none); ``hca`` is True if any member is, None if all are unknown, else
     False. Sorted by ``min_rl_yr`` ascending (NaN last), ``max_depth_pct`` descending, ``start_ft``; the first
-    ``report.aoi_count`` rows keep ``rank`` 1... The description names the deepest member, the depth range of
+    ``report.aoi_count`` rows keep ``rank`` 1... A row with no ``log_dist_ft`` is left out. The description names the deepest member, the depth range of
     the others and every repair span overlapping the group (``repairs`` may be None)."""
     std = inputs.curr_std
-    ml = std[std.feature_type.astype(str).eq(FeatureType.metal_loss.value)].sort_values(
-        "log_dist_ft", kind="stable").reset_index(drop=True)
+    ml = std[std.feature_type.astype(str).eq(FeatureType.metal_loss.value) & std.log_dist_ft.notna()].sort_values(
+        "log_dist_ft", kind="stable").reset_index(drop=True)  # a row with no position cannot be placed
     rl_by_id: dict[str, tuple[float, object]] = {}
     for row in inputs.remaining_life.itertuples(index=False):
         for fid in str(row.curr_feature_id).split(GW_ID_SEPARATOR):
@@ -363,8 +363,12 @@ def anomalies_of_interest(inputs) -> pd.DataFrame:
         depth = g.depth_pct.astype(float)
         start, end = float(g.log_dist_ft.min()), float(g.log_dist_ft.max())
         deepest = g.loc[depth.fillna(-np.inf).idxmax()]
-        clauses = [f"Deepest {deepest.depth_pct:g}% WT, {deepest.length_in:g} in long, {deepest.width_in:g} in wide"
-                   + (f" at {_clock_text(deepest.clock_min)}" if pd.notna(deepest.clock_min) else "")]
+        clauses = []
+        if pd.notna(deepest.depth_pct):
+            clauses.append(f"Deepest {deepest.depth_pct:g}% WT"
+                           + (f", {deepest.length_in:g} in long" if pd.notna(deepest.length_in) else "")
+                           + (f", {deepest.width_in:g} in wide" if pd.notna(deepest.width_in) else "")
+                           + (f" at {_clock_text(deepest.clock_min)}" if pd.notna(deepest.clock_min) else ""))
         others = depth.drop(deepest.name).dropna()
         if len(g) > 1 and not others.empty:
             clauses.append(f"others {others.min():g}-{others.max():g}% WT")

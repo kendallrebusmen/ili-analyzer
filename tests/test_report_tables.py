@@ -504,3 +504,18 @@ def test_aoi_no_repairs_file():
 def test_aoi_keeps_aoi_count_rows():
     feats = [{"feature_id": f"F{i}", "log_dist_ft": 100.0 * i} for i in range(5)]
     assert len(_aoi(feats, aoi_count=3)) == 3
+
+
+def test_aoi_leaves_out_rows_without_a_position():
+    out = _aoi([{"feature_id": "A", "log_dist_ft": 100.0, "depth_pct": 30.0},
+                {"feature_id": "B", "log_dist_ft": NAN, "depth_pct": 80.0}])
+    assert len(out) == 1 and out.n_anomalies.iloc[0] == 1 and out.max_depth_pct.iloc[0] == 30.0
+
+
+def test_aoi_description_omits_missing_values():
+    row = _aoi([{"feature_id": "A", "log_dist_ft": 5.0, "length_in": NAN, "width_in": 1.5, "clock_min": NAN}]).iloc[0]
+    assert row.description == "Deepest 30% WT, 1.5 in wide"
+    row = _aoi([{"feature_id": "A", "log_dist_ft": 5.0, "width_in": NAN}]).iloc[0]
+    assert row.description == "Deepest 30% WT, 2 in long at 3:00"
+    row = _aoi([{"feature_id": "A", "log_dist_ft": 5.0, "depth_pct": NAN}]).iloc[0]
+    assert "Deepest" not in row.description and "nan" not in row.description
