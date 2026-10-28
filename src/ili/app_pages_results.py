@@ -26,7 +26,8 @@ FLAG_SAVED = "Saved — rerun the pipeline to apply"
 EXPLORER_COLUMNS = ["match_id", "match_type", "curr_feature_id", "curr_log_dist_ft", "segment_id", "raw_mpy",
                     "governing_mpy", "governing_method", "rl_yr", "rl_governing", "governing_category",
                     "governing_rule", "due_date"]
-EXPORTS = (("report.html", "text/html", "the HTML report"),
+EXPORTS = (("report.pdf", "application/pdf", "the PDF report, laid out for print and for the client"),
+           ("report.html", "text/html", "the HTML report"),
            ("dig_list.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "the Excel dig list"),
            ("run_manifest.json", "application/json", "the run manifest"))
 FLAG_HELP = {"manual_immediate": "Treat as immediate (manual flag)",
