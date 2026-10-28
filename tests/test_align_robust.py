@@ -168,3 +168,12 @@ def test_score_truth_from_other_dataset_is_value_error(line, scored):
 def test_repairs_without_span_columns_is_value_error(line):
     with pytest.raises(ValueError, match="start_ft"):
         align_welds(line.prev_std, line.curr_std, SETTINGS, pd.DataFrame({"x": [1.0]}))
+
+
+def test_alignment_ignores_recoat_span(line):
+    rep = line.reference["repairs_between_runs"]
+    recoat = rep[rep.repair_type == "recoat"]
+    assert len(recoat) == 1
+    with_recoat = align_welds(line.prev_std, line.curr_std, SETTINGS, recoat).weld_map
+    without = align_welds(line.prev_std, line.curr_std, SETTINGS, None).weld_map
+    pd.testing.assert_frame_equal(with_recoat, without)

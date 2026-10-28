@@ -39,10 +39,10 @@ def test_one_truth_class_per_vendor_feature(seed):
 
 
 def test_cluster_with_below_threshold_pit_is_matched_cluster():
-    """Seed 42: B-002243 is a current-run cluster whose third pit was below threshold in prev."""
+    """Seed 42: B-002489 is a current-run cluster whose third pit was below threshold in prev."""
     gt = generate(SynthParams()).ground_truth
-    members = gt[gt.curr_feature_id == "B-002243"]
-    assert len(members) == 3
+    members = gt[gt.curr_feature_id == "B-002489"]
+    assert len(members) == 4
     assert set(members.truth_class) == {"matched_cluster"}
     assert (members.prev_status == "below_threshold").sum() == 1
 

@@ -25,7 +25,7 @@ TABLE_CHECKS = ("n_unreported", "n_duplicated", "n_wrong_side", "n_duplicate_lin
 
 # sha256 of match_table.csv (LF) from the M4 matcher (commit af4819f), before decisions existed. If the
 # synthetic generator or the automated matching is changed on purpose, regenerate both hashes.
-M4_SYNTH_SHA256 = "441aeb62753148d9a301ca3b3c37e7369437bf3c21449eb774c230ba58463f6b"
+M4_SYNTH_SHA256 = "c8d2277f0ca6163dce66fec4aae327ee2f80134efef983aeadf4a059e4c9506b"
 M4_HAND_SHA256 = "e9379ca1de621502c9601ad09f6fd860f6d49552747b2c2c89716f1d2309a9e0"
 
 

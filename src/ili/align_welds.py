@@ -35,6 +35,7 @@ from ili.validation import score_alignment, write_metrics
 
 JOINT_COLUMNS = ["joint_idx", "gw_id", "start_ft", "end_ft", "length_ft", "anchor_type", "anchor_ft"]
 _ANCHOR_VALUES = {t.value for t in ANCHOR_TYPES}
+JOINT_REPAIR_TYPES = ("cutout", "pipe_replacement")  # repairs that change the joint sequence
 
 
 def build_joints(std: pd.DataFrame) -> pd.DataFrame:
@@ -317,6 +318,8 @@ def align_welds(prev_std: pd.DataFrame, curr_std: pd.DataFrame, settings, repair
         hi = cpos[-1] + (x - ppos[-1]) / log_map.scale
         return np.where(x < ppos[0], lo, np.where(x > ppos[-1], hi, np.interp(x, ppos, cpos)))
 
+    if repairs is not None and "repair_type" in repairs.columns:  # recoats and sleeves leave the joints in place
+        repairs = repairs[repairs.repair_type.isin(JOINT_REPAIR_TYPES)]
     spans = np.empty((0, 2)) if repairs is None or repairs.empty else         repairs[["start_ft", "end_ft"]].to_numpy(dtype=float)
     cmid = ((cj.start_ft + cj.end_ft) / 2).to_numpy()
     pmid = prev_to_curr(((pj.start_ft + pj.end_ft) / 2).to_numpy())  # in curr log distance

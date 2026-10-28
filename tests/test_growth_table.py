@@ -111,7 +111,7 @@ def test_one_row_per_current_metal_loss(synth_growth):
     want = mt[(mt.match_type != "missing") & (mt.curr_feature_type == "metal_loss")]
     assert list(f.columns) == FEATURE_COLUMNS
     assert f.match_id.tolist() == want.match_id.tolist()  # one row each, in table order
-    assert len(f) == 494 + 6 + 54
+    assert len(f) == 494 + 6 + 54 + 10  # + 10 mill anomalies (M11)
     excluded = mt[(mt.match_type == "missing") | (mt.curr_feature_type != "metal_loss")]
     assert set(excluded.curr_feature_type.dropna()) == {"dent"}  # the synth has dents to exclude
     assert not set(excluded.match_id) & set(f.match_id)

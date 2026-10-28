@@ -141,3 +141,15 @@ def test_unsatisfiable_population_raises():
     line = build_line(p, rng)
     with pytest.raises(ValueError, match="n_ext_ml_prev"):
         build_features(p, line, rng)
+
+
+def test_mill_features_reported_both_runs(setup):
+    p, _, f = setup
+    mill = f[f.population == "mill"]
+    assert len(mill) == p.n_mill == 10
+    assert (mill.growth_mpy == 0).all()
+    assert (mill.depth_prev_true_pct == mill.depth_curr_true_pct).all()
+    assert mill.depth_prev_true_pct.between(10.0, 25.0).all()
+    assert (mill.depth_prev_meas_pct >= p.reporting_threshold_pct).all()
+    assert (mill.depth_curr_meas_pct >= p.reporting_threshold_pct).all()
+    assert set(mill.surface) <= {"EXT", "INT"}

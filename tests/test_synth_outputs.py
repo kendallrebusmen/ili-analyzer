@@ -51,7 +51,7 @@ def test_vendor_a_format(written, result):
     clocks = a.loc[a["O'clock"] != "", "O'clock"]
     assert len(clocks) > 400
     assert clocks.str.match(r"^(1[0-2]|[1-9]):[0-5]\d$").all()
-    assert set(a.Event) == {"Girth Weld", "Metal Loss", "Dent", "Valve", "Tee"}
+    assert set(a.Event) == {"Girth Weld", "Metal Loss", "Mill Anomaly", "Dent", "Valve", "Tee"}
     assert set(a["Int/Ext"]) <= {"External", "Internal", ""}
     assert set(a["Seam Interaction"]) <= {"Y", "N", ""}
 
@@ -74,7 +74,7 @@ def test_vendor_b_format(written):
     b = pd.read_excel(out / "tally_curr_vendor_b.xlsx", sheet_name="Pipe Tally", header=2)
     assert list(b.columns)[:3] == ["Log Dist [m]", "Feature", "Feature ID"]
     assert b["Orientation [deg]"].dropna().between(0, 360, inclusive="left").all()
-    assert set(b.Feature) == {"GWLD", "ML-CORR", "ML-CLUS", "DENT", "VALVE", "TEE"}
+    assert set(b.Feature) == {"GWLD", "ML-CORR", "ML-MILL", "ML-CLUS", "DENT", "VALVE", "TEE"}
 
 
 def test_vendor_roundtrip_values(written, result):
@@ -136,7 +136,7 @@ def test_reference_coverage(result):
     for name in ("hca_segments", "mop_profile", "pipe_properties"):
         assert _contiguous(ref[name], end), name
     rep = ref["repairs_between_runs"]
-    assert len(rep) == 1 and rep.repair_type.iloc[0] == "pipe_replacement"
+    assert list(rep.repair_type) == ["pipe_replacement", "recoat"]
     new_welds = result.weld_truth.query("in_replacement and prev_status == 'not_present'").curr_gw_id
     gw = result.curr_std.query("feature_type == 'girth_weld'").set_index("us_gw_id").log_dist_ft
     assert gw.loc[new_welds].between(rep.start_ft.iloc[0], rep.end_ft.iloc[0]).all()
@@ -202,3 +202,36 @@ def test_cli_bad_params_exit_code(tmp_path):
     )
     assert proc.returncode == 2
     assert "line_miles" in proc.stderr
+
+
+def test_mill_origin_and_ground_truth(result):
+    gt = result.ground_truth
+    mill = gt[gt.population == "mill"]
+    assert len(mill) == 10 and (mill.growth_mpy == 0).all()
+    assert (mill.truth_class == "matched_1to1").all()
+    for std in (result.prev_std, result.curr_std):
+        ml = std[std.feature_type == "metal_loss"]
+        assert (ml.ml_origin == "manufacturing").sum() == 10
+        assert ml.ml_origin.isin(["manufacturing", "corrosion"]).all()
+        assert std[std.feature_type != "metal_loss"].ml_origin.isna().all()
+
+
+def test_vendor_codes_written(result, tmp_path):
+    write_outputs(result, tmp_path)
+    a = pd.read_csv(tmp_path / "tally_prev_vendor_a.csv")
+    b = pd.read_excel(tmp_path / "tally_curr_vendor_b.xlsx", sheet_name="Pipe Tally", header=2)
+    assert (a.Event == "Mill Anomaly").sum() == 10
+    assert (b.Feature == "ML-MILL").sum() == 10
+
+
+def test_recoat_row_covers_metal_loss(result):
+    rep = result.reference["repairs_between_runs"]
+    rc = rep[rep.repair_type == "recoat"]
+    assert len(rc) == 1
+    pr = rep[rep.repair_type == "pipe_replacement"].iloc[0]
+    assert rc.end_ft.iloc[0] <= pr.start_ft or rc.start_ft.iloc[0] >= pr.end_ft
+    assert rc.repair_date.iloc[0] == pr.repair_date
+    ml = result.curr_std[result.curr_std.feature_type == "metal_loss"].log_dist_ft
+    assert ml.between(rc.start_ft.iloc[0], rc.end_ft.iloc[0]).any()
+    fit = result.curr_std[result.curr_std.feature_type.isin(["valve", "tee"])].log_dist_ft
+    assert not fit.between(rc.start_ft.iloc[0], rc.end_ft.iloc[0]).any()
