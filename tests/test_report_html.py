@@ -292,6 +292,23 @@ def test_methods_caption_says_which_settings_are_verified(report):
             "the settings at report time, as no summary records them.") in text
 
 
+def test_methods_lists_new_formulas(report):
+    _, _, html = report
+    text = _section_text(html, "methods")
+    for method in ("half_life", "joint_percentile", "shrinking_fixed"):
+        assert method in text
+    assert "conservative" in text and "pit_to_pit" in text
+    assert "d_curr / ((current run year − install_year) / 2)" in text
+    assert "joint_percentile_min_matches" in text
+    assert "Δd ≥ 0" in text and "Δd < 0" in text
+    assert "ERF = MOP_local / P_safe" in text and "FPR = P_F / MOP_local" in text
+    assert "leak when τ_80 ≤ τ_burst, otherwise burst" in text
+    assert "blank when τ_80 or τ_burst is NaN, or both are inf" in text
+    assert "blank where P_safe or MOP is not a finite positive number" in text
+    assert "P_design = 2 · SMYS · t · design_factor / D" in text
+    assert "MOP · D / (2 · t · SMYS)" in text
+
+
 def test_missing_pct_negative_raw_is_not_available(report):
     inputs, changes, html = report
     assert re.search(r"Negative raw growth rates: [0-9.]+ % of matched features", _section_text(html, "growth"))

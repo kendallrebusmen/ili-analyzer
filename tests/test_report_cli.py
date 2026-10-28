@@ -70,6 +70,18 @@ def test_cli_writes_outputs(built, capsys):
     assert "Line 7" in (folder / "report.html").read_text(encoding="utf-8")
 
 
+def test_report_cli_writes_all_outputs(built, capsys):
+    from ili.report import OUTPUT_NAMES
+    _, _, _, folder = built
+    assert main(_argv(built, "--line-name", "Line 7")) == 0
+    capsys.readouterr()
+    assert len(OUTPUT_NAMES) == 7
+    manifest = json.loads((folder / "run_manifest.json").read_text(encoding="utf-8"))
+    for name in OUTPUT_NAMES:
+        assert (folder / name).is_file()
+        assert name in manifest["outputs"]
+
+
 def test_empty_dig_list_workbook(tmp_path):
     path = tmp_path / "dig.xlsx"
     write_dig_list(pd.DataFrame(columns=list(DIG_LIST_COLUMNS)), path, config.load_settings(), DRAFT_LABEL)

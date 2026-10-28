@@ -306,7 +306,9 @@ reported current-run depth within ±{{ charts.tolerance }} % wall of the field d
 {{ render_table(methods.tool) }}
 
 <h3>Formulas</h3>
-<p><strong>Governing growth rate</strong> (spec 6.5, default rule; the rule in use is <code>growth.governing</code> above):</p>
+<p><strong>Governing growth rate</strong> (spec 6.5). Two profiles are configurable, <code>conservative</code> (default) and
+<code>pit_to_pit</code> (the consultant's practice); the profile in force is shown in the growth section. The
+<code>conservative</code> rule (in use as <code>growth.governing</code> above):</p>
 <div class="table-wrap formula"><table>
 <thead><tr><th>Feature</th><th>Governing rate</th></tr></thead>
 <tbody>
@@ -323,6 +325,18 @@ reported current-run depth within ±{{ charts.tolerance }} % wall of the field d
 <tr><td>new_feature</td><td>(d_curr − reporting_threshold) / Δt</td></tr>
 <tr><td>full_life</td><td>d_curr / (current run year − install_year)</td></tr>
 <tr><td>default_rate</td><td>fixed rate from config (IMP default)</td></tr>
+<tr><td>half_life</td><td>d_curr / ((current run year − install_year) / 2); assumes corrosion started at mid-life, so twice the whole-life rate</td></tr>
+<tr><td>joint_percentile</td><td><code>joint_percentile</code>-th percentile of the raw rates of matched features in the same current-run joint; only when the joint has at least <code>joint_percentile_min_matches</code> matched features, otherwise empty; floor min_rate_mpy</td></tr>
+<tr><td>shrinking_fixed</td><td>fixed rate <code>shrinking_rate_mpy</code>, for matched features whose reported depth decreased between runs (a depth drop is sizing noise, not negative growth)</td></tr>
+</tbody></table></div>
+<p>The <code>pit_to_pit</code> rule (a matched feature grew when Δd ≥ 0, and decreased when Δd &lt; 0):</p>
+<div class="table-wrap formula"><table>
+<thead><tr><th>Feature</th><th>Governing rate</th></tr></thead>
+<tbody>
+<tr><td>Matched, depth grew (Δd ≥ 0)</td><td>raw, floored at min_rate_mpy</td></tr>
+<tr><td>Matched, depth decreased (Δd &lt; 0)</td><td>shrinking_fixed</td></tr>
+<tr><td>New</td><td>joint_percentile when available, otherwise half_life</td></tr>
+<tr><td>No usable history</td><td>half_life</td></tr>
 </tbody></table></div>
 
 <p><strong>Remaining strength</strong> (spec 6.6): z = L² / (D·t); assessed depth per <code>strength.depth_basis</code>.</p>
@@ -349,6 +363,8 @@ reported current-run depth within ±{{ charts.tolerance }} % wall of the field d
 <tbody>
 <tr><td>Predicted burst pressure</td><td>P_F = 2 · S_F · t / D</td></tr>
 <tr><td>Safe operating pressure</td><td>P_safe = P_F × design_factor</td></tr>
+<tr><td>Estimated repair factor</td><td>ERF = MOP_local / P_safe; above 1 means the safe pressure is below MOP; blank where P_safe or MOP is not a finite positive number</td></tr>
+<tr><td>Failure pressure ratio</td><td>FPR = P_F / MOP_local; below 1 means the predicted burst pressure is below MOP; blank where P_safe or MOP is not a finite positive number</td></tr>
 <tr><td>Deep metal loss</td><td>d/t ≥ 0.80 is flagged as exceeding 80 % of wall regardless of pressure</td></tr>
 </tbody></table></div>
 
@@ -362,10 +378,19 @@ criterion is already met at τ = 0.</p>
 <tr><td>τ_burst</td><td>P_F(τ) &lt; MOP_local</td></tr>
 <tr><td>τ_safe</td><td>P_safe(τ) &lt; MOP_local</td></tr>
 <tr><td>Remaining life</td><td>RL = min(τ_80, τ_burst, τ_safe); the governing criterion is recorded</td></tr>
+<tr><td>Predicted failure mode</td><td>leak when τ_80 ≤ τ_burst, otherwise burst (a pit reaching 80 % of wall before the predicted burst pressure falls below MOP is expected to leak); blank when τ_80 or τ_burst is NaN, or both are inf</td></tr>
 <tr><td>Repair-by date</td><td>run_date + RL × rl_factor</td></tr>
 <tr><td>Dig flag</td><td>dig_required_by_remaining_life when RL × rl_factor &lt; years to the segment's next planned assessment
 (missing dates: config defaults, HCA 5 years not to exceed 68 months, non-HCA 10 years)</td></tr>
 <tr><td>Reinspection interval</td><td>min over the segment's features of RL × rl_factor, capped at the regulatory maximum</td></tr>
+</tbody></table></div>
+
+<p><strong>Pipe summary</strong> (spec 6.10, item 1): design pressure and operating stress.</p>
+<div class="table-wrap formula"><table>
+<thead><tr><th>Quantity</th><th>Formula</th></tr></thead>
+<tbody>
+<tr><td>Design pressure</td><td>P_design = 2 · SMYS · t · design_factor / D</td></tr>
+<tr><td>Stress at MOP</td><td>MOP · D / (2 · t · SMYS), as a percentage of SMYS, shown as a range over the line</td></tr>
 </tbody></table></div>
 
 <h3>Repair criteria</h3>
