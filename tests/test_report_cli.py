@@ -229,5 +229,9 @@ def test_report_writes_anomaly_distribution(built):
     assert (out.table == "depth").sum() == 2 * 3 * n_depth and (out.table == "dent").sum() == 2 * n_dent
     depth = out[(out.table == "depth") & (out.location == "all")]
     assert depth.total.sum() > 0 and {"2021_vendorA", "2026_vendorB"} == set(depth.run_id)
+    assert settings.classification.girth_weld_proximity_in is None  # so the girth-weld rows are not evaluated
+    gw = out[(out.table == "depth") & (out.location == "girth_weld")]
+    assert (gw.total == 0).all() and (gw.n_location_unknown > 0).all()
+    assert (depth.n_location_unknown == 0).all()
     manifest = json.loads((folder / "run_manifest.json").read_text(encoding="utf-8"))
     assert "anomaly_distribution.csv" in manifest["outputs"]

@@ -278,8 +278,11 @@ def test_girth_weld_table_not_evaluated_note():
     welds = _std([{"feature_type": "girth_weld", "log_dist_ft": 0.0}, {"feature_type": "girth_weld", "log_dist_ft": 100.0}])
     std = pd.concat([welds, _std([{"log_dist_ft": 50.0}, {"log_dist_ft": 0.1}])], ignore_index=True)
     assert depth_bins(std, settings).query("location == 'girth_weld'").total.sum() == 0
-    notes = _location_notes(std, settings)
-    assert any("classification.girth_weld_proximity_in is not set" in n and "2 " in n for n in notes)
+    gw = depth_bins(std, settings).query("location == 'girth_weld'")
+    assert gw.n_location_unknown.eq(2).all() and depth_bins(std, settings).query("location == 'all'").n_location_unknown.eq(0).all()
+    notes = _location_notes(depth_bins(std, settings), dent_bins(std, np.full(len(std), 10.0), settings), settings)
+    assert any(n.table == "depth" and n.location == "girth_weld"
+               and "classification.girth_weld_proximity_in is not set" in n.text and "(2 " in n.text for n in notes)
 
 
 def test_girth_weld_and_seam_columns_with_settings():
@@ -294,7 +297,8 @@ def test_girth_weld_and_seam_columns_with_settings():
     assert out.query("location == 'girth_weld'").total.sum() == 1
     assert out.query("location == 'long_seam'").total.sum() == 1
     assert out.query("location == 'all'").total.sum() == 2
-    assert _location_notes(std, settings) == []
+    assert depth_bins(std, settings).n_location_unknown.eq(0).all()
+    assert _location_notes(depth_bins(std, settings), dent_bins(std, np.full(len(std), 10.0), settings), settings) == []
 
 
 def test_dent_bin_edges():
@@ -302,7 +306,38 @@ def test_dent_bin_edges():
     out = dent_bins(std, np.full(5, 100.0), config.load_settings())
     assert list(out.bin) == ["0-2", "2-6", ">6"]
     assert list(out["all"]) == [2, 2, 1]
-    assert list(out.columns) == ["run_id", "bin", "all", "girth_weld", "long_seam"]
+    assert list(out.columns) == ["run_id", "bin", "all", "girth_weld", "long_seam", "n_girth_weld_unknown",
+                                 "n_long_seam_unknown"]
+
+
+def test_dent_bin_edge_survives_float_division():
+    """0.9 in on a 15 in OD is 6.000000000000001 % unrounded: it belongs in 2-6, not >6."""
+    assert 0.9 / 15 * 100 > 6.0
+    std = _std([{"feature_type": "dent", "dent_depth_in": 0.9, "depth_pct": NAN}])
+    assert list(dent_bins(std, np.array([15.0]), config.load_settings())["all"]) == [0, 1, 0]
+
+
+def test_depth_bin_edge_is_rounded():
+    std = _std([{"depth_pct": 20.0 - 1e-12}])
+    assert _count(depth_bins(std, config.load_settings()), "all", "20-30") == 1
+
+
+def test_dent_bins_count_unknown_locations():
+    std = _std([{"feature_type": "dent", "dent_depth_in": 0.1, "depth_pct": NAN}] * 2)
+    out = dent_bins(std, np.full(2, 10.0), config.load_settings())
+    assert out.n_girth_weld_unknown.eq(2).all() and out.girth_weld.sum() == 0
+
+
+def test_dent_od_lookup_error_names_the_run():
+    prev = _std([{"feature_type": "dent", "dent_depth_in": 0.2, "log_dist_ft": 120.0, "depth_pct": NAN}], "P")
+    curr = _std([{"feature_type": "metal_loss"}], "C")
+    weld_map = pd.DataFrame({"match_type": ["1:1"], "prev_start_ft": [0.0], "prev_length_ft": [200.0],
+                             "curr_start_ft": [0.0], "curr_length_ft": [200.0]})
+    pipe = pd.DataFrame({"start_ft": [5000.0], "end_ft": [6000.0], "od_in": [10.0]})
+    inputs = SimpleNamespace(prev_std=prev, curr_std=curr, weld_map=weld_map, pipe=pipe,
+                             settings=config.load_settings())
+    with pytest.raises(ValueError, match="dent-bin OD lookup failed for run P"):
+        anomaly_distribution(inputs)
 
 
 def test_dent_bins_skip_unknown_od():

@@ -21,8 +21,10 @@ IMP_CLASS_COLUMNS = ("imp_class", "n_classified", "n_previously_repaired", "n_un
 _CATEGORY_CLASSES = {"immediate": "Immediate", "60_day": "60-day", "180_day": "180-day"}  # spec 6.8
 NO_CLASS = "None"
 LOCATIONS = ("all", "girth_weld", "long_seam")
-DEPTH_COLUMNS = ("run_id", "location", "bin", "ext_corrosion", "int_corrosion", "manufacturing", "total")
-DENT_COLUMNS = ("run_id", "bin", *LOCATIONS)
+DEPTH_COLUMNS = ("run_id", "location", "bin", "ext_corrosion", "int_corrosion", "manufacturing", "total",
+                 "n_location_unknown")
+DENT_COLUMNS = ("run_id", "bin", *LOCATIONS, "n_girth_weld_unknown", "n_long_seam_unknown")
+BIN_DECIMALS = 9  # a percentage is rounded before binning so 0.9 in on 15 in is exactly 6 (as report_data.backtest)
 PCT_PER_FRACTION = 100.0
 PIPE_WHAT = "pipe properties table"
 
@@ -115,13 +117,15 @@ def depth_bins(std: pd.DataFrame, settings: Settings) -> pd.DataFrame:
     """One run's metal loss counted by depth bin (spec 6.10): per location (``all``, ``girth_weld``,
     ``long_seam``) and bin (``report.depth_bins_pct_wt``, left-closed: ``[70, 80)``, last bin ``>=80``), the
     external-corrosion, internal-corrosion and manufacturing counts and the total. Corrosion means
-    ``ml_origin`` is not manufacturing; ``total`` also holds MID and UNK surfaces. A row without a depth is in
-    no bin; a row whose location is unknown (None) is not counted in that location. Every bin of every
+    ``ml_origin`` is not manufacturing; ``total`` also holds MID and UNK surfaces. The depth is rounded to
+    ``BIN_DECIMALS`` places before binning. A row without a depth is in no bin; a row whose location is
+    unknown (None) is not counted in that location, and ``n_location_unknown`` (the same on every row of a
+    location) is the number of binnable rows left out for that reason (0 for ``all``). Every bin of every
     location has a row, counts 0 where nothing falls in it."""
     edges = list(settings.report.depth_bins_pct_wt)
     labels = _edge_labels(edges, ">={:g}")
     ml = std.feature_type.astype(str).eq(FeatureType.metal_loss.value).to_numpy(bool)
-    depth = std.depth_pct.to_numpy(float)
+    depth = std.depth_pct.to_numpy(float).round(BIN_DECIMALS)
     with np.errstate(invalid="ignore"):
         index = np.searchsorted(edges, depth, side="right") - 1  # left-closed; NaN is masked below
     binned = ml & ~np.isnan(depth) & (index >= 0)
@@ -131,20 +135,24 @@ def depth_bins(std: pd.DataFrame, settings: Settings) -> pd.DataFrame:
     rows = []
     for location, flags in _locations(std, settings).items():
         keep = binned & _is_true(flags)
+        n_unknown = int((binned & _is_unknown(flags)).sum())
         for k, label in enumerate(labels):
             hit = keep & (index == k)
             rows.append({"run_id": _run_id(std), "location": location, "bin": label,
                          "ext_corrosion": int((hit & ext & ~manufacturing).sum()),
                          "int_corrosion": int((hit & internal & ~manufacturing).sum()),
-                         "manufacturing": int((hit & manufacturing).sum()), "total": int(hit.sum())})
+                         "manufacturing": int((hit & manufacturing).sum()), "total": int(hit.sum()),
+                         "n_location_unknown": n_unknown})
     return pd.DataFrame(rows, columns=list(DEPTH_COLUMNS))
 
 
 def dent_bins(std: pd.DataFrame, od_in: np.ndarray, settings: Settings) -> pd.DataFrame:
-    """One run's dents counted by depth as a percentage of OD (``dent_depth_in`` / ``od_in`` x 100; spec
-    6.10), right-closed bins from ``report.dent_bins_pct_od`` (``[0, 2]``, ``(2, 6]``, ``>6``), with the
-    ``all``, ``girth_weld`` and ``long_seam`` columns. ``od_in`` is aligned with the rows of ``std``. A dent
-    without a depth or OD is in no bin; an unknown location is not counted. Every bin has a row."""
+    """One run's dents counted by depth as a percentage of OD (``dent_depth_in`` / ``od_in`` x 100, rounded to
+    ``BIN_DECIMALS`` places; spec 6.10), right-closed bins from ``report.dent_bins_pct_od`` (``[0, 2]``,
+    ``(2, 6]``, ``>6``), with the ``all``, ``girth_weld`` and ``long_seam`` columns. ``od_in`` is aligned with
+    the rows of ``std``. A dent without a depth or OD is in no bin; an unknown location is not counted, and
+    ``n_girth_weld_unknown`` / ``n_long_seam_unknown`` (the same on every row) are the numbers of binnable
+    dents left out of those columns for that reason. Every bin has a row."""
     edges = list(settings.report.dent_bins_pct_od)
     labels = _edge_labels(edges, ">{:g}")
     dent = std.feature_type.astype(str).eq(FeatureType.dent.value).to_numpy(bool)
@@ -152,17 +160,27 @@ def dent_bins(std: pd.DataFrame, od_in: np.ndarray, settings: Settings) -> pd.Da
     if len(od) != len(std):
         raise ValueError(f"od_in has {len(od)} values for {len(std)} rows")
     with np.errstate(invalid="ignore", divide="ignore"):
-        pct = np.where(od > 0, std.dent_depth_in.to_numpy(float) / od * PCT_PER_FRACTION, np.nan)
+        pct = np.where(od > 0, std.dent_depth_in.to_numpy(float) / od * PCT_PER_FRACTION, np.nan).round(BIN_DECIMALS)
         index = np.maximum(np.searchsorted(edges, pct, side="left") - 1, 0)  # right-closed; 0 is in the first bin
     binned = dent & ~np.isnan(pct) & (pct >= 0)
     flags = _locations(std, settings)
+    unknown = {loc: int((binned & _is_unknown(flags[loc])).sum()) for loc in LOCATIONS}
     rows = []
     for k, label in enumerate(labels):
         row = {"run_id": _run_id(std), "bin": label}
         for location in LOCATIONS:
             row[location] = int((binned & _is_true(flags[location]) & (index == k)).sum())
-        rows.append(row)
+        rows.append({**row, "n_girth_weld_unknown": unknown["girth_weld"],
+                     "n_long_seam_unknown": unknown["long_seam"]})
     return pd.DataFrame(rows, columns=list(DENT_COLUMNS))
+
+
+@dataclass(frozen=True)
+class Note:
+    """Why a location's counts leave rows out: ``table`` (``depth`` or ``dent``), ``location`` and the text."""
+    table: str
+    location: str
+    text: str
 
 
 @dataclass(frozen=True)
@@ -171,42 +189,44 @@ class AnomalyDistribution:
     locations could not be evaluated for some rows, and why."""
     depth: pd.DataFrame
     dent: pd.DataFrame
-    notes: list[str]
+    notes: list[Note]
 
 
-def _location_notes(std: pd.DataFrame, settings: Settings) -> list[str]:
-    """One note per location of one run with unknown rows among its metal loss and dents (the count and the
-    reason); none when every row is known."""
+def _location_notes(result_depth: pd.DataFrame, result_dent: pd.DataFrame, settings: Settings) -> list[Note]:
+    """One note per run, table and location with rows left out for an unknown location (count and reason);
+    none when every binnable row is known."""
     cfg = settings.classification
-    flags = _locations(std, settings)
-    scope = std.feature_type.astype(str).isin([FeatureType.metal_loss.value, FeatureType.dent.value]).to_numpy(bool)
-    run = _run_id(std)
-    notes = []
-    n = int((_is_unknown(flags["girth_weld"]) & scope).sum())
-    if n:
-        if cfg.girth_weld_proximity_in is None:
-            why = "classification.girth_weld_proximity_in is not set"
-        else:
-            why = "no girth welds, or a position or length is missing, or the feature is outside the weld span"
-        notes.append(f"girth-weld proximity: {why} ({n} metal-loss and dent row(s) of run {run} not evaluated)")
-    n = int((_is_unknown(flags["long_seam"]) & scope).sum())
-    if n:
-        if cfg.seam_clock_min is None or cfg.seam_clock_tol_min is None:
-            why = "classification.seam_clock_min / seam_clock_tol_min is not set and the vendor flag is not True"
-        else:
-            why = "the clock position is missing and the vendor flag is not True"
-        notes.append(f"long seam: {why} ({n} metal-loss and dent row(s) of run {run} not evaluated)")
-    return notes
+    reasons = {
+        "girth_weld": ("girth-weld proximity",
+                       "classification.girth_weld_proximity_in is not set" if cfg.girth_weld_proximity_in is None
+                       else "no girth welds, or a position or length is missing, or the feature is outside the "
+                            "weld span"),
+        "long_seam": ("long seam",
+                      "classification.seam_clock_min / seam_clock_tol_min is not set and the vendor flag is not True"
+                      if cfg.seam_clock_min is None or cfg.seam_clock_tol_min is None
+                      else "the clock position is missing and the vendor flag is not True"),
+    }
+    counts = []  # (table, location, run, n, what)
+    for run, rows in result_depth.groupby("run_id", sort=False):
+        for loc in ("girth_weld", "long_seam"):
+            counts.append(("depth", loc, run, int(rows[rows.location == loc].n_location_unknown.iloc[0]),
+                           "metal-loss row(s)"))
+    for run, rows in result_dent.groupby("run_id", sort=False):
+        for loc in ("girth_weld", "long_seam"):
+            counts.append(("dent", loc, run, int(rows[f"n_{loc}_unknown"].iloc[0]), "dent(s)"))
+    return [Note(table, loc, f"{reasons[loc][0]}: {reasons[loc][1]} ({n} {what} of run {run} not evaluated)")
+            for table, loc, run, n, what in counts if n]
 
 
 def anomaly_distribution(inputs) -> AnomalyDistribution:
     """Depth bins and dent bins for the previous and the current run (spec 6.10). Dent ODs come from the pipe
     properties (``inputs.pipe``) at each dent's current-run position; the previous run's positions are first
-    mapped onto the current run with the weld map, as reference files are keyed to current-run distance."""
+    mapped onto the current run with the weld map, as reference files are keyed to current-run distance. A
+    dent position the pipe table does not cover is a ValueError naming the run."""
     settings = inputs.settings
     tol = settings.alignment.anchor_tol_ft
     pmap = PositionMap.from_weld_map(inputs.weld_map)
-    depth, dent, notes = [], [], []
+    depth, dent = [], []
     for std, is_prev in ((inputs.prev_std, True), (inputs.curr_std, False)):
         pos = std.log_dist_ft.to_numpy(float)
         if is_prev:
@@ -214,11 +234,14 @@ def anomaly_distribution(inputs) -> AnomalyDistribution:
         is_dent = std.feature_type.astype(str).eq(FeatureType.dent.value).to_numpy(bool)
         od = np.full(len(std), np.nan)
         if is_dent.any():
-            od[is_dent] = lookup(inputs.pipe, pos[is_dent], "od_in", tol, what=PIPE_WHAT, allow_nan=True)
+            try:
+                od[is_dent] = lookup(inputs.pipe, pos[is_dent], "od_in", tol, what=PIPE_WHAT, allow_nan=True)
+            except ValueError as exc:
+                raise ValueError(f"dent-bin OD lookup failed for run {_run_id(std)}: {exc}") from exc
         depth.append(depth_bins(std, settings))
         dent.append(dent_bins(std, od, settings))
-        notes += _location_notes(std, settings)
-    return AnomalyDistribution(pd.concat(depth, ignore_index=True), pd.concat(dent, ignore_index=True), notes)
+    depth, dent = pd.concat(depth, ignore_index=True), pd.concat(dent, ignore_index=True)
+    return AnomalyDistribution(depth, dent, _location_notes(depth, dent, settings))
 
 
 def anomaly_distribution_table(result: AnomalyDistribution) -> pd.DataFrame:

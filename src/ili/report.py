@@ -261,10 +261,11 @@ def _distribution(inputs: ReportInputs) -> dict:
     result = anomaly_distribution(inputs)
     columns = [c for c in DEPTH_COLUMNS if c != "location"]
     return {
-        "depth": [(LOCATION_TITLES[loc], table(result.depth[result.depth.location == loc], columns))
+        "depth": [(LOCATION_TITLES[loc], table(result.depth[result.depth.location == loc], columns),
+                   [n.text for n in result.notes if n.table == "depth" and n.location == loc])
                   for loc in LOCATIONS],
         "dent": table(result.dent),
-        "notes": result.notes,
+        "dent_notes": [n.text for n in result.notes if n.table == "dent"],
     }
 
 
