@@ -71,6 +71,12 @@ def _app(**state):
     return at
 
 
+def _files_app():
+    """The app with every pipeline-data table set to "Choose a file" (an empty field otherwise opens on typing)."""
+    from ili.app_pages_setup import REFERENCE_OPTIONAL, REFERENCE_REQUIRED, USE_FILE
+    return _app(**{f"setup_{n}_mode": USE_FILE for n in (*REFERENCE_REQUIRED, *REFERENCE_OPTIONAL)})
+
+
 def _all_text(at):
     return " ".join(str(e.value) for e in [*at.markdown, *at.caption, *at.info, *at.warning, *at.title])
 
@@ -85,13 +91,13 @@ def test_app_starts_with_draft_label():
 def test_run_setup_runs_pipeline(synth, tmp_path):
     _, data = synth
     inputs = _inputs(data, tmp_path / "out")
-    at = _app().run()
+    at = _files_app().run()
     for name, value in vars(inputs).items():
         if value is not None:
             at.text_input(key=f"setup_{name}").set_value(str(value))
     at.button[0].click().run()
     assert not at.exception
-    labels = [e.label for e in at.expander]
+    labels = [e.label for e in at.expander if ": exit " in e.label]  # the stage results
     assert labels == [f"{s}: exit 0" for s in STAGES]
     assert not at.error
     assert at.session_state[app_state.COMPARISON_KEY] == str(inputs.out / FOLDER)
@@ -104,7 +110,7 @@ def test_run_setup_runs_pipeline(synth, tmp_path):
 def test_run_setup_shows_failing_stderr(synth, tmp_path):
     _, data = synth
     inputs = _inputs(data, tmp_path / "out", pipe=data / "reference" / "missing.csv")
-    at = _app().run()
+    at = _files_app().run()
     for name, value in vars(inputs).items():
         if value is not None:
             at.text_input(key=f"setup_{name}").set_value(str(value))
@@ -114,9 +120,64 @@ def test_run_setup_shows_failing_stderr(synth, tmp_path):
 
 
 def test_run_setup_requires_inputs():
-    at = _app().run()
+    at = _files_app().run()
+    assert any("Still needed: previous run tally" in c.value for c in at.caption)
     at.button[0].click().run()
-    assert at.error and "prev_tally" in at.error[0].value
+    assert at.error and "Still needed: previous run tally" in at.error[0].value
+    assert "Pipe properties" in at.error[0].value
+
+
+def test_every_input_has_one_place_on_the_page():
+    from dataclasses import fields as dc_fields
+    from ili import app_pages_setup as page
+    from ili.pipeline import PipelineInputs
+    placed = [*(f"{r}_{x}" for r in ("prev", "curr") for x in ("tally", "map", "run_date")),
+              *page.REFERENCE_REQUIRED, *page.REFERENCE_OPTIONAL, "digs", *page.REPORT_FIELDS, *page.ADVANCED_FIELDS]
+    assert sorted(placed) == sorted(f.name for f in dc_fields(PipelineInputs))
+
+
+def test_empty_fields_open_on_typing_and_set_ones_on_the_file(tmp_path):
+    from ili.app_pages_setup import TYPE_IN, USE_FILE
+    at = _app().run()
+    assert not at.exception
+    assert at.session_state["setup_pipe_mode"] == TYPE_IN
+    assert at.session_state["setup_out"]  # the output folder has a default
+    at = _app(setup_pipe=str(tmp_path / "pipe.csv")).run()
+    assert at.session_state["setup_pipe_mode"] == USE_FILE
+
+
+def test_typed_tables_are_saved_and_run(synth, tmp_path):
+    """Pipeline data typed in (seeded here from the synthetic files) is saved under <out>/entered/ and runs."""
+    import pandas as pd
+    from ili.app_pages_setup import REFERENCE_REQUIRED, TYPE_IN, USE_FILE
+    from ili.app_setup_tables import TABLES, seed_table
+    _, data = synth
+    inputs = _inputs(data, tmp_path / "out")
+    state = {f"setup_{n}_mode": TYPE_IN for n in REFERENCE_REQUIRED}
+    state |= {f"setup_{n}_seed": seed_table(n, str(getattr(inputs, n))) for n in REFERENCE_REQUIRED}
+    state |= {f"setup_{n}_mode": USE_FILE for n in ("repairs", "crossings")}
+    at = _app(**state).run()
+    for name in ("prev_tally", "prev_map", "curr_tally", "curr_map", "prev_run_date", "out", "repairs"):
+        value = getattr(inputs, name)
+        if value is not None:
+            at.text_input(key=f"setup_{name}").set_value(str(value))
+    at.button[0].click().run()
+    assert not at.exception and not at.error
+    assert [e.label for e in at.expander if ": exit " in e.label] == [f"{s}: exit 0" for s in STAGES]
+    ran = at.session_state[app_state.INPUTS_KEY]
+    for name in REFERENCE_REQUIRED:
+        saved = inputs.out / "entered" / TABLES[name].file_name
+        assert getattr(ran, name) == saved and saved.is_file()
+    original = pd.read_csv(inputs.pipe)
+    assert pd.read_csv(ran.pipe).install_year.tolist() == original.install_year.tolist()
+
+
+def test_typed_required_table_without_rows_is_an_error(tmp_path):
+    at = _app(setup_out=str(tmp_path / "out")).run()  # empty fields: the pipeline data opens on typing
+    for name in ("prev_tally", "prev_map", "curr_tally", "curr_map"):
+        at.text_input(key=f"setup_{name}").set_value(str(tmp_path / f"{name}.csv"))
+    at.button[0].click().run()
+    assert at.error and "Pipe properties: type at least one row" in at.error[0].value
 
 
 def test_weld_alignment_page_shows_changed_sections(ran):

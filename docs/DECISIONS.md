@@ -520,3 +520,33 @@ Builds the spec amendment above on synthetic data. Defaults are unchanged: with 
   setup page); "not stated" when blank. Every piece of data text is escaped before ReportLab's paragraph markup.
 - `report.pdf` is a ninth report output, written with the others through `_write_all`, so a failure to build it
   leaves every existing output as it was.
+
+## Run setup page: steps and typed tables (2026-10-28)
+
+- **Requested by the user:** reference data such as pipe properties and next inspection dates should be easy to
+  type in instead of always being a file, and the page should be easier to take in.
+- **Four steps.**
+  1. Inspections: tally, vendor map and run date for each run.
+  2. Pipeline data: pipe properties, MOP, HCA segments and next inspection dates.
+  3. Optional data, collapsed: repairs, crossings and digs.
+  4. Report details, collapsed: line name, discovery date, cover names and tool types.
+
+  The output folder, settings and criteria files are under "Advanced". The output folder defaults to `outputs/`.
+  Every `PipelineInputs` field has exactly one place on the page (a test pins it). A caption under **Run** lists
+  what is still needed, in words.
+- **File or typed, per table.** Each of the four pipeline-data tables, plus repairs and crossings, is either a file
+  or typed in an editor (`st.data_editor`).
+  - The editor starts from the chosen file's rows, so typing can also correct a file.
+  - A field with no file opens on typing; a field with a file opens on the file.
+  - Digs stay file-only: they are field results that arrive as a file.
+- **Typed data is saved, not held in memory.** On **Run**, each typed table is cleaned and written as its spec 5.2
+  CSV under `<output folder>/entered/`. The pipeline then reads it like any other file, so
+  `pipeline_inputs.json` records its path and the run manifest hashes it. A rerun from the app reads the same
+  saved file.
+- **Validation.** Fully blank rows are dropped; an unticked "could affect HCA" alone does not count as content. A
+  row missing a required column is refused, naming the table, the row number and the column. A repair type outside
+  `sleeve`, `cutout`, `recoat`, `pipe_replacement` is refused. A required table with no rows is an error. An
+  optional table with no rows is treated as not given. The pipeline stages still validate everything else (ranges,
+  overlaps, dates).
+- `app_setup_tables.py` holds the table definitions (columns, kinds, required columns, headings with units) and
+  the clean, seed and write functions, tested without the app.
