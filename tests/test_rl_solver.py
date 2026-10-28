@@ -302,3 +302,48 @@ def test_remaining_life_zero_beats_nan():
     assert remaining_life({"tau_80": math.nan, "tau_burst": math.nan, "tau_safe": 0.0}, s) == (0.0, "tau_safe")
     rl, gov = remaining_life({"tau_80": math.nan, "tau_burst": 5.0, "tau_safe": math.inf}, s)
     assert math.isnan(rl) and gov is None
+
+
+# --- strength_at, failure_mode, condition_date (M11 task 8) ------------------------------------------
+
+
+def _ref(settings, tau=0.0, g=0.0, mop=1000.0):
+    return rl_mod.strength_at(tau, 0.125, 4.0, g, 0.0, 12.75, 0.25, 52_000.0, mop, settings)
+
+
+def test_strength_at_reference_case():
+    settings = load_settings()
+    out = _ref(settings)
+    assert float(out["burst_psig"]) == pytest.approx(1771.5, abs=1)
+    p_f = float(out["burst_psig"])
+    assert float(out["safe_psig"]) == pytest.approx(0.72 * p_f, rel=1e-9)
+    assert float(out["erf"]) == pytest.approx(1000.0 / (0.72 * p_f), rel=1e-9)
+    assert float(out["fpr"]) == pytest.approx(p_f / 1000.0, rel=1e-9)
+
+
+def test_strength_at_projects_growth():
+    settings = load_settings()
+    now, later = _ref(settings), _ref(settings, tau=5.0, g=0.01)
+    assert float(later["depth_in"]) == pytest.approx(0.125 + 0.05)
+    assert float(later["burst_psig"]) < float(now["burst_psig"])
+
+
+@pytest.mark.parametrize("mop", [0.0, -5.0, float("nan")])
+def test_erf_blank_for_bad_mop(mop):
+    out = _ref(load_settings(), mop=mop)
+    assert np.isnan(out["erf"]) and np.isnan(out["fpr"])
+
+
+def test_failure_mode():
+    inf, nan = float("inf"), float("nan")
+    got = rl_mod.failure_mode([3, 5, 6, inf, nan], [5, 5, 5, inf, 5])
+    assert list(got) == ["leak", "leak", "burst", None, None]
+
+
+def test_condition_dates():
+    from datetime import date
+    run = date(2026, 6, 15)
+    assert rl_mod.condition_date(run, 0.0) == run
+    assert rl_mod.condition_date(run, 1.0) == date(2027, 6, 15)
+    assert rl_mod.condition_date(run, float("inf")) is None
+    assert rl_mod.condition_date(run, float("nan")) is None

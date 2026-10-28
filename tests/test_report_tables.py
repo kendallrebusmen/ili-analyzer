@@ -30,7 +30,8 @@ def _inputs(cls_rows, rl=None, growth=None, curr_std=None):
         "prev_length_in": 2.0, "curr_length_in": 3.0})
     growth = pd.DataFrame({"match_id": ids, "governing_mpy": 5.0, "governing_method": "raw"})
     rl = pd.DataFrame({"match_id": ids, "rl_yr": rl if rl is not None else [1.0] * len(ids),
-                       "rl_governing": "burst"})
+                       "rl_governing": "burst", "failure_mode": "leak", "erf": 0.8, "fpr": 1.25,
+                       "burst_next_psig": 1500.0, "safe_next_psig": 1080.0, "erf_next": 0.9, "fpr_next": 1.5})
     if curr_std is None:
         curr_std = pd.DataFrame({"feature_id": [r["curr_feature_id"] for r in cls_rows], "log_dist_ft": 100.0,
                                  "lat": 29.5, "lon": -95.5})
@@ -158,3 +159,13 @@ def test_criteria_rows_in_file_order():
     assert list(out.columns) == ["id", "category", "applies_to", "feature_types", "condition", "requires_review",
                                  "description"]
     assert out.feature_types.map(lambda v: isinstance(v, str)).all()
+
+
+def test_dig_list_has_erf_fpr():
+    out = dig_list(_inputs([_row("M1", "60_day")]))
+    i = list(out.columns).index
+    assert i("erf") == i("mop_local") + 1 and i("fpr") == i("erf") + 1
+    assert i("failure_mode") == i("rl_governing") + 1
+    assert i("burst_next_psig") > i("fpr") and i("fpr_next") == i("erf_next") + 1
+    row = out.iloc[0]
+    assert (row.erf, row.fpr, row.erf_next, row.fpr_next, row.failure_mode) == (0.8, 1.25, 0.9, 1.5, "leak")

@@ -111,6 +111,26 @@ def criterion_margins(tau, d0, L0, g, gL, D, t, smys, mop, settings: Settings) -
     }
 
 
+def strength_at(tau, d0, L0, g, gL, D, t, smys, mop, settings: Settings) -> dict[str, np.ndarray]:
+    """Projected geometry and pressures at time(s) τ (years), elementwise (spec 6.6).
+
+    Keys: ``depth_in`` and ``length_in`` (``projected_depth_length``), ``burst_psig`` (P_F from the configured
+    ``strength.method``), ``safe_psig`` (P_F x design factor), ``erf`` = MOP / P_safe and ``fpr`` = P_F / MOP.
+    Units as ``criterion_margins``. NaN in, NaN out; OD, SMYS or MOP <= 0 and a negative L0 count as missing
+    (``usable_inputs``); ERF and FPR are NaN where MOP or P_safe is not a finite positive number.
+    """
+    L0, D, smys, mop = usable_inputs(L0, D, smys, mop)
+    depth, length = projected_depth_length(tau, d0, L0, g, gL)
+    _, _, _, s_f = failure_stress(settings.strength.method, D, t, depth, length, smys)
+    p_f = np.asarray(burst_pressure(s_f, t, D), dtype=float)
+    p_safe = np.asarray(safe_pressure(p_f, settings), dtype=float)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        valid = np.isfinite(mop) & (mop > 0) & np.isfinite(p_safe) & (p_safe > 0)
+        erf = np.where(valid, mop / np.where(valid, p_safe, 1.0), np.nan)
+        fpr = np.where(valid, p_f / np.where(valid, mop, 1.0), np.nan)
+    return {"depth_in": depth, "length_in": length, "burst_psig": p_f, "safe_psig": p_safe, "erf": erf, "fpr": fpr}
+
+
 def time_grid(settings: Settings) -> np.ndarray:
     """Search grid 0, step, 2 step, ..., horizon_yr in years; the horizon itself is always the last point."""
     horizon = float(settings.remaining_life.horizon_yr)
@@ -249,6 +269,24 @@ def remaining_life(times: dict[str, float], settings: Settings) -> tuple[float, 
     return float(times[governing]), governing
 
 
+def failure_mode(tau_80, tau_burst) -> np.ndarray:
+    """``leak`` where tau_80 <= tau_burst (the wall is lost first), ``burst`` where tau_80 > tau_burst; None
+    (object array) where either time is NaN or both are inf (nothing to compare)."""
+    a, b = np.asarray(tau_80, dtype=float), np.asarray(tau_burst, dtype=float)
+    out = np.full(np.broadcast(a, b).shape, None, dtype=object)
+    ok = ~(np.isnan(a) | np.isnan(b) | (np.isinf(a) & np.isinf(b)))
+    out[ok & (a <= b)] = "leak"
+    out[ok & (a > b)] = "burst"
+    return out
+
+
+def condition_date(run_date: date, tau_yr: float) -> date | None:
+    """run date + floor(τ x 365.25) days (never a day late); None for NaN or inf."""
+    if not math.isfinite(tau_yr):
+        return None
+    return run_date + timedelta(days=math.floor(tau_yr * DAYS_PER_YEAR))
+
+
 def rl_upper_bound(times: dict[str, float], rl_yr: float) -> float | None:
     """A known upper bound on RL in years: ``rl_yr`` when it is finite, else the smallest finite criterion
     time (RL = min of the times, so RL <= any one of them even when another is NaN); None when no
@@ -289,10 +327,13 @@ RL_FEATURE_COLUMNS = [
     "match_id", "curr_feature_id", "curr_log_dist_ft", "segment_id", "could_affect_hca",
     "od_in", "wt_in", "smys_psi", "mop_psig", "d_reported_pct", "d_assessed_in", "assessed_dt", "exceeds_80pct",
     "length_in", "length_assessed_in",
-    "method", "z", "folias_m", "flow_stress_psi", "failure_stress_psi", "burst_psig", "safe_psig",
-    "g_inyr", "gl_inyr", "tau_80_yr", "tau_burst_yr", "tau_safe_yr", "rl_yr", "rl_governing",
+    "method", "z", "folias_m", "flow_stress_psi", "failure_stress_psi", "burst_psig", "safe_psig", "erf", "fpr",
+    "g_inyr", "gl_inyr", "tau_80_yr", "tau_burst_yr", "tau_safe_yr", "tau_80_date", "tau_burst_date",
+    "tau_safe_date", "rl_yr", "rl_governing", "failure_mode",
     "rl_upper_bound_yr", "rl_factor", "rl_factored_yr", "repair_by_date",
-    "next_assessment_date", "next_assessment_source", "years_to_next_assessment", "dig_required_by_remaining_life",
+    "next_assessment_date", "next_assessment_source", "years_to_next_assessment",
+    "depth_next_in", "depth_next_pct", "burst_next_psig", "safe_next_psig", "erf_next", "fpr_next",
+    "dig_required_by_remaining_life",
     "needs_review", "review_reasons",
 ]
 INTERVAL_COLUMNS = [
@@ -581,6 +622,7 @@ def compute_remaining_life(growth: pd.DataFrame, curr_run_date, pipe: pd.DataFra
     p_safe = np.asarray(safe_pressure(p_f, settings), dtype=float)
     g_inyr = g_in.governing_mpy.to_numpy(float) / MILS_PER_IN
     gl_inyr = g_in.length_rate_ipy.to_numpy(float)
+    now = strength_at(0.0, d_as, l_as, 0.0, 0.0, od, wt, smys, mop_psig, settings)
 
     taus = {c: np.full(n, math.nan) for c in CRITERIA}
     rl_yr = np.full(n, math.nan)
@@ -609,6 +651,9 @@ def compute_remaining_life(growth: pd.DataFrame, curr_run_date, pipe: pd.DataFra
     # NaN RL: the factored upper bound decides (flagged rl_not_evaluated either way); no bound: no dig claim
     for_dig = factored_bound(rl_factored, rl_bound, rl_cfg.rl_factor)
     dig = np.isfinite(for_dig) & (for_dig < years_next)
+    nxt_str = strength_at(years_next, d_as, l_as, g_inyr, gl_inyr, od, wt, smys, mop_psig, settings)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        depth_next_pct = nxt_str["depth_in"] / wt * 100.0
 
     m6_flags = {"rl_not_evaluated": np.isnan(rl_yr), "exceeds_80pct": exceeds,
                 "no_segment": np.array([s is None for s in seg_id], dtype=bool)}
@@ -626,13 +671,22 @@ def compute_remaining_life(growth: pd.DataFrame, curr_run_date, pipe: pd.DataFra
         "length_in": length, "length_assessed_in": l_as,
         "method": obj([method] * n), "z": z, "folias_m": folias, "flow_stress_psi": flow,
         "failure_stress_psi": s_f, "burst_psig": p_f, "safe_psig": p_safe,
+        "erf": now["erf"], "fpr": now["fpr"],
         "g_inyr": g_inyr, "gl_inyr": gl_inyr,
         "tau_80_yr": taus["tau_80"], "tau_burst_yr": taus["tau_burst"], "tau_safe_yr": taus["tau_safe"],
-        "rl_yr": rl_yr, "rl_governing": obj(rl_gov), "rl_upper_bound_yr": rl_bound,
+        "tau_80_date": obj(condition_date(run_date, x) for x in taus["tau_80"]),
+        "tau_burst_date": obj(condition_date(run_date, x) for x in taus["tau_burst"]),
+        "tau_safe_date": obj(condition_date(run_date, x) for x in taus["tau_safe"]),
+        "rl_yr": rl_yr, "rl_governing": obj(rl_gov),
+        "failure_mode": obj(failure_mode(taus["tau_80"], taus["tau_burst"])),
+        "rl_upper_bound_yr": rl_bound,
         "rl_factor": np.full(n, float(rl_cfg.rl_factor)), "rl_factored_yr": rl_factored,
         "repair_by_date": obj(repair_by(run_date, x) for x in rl_factored),
         "next_assessment_date": obj(d for d, _ in nxt), "next_assessment_source": obj(s for _, s in nxt),
-        "years_to_next_assessment": years_next, "dig_required_by_remaining_life": dig,
+        "years_to_next_assessment": years_next,
+        "depth_next_in": nxt_str["depth_in"], "depth_next_pct": depth_next_pct,
+        "burst_next_psig": nxt_str["burst_psig"], "safe_next_psig": nxt_str["safe_psig"],
+        "erf_next": nxt_str["erf"], "fpr_next": nxt_str["fpr"], "dig_required_by_remaining_life": dig,
         "needs_review": needs_review, "review_reasons": obj(reasons),
     })[RL_FEATURE_COLUMNS]
     intervals = reinspection_intervals(f, segments, settings)
@@ -660,9 +714,9 @@ def write_remaining_life(result: RLResult, out_dir: Path) -> dict[str, Path]:
 
 
 _RL_TEXT = ("match_id", "curr_feature_id", "segment_id", "method", "rl_governing", "next_assessment_source",
-            "review_reasons")
+            "review_reasons", "failure_mode")
 _RL_FLAGS = ("could_affect_hca", "exceeds_80pct", "dig_required_by_remaining_life", "needs_review")
-_RL_DATES = ("repair_by_date", "next_assessment_date")
+_RL_DATES = ("repair_by_date", "next_assessment_date", "tau_80_date", "tau_burst_date", "tau_safe_date")
 
 
 def load_remaining_life_table(path: Path) -> pd.DataFrame:

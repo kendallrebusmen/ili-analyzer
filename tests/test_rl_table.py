@@ -18,10 +18,13 @@ FEATURE_COLUMNS = [
     "match_id", "curr_feature_id", "curr_log_dist_ft", "segment_id", "could_affect_hca",
     "od_in", "wt_in", "smys_psi", "mop_psig", "d_reported_pct", "d_assessed_in", "assessed_dt", "exceeds_80pct",
     "length_in", "length_assessed_in",
-    "method", "z", "folias_m", "flow_stress_psi", "failure_stress_psi", "burst_psig", "safe_psig",
-    "g_inyr", "gl_inyr", "tau_80_yr", "tau_burst_yr", "tau_safe_yr", "rl_yr", "rl_governing",
+    "method", "z", "folias_m", "flow_stress_psi", "failure_stress_psi", "burst_psig", "safe_psig", "erf", "fpr",
+    "g_inyr", "gl_inyr", "tau_80_yr", "tau_burst_yr", "tau_safe_yr", "tau_80_date", "tau_burst_date",
+    "tau_safe_date", "rl_yr", "rl_governing", "failure_mode",
     "rl_upper_bound_yr", "rl_factor", "rl_factored_yr", "repair_by_date",
-    "next_assessment_date", "next_assessment_source", "years_to_next_assessment", "dig_required_by_remaining_life",
+    "next_assessment_date", "next_assessment_source", "years_to_next_assessment",
+    "depth_next_in", "depth_next_pct", "burst_next_psig", "safe_next_psig", "erf_next", "fpr_next",
+    "dig_required_by_remaining_life",
     "needs_review", "review_reasons",
 ]
 INTERVAL_COLUMNS = [
@@ -549,3 +552,21 @@ def test_every_feature_has_rl_and_governing(synth_pipeline, tmp_path):
     again = compute_remaining_life(growth.load_growth_table(path), curr_date, ref["pipe_properties"],
                                    ref["mop_profile"], ref["hca_segments"], ref["next_inspection"], s)
     pd.testing.assert_frame_equal(again.features, f)
+
+
+def test_rl_table_new_columns(synth_pipeline, tmp_path):
+    s, r, g = synth_pipeline
+    ref = r.reference
+    res = compute_remaining_life(g.features, r.curr_std.run_date.iloc[0], ref["pipe_properties"],
+                                 ref["mop_profile"], ref["hca_segments"], ref["next_inspection"], s)
+    f = res.features
+    finite = f[np.isfinite(f.rl_yr)]
+    assert len(finite) and finite.failure_mode.isin(["leak", "burst"]).all()
+    assert (f.depth_next_in.dropna() >= f.d_assessed_in[f.depth_next_in.notna()] - 1e-12).all()
+    np.testing.assert_allclose(f.depth_next_pct, f.depth_next_in / f.wt_in * 100.0, equal_nan=True)
+    path = tmp_path / "remaining_life.csv"
+    f.to_csv(path, index=False, lineterminator="\n")
+    back = rl_mod.load_remaining_life_table(path)
+    assert [x for x in back.failure_mode] == [None if x is None else x for x in f.failure_mode]
+    for c in ("tau_80_date", "tau_burst_date", "tau_safe_date"):
+        assert [x for x in back[c]] == list(f[c])
