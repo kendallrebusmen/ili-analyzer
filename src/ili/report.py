@@ -41,8 +41,9 @@ from ili.category_change import CHANGE_COLUMNS, CategoryChangeResult, category_c
 from ili.classify import CATEGORY_PRIORITY, IMMEDIATE_ACTION_NOTE, criteria_path
 from ili.config import DEFAULT_SETTINGS, PROJECT_ROOT, Settings, load_settings
 from ili.match import CONFIDENCES
-from ili.report_charts import (CATEGORY_COLOURS, depth_vs_distance, feature_map, figure_div, growth_histograms,
-                               growth_vs_distance, rl_distribution, unity_chart)
+from ili.report_charts import (CATEGORY_COLOURS, depth_vs_distance, elevation_chart, feature_map, figure_div,
+                               growth_histograms, growth_vs_distance, orientation_charts, rl_distribution,
+                               unity_chart)
 from ili.report_data import (ReportInputs, _sha256, backtest, config_rows, criteria_rows, dig_list, input_hashes,
                              largest_growth, load_report_inputs, match_stats, pending_reviews)
 from ili.report_tables import (DEPTH_COLUMNS, LOCATIONS, anomaly_distribution, anomaly_distribution_table,
@@ -294,11 +295,13 @@ def _joints(inputs: ReportInputs) -> dict:
 def _charts(inputs: ReportInputs, dig: pd.DataFrame) -> dict:
     tolerance = inputs.settings.tool.depth_tolerance_pct_wt
     bt = backtest(inputs.digs, inputs.curr_std, inputs.settings)
-    fmap, unity = feature_map(inputs, dig), unity_chart(bt, tolerance)
+    fmap, unity, elevation = feature_map(inputs, dig), unity_chart(bt, tolerance), elevation_chart(inputs)
     return {
         "depth": Markup(figure_div(depth_vs_distance(inputs))),
         "growth": Markup(figure_div(growth_vs_distance(inputs))),
         "rl": Markup(figure_div(rl_distribution(inputs))),
+        "orientation": [Markup(figure_div(fig)) for fig in orientation_charts(inputs).values()],
+        "elevation": None if elevation is None else Markup(figure_div(elevation)),
         "map": None if fmap is None else Markup(figure_div(fmap)),
         "unity": None if unity is None else Markup(figure_div(unity)),
         "backtest": None if bt is None else {

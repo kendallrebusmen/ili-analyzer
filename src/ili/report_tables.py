@@ -114,6 +114,17 @@ def _run_id(std: pd.DataFrame) -> str:
     return str(std.run_id.iloc[0]) if len(std) else ""
 
 
+def category_masks(std: pd.DataFrame) -> dict[str, np.ndarray]:
+    """Boolean row masks for the report's metal-loss categories (spec 6.10): ``ext_corrosion`` (surface EXT, origin
+    not manufacturing), ``int_corrosion`` (INT, not manufacturing) and ``manufacturing`` (origin manufacturing, any
+    surface). The masks do not test the feature type or depth."""
+    manufacturing = std.ml_origin.astype(str).eq(MlOrigin.manufacturing.value).to_numpy(bool)
+    surface = std.surface.astype(str)
+    ext, internal = surface.eq(Surface.EXT.value).to_numpy(bool), surface.eq(Surface.INT.value).to_numpy(bool)
+    return {"ext_corrosion": ext & ~manufacturing, "int_corrosion": internal & ~manufacturing,
+            "manufacturing": manufacturing}
+
+
 def depth_bins(std: pd.DataFrame, settings: Settings) -> pd.DataFrame:
     """One run's metal loss counted by depth bin (spec 6.10): per location (``all``, ``girth_weld``,
     ``long_seam``) and bin (``report.depth_bins_pct_wt``, left-closed: ``[70, 80)``, last bin ``>=80``), the
@@ -130,9 +141,7 @@ def depth_bins(std: pd.DataFrame, settings: Settings) -> pd.DataFrame:
     with np.errstate(invalid="ignore"):
         index = np.searchsorted(edges, depth, side="right") - 1  # left-closed; NaN is masked below
     binned = ml & ~np.isnan(depth) & (index >= 0)
-    manufacturing = std.ml_origin.astype(str).eq(MlOrigin.manufacturing.value).to_numpy(bool)
-    surface = std.surface.astype(str)
-    ext, internal = surface.eq(Surface.EXT.value).to_numpy(bool), surface.eq(Surface.INT.value).to_numpy(bool)
+    categories = category_masks(std)
     rows = []
     for location, flags in _locations(std, settings).items():
         keep = binned & _is_true(flags)
@@ -140,9 +149,9 @@ def depth_bins(std: pd.DataFrame, settings: Settings) -> pd.DataFrame:
         for k, label in enumerate(labels):
             hit = keep & (index == k)
             rows.append({"run_id": _run_id(std), "location": location, "bin": label,
-                         "ext_corrosion": int((hit & ext & ~manufacturing).sum()),
-                         "int_corrosion": int((hit & internal & ~manufacturing).sum()),
-                         "manufacturing": int((hit & manufacturing).sum()), "total": int(hit.sum()),
+                         "ext_corrosion": int((hit & categories["ext_corrosion"]).sum()),
+                         "int_corrosion": int((hit & categories["int_corrosion"]).sum()),
+                         "manufacturing": int((hit & categories["manufacturing"]).sum()), "total": int(hit.sum()),
                          "n_location_unknown": n_unknown})
     return pd.DataFrame(rows, columns=list(DEPTH_COLUMNS))
 

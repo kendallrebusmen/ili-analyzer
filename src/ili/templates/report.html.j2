@@ -259,6 +259,14 @@ make a feature look as if it moved. {{ largest.n_compared }} matched anomalies c
 <div class="chart">{{ charts.depth }}</div>
 <div class="chart">{{ charts.growth }}</div>
 <div class="chart">{{ charts.rl }}</div>
+{% for chart in charts.orientation %}
+<div class="chart">{{ chart }}</div>
+{% endfor %}
+{% if charts.elevation is not none %}
+<div class="chart">{{ charts.elevation }}</div>
+{% else %}
+<p>No elevation profile: elevation is not available (no girth weld has an elevation).</p>
+{% endif %}
 {% if charts.map is not none %}
 <div class="chart">{{ charts.map }}</div>
 {% else %}

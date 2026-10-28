@@ -9,6 +9,8 @@ from plotly.subplots import make_subplots
 
 from ili.classify import CATEGORY_PRIORITY
 from ili.report_data import BacktestResult, ReportInputs
+from ili.report_tables import category_masks
+from ili.schema import FeatureType, Surface
 
 # One fill per category, most intense first. Task 6 reuses these as xlsx row fills under black text, so
 # each keeps a contrast ratio of at least 4.5 against black.
@@ -19,6 +21,10 @@ INK = "#2B2F36"
 MUTED = "#6B7480"
 MARKER_SIZE = 8
 MARKER_LINE = {"width": 1, "color": "#FFFFFF"}
+DEPTH_MARKER_MIN_PX = 4  # marker diameter at 0 % wall, and for a feature without a depth
+DEPTH_MARKER_MAX_PX = 16  # marker diameter at DEPTH_MARKER_FULL_PCT
+DEPTH_MARKER_FULL_PCT = 100.0  # depth (% wall) drawn at the largest marker; deeper features are clipped to it
+MINUTES_PER_HOUR = 60.0
 TEMPLATE = "simple_white"
 
 DEPTH_AXIS = "Depth (% wall)"
@@ -121,6 +127,57 @@ def unity_chart(backtest: BacktestResult | None, tolerance: float) -> go.Figure 
                              marker={"size": MARKER_SIZE, "color": GROWTH_COLOURS["governing_mpy"],
                                      "line": MARKER_LINE}))
     fig.update_yaxes(scaleanchor="x", scaleratio=1)
+    return fig
+
+
+ORIENTATION_TITLES = {"ext_corrosion": "External corrosion", "int_corrosion": "Internal corrosion",
+                      "manufacturing": "Manufacturing"}
+
+
+def _depth_marker_sizes(depth_pct) -> np.ndarray:
+    """Marker diameters in pixels, linear in depth from DEPTH_MARKER_MIN_PX (0 % wall) to DEPTH_MARKER_MAX_PX
+    (DEPTH_MARKER_FULL_PCT, clipped); NaN depth gets the minimum."""
+    fraction = np.clip(np.nan_to_num(np.asarray(depth_pct, dtype=float), nan=0.0) / DEPTH_MARKER_FULL_PCT, 0.0, 1.0)
+    return DEPTH_MARKER_MIN_PX + fraction * (DEPTH_MARKER_MAX_PX - DEPTH_MARKER_MIN_PX)
+
+
+def orientation_charts(inputs: ReportInputs) -> dict[str, go.Figure]:
+    """Clock position (hours, 0-12, 12 at the top) against log distance, one figure per category (external
+    corrosion, internal corrosion, manufacturing) with one trace per run and marker size by depth. A row without
+    a clock position plots as a gap (NaN)."""
+    run_ids = (inputs.summaries["match"]["prev_run_id"], inputs.summaries["match"]["curr_run_id"])
+    figures = {}
+    for key, label in ORIENTATION_TITLES.items():
+        fig = _figure(f"{label}: clock position against distance", "Log distance (ft; each run's odometer)",
+                      "Clock position (hours)")
+        for std, run_id, colour in zip((inputs.prev_std, inputs.curr_std), run_ids, RUN_COLOURS, strict=True):
+            ml = _metal_loss(std)
+            rows = ml[category_masks(ml)[key]]
+            fig.add_trace(go.Scatter(x=rows.log_dist_ft, y=rows.clock_min.to_numpy(float) / MINUTES_PER_HOUR,
+                                     mode="markers", name=str(run_id),
+                                     marker={"size": _depth_marker_sizes(rows.depth_pct), "color": colour,
+                                             "line": MARKER_LINE, "opacity": 0.7}))
+        fig.update_yaxes(range=[12, 0], dtick=1)
+        figures[key] = fig
+    return figures
+
+
+def elevation_chart(inputs: ReportInputs) -> go.Figure | None:
+    """The current run's girth-weld elevation (``elev_ft``) against log distance, with internal metal loss marked
+    at its own ``elev_ft``, sized by depth. None when no girth weld has an elevation."""
+    std = inputs.curr_std
+    welds = std[(std.feature_type == FeatureType.girth_weld.value) & std.elev_ft.notna()].sort_values("log_dist_ft")
+    if welds.empty:
+        return None
+    fig = _figure("Elevation profile with internal metal loss", "Log distance (ft; current run's odometer)",
+                  "Elevation (ft)")
+    fig.add_trace(go.Scatter(x=welds.log_dist_ft, y=welds.elev_ft, mode="lines", name="Girth-weld elevation",
+                             line={"width": 2, "color": MUTED}, hoverinfo="skip"))
+    ml = _metal_loss(std)
+    internal = ml[(ml.surface.astype(str) == Surface.INT.value) & ml.elev_ft.notna()]
+    fig.add_trace(go.Scatter(x=internal.log_dist_ft, y=internal.elev_ft, mode="markers", name="Internal metal loss",
+                             marker={"size": _depth_marker_sizes(internal.depth_pct), "color": RUN_COLOURS[1],
+                                     "line": MARKER_LINE, "opacity": 0.7}))
     return fig
 
 

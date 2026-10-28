@@ -136,7 +136,7 @@ def test_self_contained(report):
     assert html.count("plotly.js v") == 1
     assert not re.search(r"<link[^>]*stylesheet", html, flags=re.I)
     assert not re.search(r"<script[^>]*\bsrc\s*=", html, flags=re.I)
-    assert html.count('class="plotly-graph-div"') == 6  # histograms + depth, growth, RL, map, unity
+    assert html.count('class="plotly-graph-div"') == 10  # histograms + depth, growth, RL, 3 orientation, elevation, map, unity
 
 
 def _outside_scripts(html):
@@ -216,7 +216,7 @@ def test_missing_optional_notes(report):
     assert "digs.csv not provided" in charts
     assert "No map: no dig-list feature has a latitude and longitude." in charts
     assert "Foreign crossings file not provided" in _section_text(html, "data-quality")
-    assert html.count('class="plotly-graph-div"') == 4
+    assert html.count('class="plotly-graph-div"') == 8
 
 
 def test_placeholder_rows_highlighted(report):
@@ -354,3 +354,16 @@ def test_report_header_has_pipe_summary(report):
     assert "Length check" in text and "Design pressure (psig)" in text and "Stress at MOP (% SMYS)" in text
     for run_id in (inputs.prev_std.run_id.iloc[0], inputs.curr_std.run_id.iloc[0]):
         assert run_id in text
+
+
+def test_report_html_has_orientation_and_elevation(report):
+    inputs, changes, html = report
+    charts = _section_text(html, "charts")
+    for label in ("External corrosion: clock position", "Internal corrosion: clock position",
+                  "Manufacturing: clock position"):
+        assert label in html
+    assert "Elevation profile with internal metal loss" in html
+    assert "elevation is not available" not in charts
+    bare = dataclasses.replace(inputs, curr_std=inputs.curr_std.assign(elev_ft=np.nan))
+    text = _section_text(render_report(bare, changes, ReportHeader(None, None, None), GENERATED), "charts")
+    assert "elevation is not available" in text
