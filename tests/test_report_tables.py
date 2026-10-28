@@ -581,3 +581,23 @@ def test_length_check():
     assert out.run_id.tolist() == ["P", "C"]
     assert out.ili_length_ft.tolist() == [980.0, 1010.0] and out.reference_length_ft.tolist() == [1000.0, 1000.0]
     assert out.diff_ft.tolist() == [-20.0, 10.0] and out.diff_pct.tolist() == pytest.approx([-2.0, 1.0])
+
+
+def test_pipe_summary_hca_union_clipped_to_the_pipe_extent():
+    pipe, mop, _, settings = _pipe_tables()
+    pipe = pipe.assign(start_ft=[0.0, 600.0], end_ft=[400.0, 1000.0])  # a 200 ft gap: rows total 800 ft, extent 1000
+    segments = pd.DataFrame({"start_ft": [100.0, 300.0, 900.0, 5.0], "end_ft": [350.0, 500.0, 1200.0, 8.0],
+                             "segment_id": ["A", "B", "C", "D"],
+                             "could_affect_hca": [True, "True", True, False]})
+    # HCA union: A 100-350 and B 300-500 merge to 100-500 (400 ft); C 900-1200 clipped to 900-1000 (100 ft);
+    # D is not HCA. Total 500 ft; reference extent 1000 - 0 = 1000 ft, so 50 %.
+    summary = pipe_summary(pipe, mop, segments, settings)
+    assert summary.hca_length_ft == 500.0 and summary.hca_pct == pytest.approx(50.0)
+
+
+def test_pipe_summary_missing_columns_name_the_file():
+    pipe, mop, segments, settings = _pipe_tables()
+    with pytest.raises(ValueError, match="mop_profile.csv"):
+        pipe_summary(pipe, mop.drop(columns="mop_psig"), segments, settings)
+    with pytest.raises(ValueError, match="hca_segments.csv"):
+        pipe_summary(pipe, mop, segments.drop(columns="could_affect_hca"), settings)

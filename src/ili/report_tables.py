@@ -14,7 +14,7 @@ import pandas as pd
 from ili.classify import near_girth_weld, seam_interaction
 from ili.config import Settings
 from ili.match import PositionMap
-from ili.reference import lookup
+from ili.reference import _require_columns, lookup
 from ili.remaining_life import _as_bool
 from ili.schema import FeatureType, MlOrigin, Surface
 
@@ -399,7 +399,8 @@ class PipeSummary:
     ``length_ft``. The ``(min, max)`` pairs are None when no row can be evaluated: ``design_pressure_psig``
     (psig) and ``stress_at_mop_pct_smys`` (percent of SMYS). ``install_years`` and ``coatings`` are sorted unique
     values; ``hca_length_ft`` is the length (ft) of the segments that could affect an HCA and ``hca_pct`` its
-    share of the pipe length (percent; None for a pipe of no length)."""
+    share of the pipe extent (max end_ft - min start_ft; percent; None for an extent of no length). The HCA length is
+    the union of the could_affect_hca segments clipped to that extent, so overlap or overhang never counts twice."""
     by_wall_grade: pd.DataFrame
     design_pressure_psig: tuple[float, float] | None
     stress_at_mop_pct_smys: tuple[float, float] | None
@@ -431,6 +432,8 @@ def pipe_summary(pipe: pd.DataFrame, mop: pd.DataFrame, segments: pd.DataFrame, 
     missing = [c for c in need if c not in pipe.columns]
     if missing:
         raise ValueError(f"{PIPE_SUMMARY_WHAT} is missing column(s): {', '.join(missing)}")
+    _require_columns(mop, ("start_ft", "end_ft", "mop_psig"), "mop_profile.csv")
+    _require_columns(segments, ("start_ft", "end_ft", "could_affect_hca"), "hca_segments.csv")
     rows = pipe.assign(length_ft=pipe.end_ft.astype(float) - pipe.start_ft.astype(float))
     by = (rows.groupby(["wt_nom_in", "grade"], sort=True, dropna=False).length_ft.sum().reset_index()
           [list(WALL_GRADE_COLUMNS)])
@@ -449,11 +452,18 @@ def pipe_summary(pipe: pd.DataFrame, mop: pd.DataFrame, segments: pd.DataFrame, 
             stress.append(float(mop.mop_psig.iloc[j]) * od[i] / (2.0 * wt[i] * smys[i]) * PCT_PER_FRACTION)
 
     hca = np.array([_as_bool(v, "segments") for v in segments.could_affect_hca], dtype=bool)
-    hca_ft = float((segments.end_ft.to_numpy(float) - segments.start_ft.to_numpy(float))[hca].sum())
-    total = float(rows.length_ft.sum())
+    lo, hi = float(start.min()), float(end.max())  # the pipe extent, as length_check's reference length
+    spans = sorted((max(a, lo), min(b, hi)) for a, b in
+                   zip(segments.start_ft.to_numpy(float)[hca], segments.end_ft.to_numpy(float)[hca]) if min(b, hi) > max(a, lo))
+    hca_ft, reach = 0.0, lo  # length of the union of the clipped spans
+    for a, b in spans:
+        if b > max(a, reach):
+            hca_ft += b - max(a, reach)
+            reach = b
+    extent = hi - lo
     return PipeSummary(by, _range(design), _range(np.array(stress, dtype=float)),
                        _sorted_unique(pipe.install_year), [str(c) for c in _sorted_unique(pipe.coating_type)],
-                       hca_ft, hca_ft / total * PCT_PER_FRACTION if total > 0 else None)
+                       hca_ft, hca_ft / extent * PCT_PER_FRACTION if extent > 0 else None)
 
 
 def length_check(prev_std: pd.DataFrame, curr_std: pd.DataFrame, pipe: pd.DataFrame) -> pd.DataFrame:

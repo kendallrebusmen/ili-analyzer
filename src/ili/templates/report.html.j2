@@ -112,7 +112,7 @@ code { font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; font-siz
 <dt>Stress at MOP (% SMYS)</dt><dd>{{ head.pipe.stress }}</dd>
 <dt>Installation year(s)</dt><dd>{{ head.pipe.install_years }}</dd>
 <dt>Coating(s)</dt><dd>{{ head.pipe.coatings }}</dd>
-<dt>Could-affect-HCA length</dt><dd>{{ head.pipe.hca_length_ft }} ft ({{ head.pipe.hca_pct }} % of the pipe length)</dd>
+<dt>Could-affect-HCA length</dt><dd>{{ head.pipe.hca_length_ft }} ft ({{ head.pipe.hca_pct }} % of the pipe extent)</dd>
 </dl>
 {{ render_table(head.pipe.length_check, "Length check: girth-weld span of each run against the pipe table") }}
 {% for w in log_warnings %}
