@@ -128,3 +128,66 @@ def test_unity_without_finite_pairs():
     fig = report_charts.unity_chart(BacktestResult(table, 0, 0.0, [], []), 10.0)
     line = next(t for t in fig.data if t.name == "1:1")
     assert list(line.x) == [0.0, 100.0]
+
+
+def test_orientation_charts_one_per_category(built):  # noqa: F811
+    inputs = _load(built)
+    figs = report_charts.orientation_charts(inputs)
+    assert list(figs) == ["ext_corrosion", "int_corrosion", "manufacturing"]
+    for fig in figs.values():
+        assert [t.name for t in fig.data] == ["2021_vendorA", "2026_vendorB"]
+        assert tuple(fig.layout.yaxis.range) == (12, 0)
+        assert all(_axis_titles(fig))
+    ml = inputs.curr_std[inputs.curr_std.feature_type == "metal_loss"]
+    plotted = sum(len(f.data[1].x) for f in figs.values())
+    assert plotted == len(ml)  # the categories partition metal loss
+    assert len(figs["int_corrosion"].data[1].x) > 0 and len(figs["manufacturing"].data[1].x) > 0
+
+
+def _tiny(**cols):
+    base = {"feature_type": "metal_loss", "surface": "EXT", "ml_origin": "corrosion", "log_dist_ft": 100.0,
+            "clock_min": 360.0, "depth_pct": 50.0, "elev_ft": 10.0}
+    n = len(next(iter(cols.values())))
+    return pd.DataFrame([{**base, **{k: v[i] for k, v in cols.items()}} for i in range(n)])
+
+
+def test_clock_hours(built):  # noqa: F811
+    inputs = _load(built)
+    std = _tiny(clock_min=[360.0, np.nan])
+    fig = report_charts.orientation_charts(dataclasses.replace(inputs, prev_std=std, curr_std=std))["ext_corrosion"]
+    assert fig.data[0].y[0] == 6.0 and np.isnan(fig.data[0].y[1])
+
+
+def test_marker_size_scaled_by_depth(built):  # noqa: F811
+    inputs = _load(built)
+    std = _tiny(depth_pct=[0.0, 50.0, 100.0, 150.0, np.nan])
+    fig = report_charts.orientation_charts(dataclasses.replace(inputs, prev_std=std, curr_std=std))["ext_corrosion"]
+    lo, hi = report_charts.DEPTH_MARKER_MIN_PX, report_charts.DEPTH_MARKER_MAX_PX
+    assert list(fig.data[0].marker.size) == [lo, (lo + hi) / 2, hi, hi, lo]
+
+
+def test_elevation_none_without_elev(built):  # noqa: F811
+    inputs = _load(built)
+    assert isinstance(report_charts.elevation_chart(inputs), go.Figure)
+    bare = dataclasses.replace(inputs, curr_std=inputs.curr_std.assign(elev_ft=np.nan))
+    assert report_charts.elevation_chart(bare) is None
+
+
+def test_elevation_marks_internal_metal_loss(built):  # noqa: F811
+    inputs = _load(built)
+    fig = report_charts.elevation_chart(inputs)
+    line, marks = fig.data
+    assert line.mode == "lines" and list(line.x) == sorted(line.x)
+    ml = inputs.curr_std[(inputs.curr_std.feature_type == "metal_loss") & (inputs.curr_std.surface == "INT")
+                         & inputs.curr_std.elev_ft.notna()]
+    assert len(marks.x) == len(ml) > 0
+
+
+def test_orientation_axis_labels_put_12_at_top(built):  # noqa: F811
+    inputs = _load(built)
+    for fig in report_charts.orientation_charts(inputs).values():
+        axis = fig.layout.yaxis
+        assert tuple(axis.range) == (12, 0)  # reversed: the first tick is drawn at the top
+        labels = dict(zip(axis.tickvals, axis.ticktext, strict=True))
+        assert labels[0] == "12:00" and labels[12] == "12:00" and labels[6] == "6:00" and labels[1] == "1:00"
+        assert len(labels) == 13

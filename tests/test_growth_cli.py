@@ -62,3 +62,43 @@ def test_cli_segments_required_unless_fixed_length(synth, tmp_path, capsys):
     path.write_text(yaml.safe_dump(settings), encoding="utf-8")
     assert growth.main(_args(std, folder, data, out, "--settings", str(path))) == 0
     assert (folder / "growth_segments.csv").exists()
+
+
+def test_growth_cli_repairs_optional(synth, tmp_path, capsys):
+    _, data = synth
+    segs = str(data / "reference" / "hca_segments.csv")
+    for name, extra in (("without", []), ("with", ["--repairs", str(data / "reference" / "repairs_between_runs.csv")])):
+        out = tmp_path / name
+        std, folder = _prepare(data, out)
+        assert growth.main(_args(std, folder, data, out, "--segments", segs, *extra)) == 0, capsys.readouterr().err
+        summary = json.loads((folder / "growth_summary.json").read_text(encoding="utf-8"))
+        assert "n_excluded_recoated" in summary
+        table = growth.load_growth_table(folder / "growth.csv")
+        assert table.in_recoat.dtype == bool or table.in_recoat.notna().all()
+
+
+def test_growth_cli_rejects_stale_match_table(synth, tmp_path, capsys):
+    _, data = synth
+    out = tmp_path / "out"
+    std, folder = _prepare(data, out)
+    path = folder / "match_table.csv"
+    pd.read_csv(path, dtype=str, keep_default_na=False).drop(columns=["curr_surface", "curr_ml_origin"]).to_csv(
+        path, index=False)
+    capsys.readouterr()
+    assert growth.main(_args(std, folder, data, out, "--segments", str(data / "reference" / "hca_segments.csv"))) == 2
+    err = capsys.readouterr().err
+    assert "curr_surface" in err and "curr_ml_origin" in err and "ili.match" in err
+
+
+def test_growth_cli_writes_summary_csv(synth, tmp_path, capsys):
+    _, data = synth
+    out = tmp_path / "out"
+    std, folder = _prepare(data, out)
+    args = _args(std, folder, data, out, "--segments", str(data / "reference" / "hca_segments.csv"),
+                 "--repairs", str(data / "reference" / "repairs_between_runs.csv"))
+    assert growth.main(args) == 0, capsys.readouterr().err
+    table = pd.read_csv(folder / "growth_summary.csv")
+    assert list(table.columns) == growth.SURFACE_SUMMARY_COLUMNS
+    assert table[["surface", "scope"]].values.tolist() == [["EXT", "all"], ["EXT", "excluding_recoated"],
+                                                           ["INT", "all"], ["INT", "excluding_recoated"]]
+    assert (table.n_features[table.scope == "all"].to_numpy() >= table.n_features[table.scope != "all"].to_numpy()).all()

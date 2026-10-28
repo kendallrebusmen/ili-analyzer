@@ -102,6 +102,19 @@ code { font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; font-siz
 <dt>Generated (UTC)</dt><dd>{{ head.generated_utc }} by {{ head.generator }}</dd>
 </dl>
 {{ render_table(head.runs) }}
+<h3>Pipe summary</h3>
+<p>Values come from <code>pipe_properties.csv</code> and <code>mop_profile.csv</code>. Design pressure is
+2 &middot; SMYS &middot; t &middot; F / D with design factor F = {{ head.pipe.design_factor }}
+(<code>strength.design_factor</code>). Stress at MOP is evaluated only where both files have a row.</p>
+{{ render_table(head.pipe.by_wall_grade, "Length by nominal wall thickness (in) and grade") }}
+<dl class="facts">
+<dt>Design pressure (psig)</dt><dd>{{ head.pipe.design_pressure }}</dd>
+<dt>Stress at MOP (% SMYS)</dt><dd>{{ head.pipe.stress }}</dd>
+<dt>Installation year(s)</dt><dd>{{ head.pipe.install_years }}</dd>
+<dt>Coating(s)</dt><dd>{{ head.pipe.coatings }}</dd>
+<dt>Could-affect-HCA length</dt><dd>{{ head.pipe.hca_length_ft }} ft ({{ head.pipe.hca_pct }} % of the pipe extent)</dd>
+</dl>
+{{ render_table(head.pipe.length_check, "Length check: girth-weld span of each run against the pipe table") }}
 {% for w in log_warnings %}
 <p class="warning">{{ w }}</p>
 {% endfor %}
@@ -122,12 +135,28 @@ code { font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; font-siz
 {% endif %}
 <h3>Counts by repair category</h3>
 {{ render_table(summary.category_counts, summary.n_features ~ " classified features") }}
+<h3>IMP class summary</h3>
+<p>A summary view only: the repair categories above still drive due dates. Immediate, 60-day and 180-day are the
+governing categories; "YTC &lt; {{ summary.ytc_flag_years }} yrs" is every other feature whose years to condition
+(remaining life, else its upper bound) is under <code>report.ytc_flag_years</code>; None is every other feature,
+including those with no remaining life or bound. "RL not evaluated" counts metal loss with no remaining life or
+bound (dents and gouges have none by design). Previously repaired means inside a span of
+<code>repairs_between_runs.csv</code>. imp_class.csv gives each feature's class, years to condition and whether it was
+previously repaired, and the dig list carries <code>imp_class</code> and <code>previously_repaired</code>.
+{% if not summary.repairs_given %}No repairs file was given to the report, so the repaired columns are blank.{% endif %}</p>
+{{ render_table(summary.imp_class, "IMP class summary") }}
 <h3>Digs driven by remaining life</h3>
 <p>{{ summary.n_rl_dig }} of {{ summary.n_rl_feature }} features have <code>dig_required_by_remaining_life</code>
 (remaining life × rl_factor is shorter than the time to the next planned assessment);
 {{ summary.n_imp_scheduled }} of them are governed by no repair rule and are classified <code>imp_scheduled</code>.</p>
 <h3>Recommended reinspection interval by segment</h3>
 {{ render_table(summary.intervals, "recommended_interval_yr: the minimum of remaining life × rl_factor over the segment's features, capped at regulatory_max_yr") }}
+<h3>Anomalies of interest</h3>
+<p>Current-run metal loss within <code>report.aoi_group_ft</code> of its neighbour forms one group; groups are ranked by
+shortest remaining life (each member's remaining life, else its upper bound, as for the IMP class summary;
+<code>min_rl_is_bound</code> is True when the group's minimum is a bound), then deepest, and the first {{ summary.aoi_count }} (<code>report.aoi_count</code>) are listed.
+anomalies_of_interest.csv has the same rows.</p>
+{{ render_table(summary.aoi, "Anomalies of interest") }}
 </section>
 
 <section id="data-quality">
@@ -166,10 +195,38 @@ code { font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; font-siz
 <section id="growth">
 <p class="draft">{{ label }}</p>
 <h2>Growth</h2>
+<p>Governing growth profile: <code>{{ growth.profile if growth.profile else "not recorded" }}</code>
+(<code>growth.governing_profile</code>).</p>
+<p>In the growth summary by surface the <code>excluding_recoated</code> rows leave out rows inside recoat spans, whatever the
+setting (spans from repairs_between_runs.csv given to the growth step); the <code>all</code> rows keep them.</p>
+{{ render_table(growth.by_surface, "Growth summary by surface") }}
+<p>{{ growth.recoat_note }}</p>
 <p>Negative raw growth rates: {{ growth.pct_negative_raw }} (included in the segment percentiles).</p>
 {{ render_table(growth.segments, "Per-segment statistics") }}
 {{ render_table(growth.methods, "Features by governing method") }}
 <div class="chart">{{ growth.histograms }}</div>
+<h3>Depth bins</h3>
+<p>Metal-loss counts by depth bin (<code>report.depth_bins_pct_wt</code>, % of wall thickness; a bin includes its lower edge). Corrosion means origin other than manufacturing.</p>
+{% for title, depth_table, depth_notes in distribution.depth %}
+{{ render_table(depth_table, "Depth bins, " ~ title) }}
+{% for note in depth_notes %}
+<p>Not evaluated &mdash; {{ note }}.</p>
+{% endfor %}
+{% endfor %}
+<h3>Dent bins</h3>
+<p>Dent counts by depth as a percentage of OD (<code>report.dent_bins_pct_od</code>; a bin includes its upper edge).</p>
+{{ render_table(distribution.dent, "Dent bins") }}
+{% for note in distribution.dent_notes %}
+<p>Not evaluated &mdash; {{ note }}.</p>
+{% endfor %}
+<h3>Per-joint metal-loss counts</h3>
+<p>Metal loss per current-run joint and its matched previous-run joint(s), by surface (<code>other</code> is MID, UNK or blank), counted from each run's own tally by upstream girth weld; no anomaly matching is used. A blank count means the joint has no counterpart in that run. joint_ml_counts.csv lists every joint.</p>
+{{ render_table(joints.by_count, "The " ~ joints.n ~ " joints with the most metal loss in the current run (report.largest_changes_n)") }}
+{% if joints.by_change.rows %}
+{{ render_table(joints.by_change, "The " ~ joints.n ~ " joints with the largest increase in metal loss (report.largest_changes_n; only joints whose count increased)") }}
+{% else %}
+<p>No joint increased in metal loss.</p>
+{% endif %}
 </section>
 
 <section id="dig-list">
@@ -209,6 +266,14 @@ make a feature look as if it moved. {{ largest.n_compared }} matched anomalies c
 <div class="chart">{{ charts.depth }}</div>
 <div class="chart">{{ charts.growth }}</div>
 <div class="chart">{{ charts.rl }}</div>
+{% for chart in charts.orientation %}
+<div class="chart">{{ chart }}</div>
+{% endfor %}
+{% if charts.elevation is not none %}
+<div class="chart">{{ charts.elevation }}</div>
+{% else %}
+<p>No elevation profile: elevation is not available (no girth weld has an elevation).</p>
+{% endif %}
 {% if charts.map is not none %}
 <div class="chart">{{ charts.map }}</div>
 {% else %}
@@ -243,12 +308,14 @@ reported current-run depth within ±{{ charts.tolerance }} % wall of the field d
 <p class="draft">{{ label }}</p>
 <h2>Methods and assumptions</h2>
 <h3>Configuration</h3>
-{{ render_table(methods.config, "Every setting used, from " ~ methods.settings_path ~ ". Strength, remaining-life and classification values, and the tool tolerances they use, were verified against the M6 and M7 summaries; alignment, matching and growth values (and the other tool values) are the settings at report time, as no summary records them. PLACEHOLDER values need integrity-engineer sign-off.") }}
+{{ render_table(methods.config, "Every setting used, from " ~ methods.settings_path ~ ". Strength, remaining-life and classification values, and the tool tolerances they use, were verified against the M6 and M7 summaries, and the growth profile, recoat exclusion, joint percentile settings and shrinking rate against the M5 summary; alignment, matching and the other growth values (and the other tool values) are the settings at report time, as no summary records them. PLACEHOLDER values need integrity-engineer sign-off.") }}
 <h3>Tool tolerances</h3>
 {{ render_table(methods.tool) }}
 
 <h3>Formulas</h3>
-<p><strong>Governing growth rate</strong> (spec 6.5, default rule; the rule in use is <code>growth.governing</code> above):</p>
+<p><strong>Governing growth rate</strong> (spec 6.5). Two profiles are configurable, <code>conservative</code> (default) and
+<code>pit_to_pit</code> (the consultant's practice); the profile in force is shown in the growth section. The
+<code>conservative</code> rule (in use as <code>growth.governing</code> above):</p>
 <div class="table-wrap formula"><table>
 <thead><tr><th>Feature</th><th>Governing rate</th></tr></thead>
 <tbody>
@@ -261,10 +328,22 @@ reported current-run depth within ±{{ charts.tolerance }} % wall of the field d
 <tbody>
 <tr><td>raw</td><td>(d_curr − d_prev) / Δt</td></tr>
 <tr><td>tolerance_adjusted</td><td>(Δd + k·σ_diff) / Δt, σ_diff = √(σ_prev² + σ_curr²); floor min_rate_mpy</td></tr>
-<tr><td>segment_percentile</td><td>P-th percentile of raw matched growth in the segment, negatives included; floor min_rate_mpy</td></tr>
+<tr><td>segment_percentile</td><td>P-th percentile of raw matched growth in the segment, negatives included, recoated features left out when exclude_recoated_from_stats is true; floor min_rate_mpy</td></tr>
 <tr><td>new_feature</td><td>(d_curr − reporting_threshold) / Δt</td></tr>
 <tr><td>full_life</td><td>d_curr / (current run year − install_year)</td></tr>
 <tr><td>default_rate</td><td>fixed rate from config (IMP default)</td></tr>
+<tr><td>half_life</td><td>d_curr / ((current run year − install_year) / 2); assumes corrosion started at mid-life, so twice the whole-life rate</td></tr>
+<tr><td>joint_percentile</td><td><code>joint_percentile</code>-th percentile of the raw rates of matched features in the same current-run joint (recoated features (when exclude_recoated_from_stats is true) and non-finite raw rates are left out); only when the joint has at least <code>joint_percentile_min_matches</code> matched features, otherwise empty; floor min_rate_mpy</td></tr>
+<tr><td>shrinking_fixed</td><td>fixed rate <code>shrinking_rate_mpy</code>, for matched features whose reported depth decreased between runs (a depth drop is sizing noise, not negative growth); empty when shrinking_rate_mpy is null (under pit_to_pit the row is then no_governing)</td></tr>
+</tbody></table></div>
+<p>The <code>pit_to_pit</code> rule (a matched feature grew when Δd ≥ 0, and decreased when Δd &lt; 0):</p>
+<div class="table-wrap formula"><table>
+<thead><tr><th>Feature</th><th>Governing rate</th></tr></thead>
+<tbody>
+<tr><td>Matched, depth grew (Δd ≥ 0)</td><td>raw, floored at min_rate_mpy</td></tr>
+<tr><td>Matched, depth decreased (Δd &lt; 0)</td><td>shrinking_fixed</td></tr>
+<tr><td>New</td><td>joint_percentile when available, otherwise half_life</td></tr>
+<tr><td>No usable history</td><td>half_life</td></tr>
 </tbody></table></div>
 
 <p><strong>Remaining strength</strong> (spec 6.6): z = L² / (D·t); assessed depth per <code>strength.depth_basis</code>.</p>
@@ -291,6 +370,8 @@ reported current-run depth within ±{{ charts.tolerance }} % wall of the field d
 <tbody>
 <tr><td>Predicted burst pressure</td><td>P_F = 2 · S_F · t / D</td></tr>
 <tr><td>Safe operating pressure</td><td>P_safe = P_F × design_factor</td></tr>
+<tr><td>Estimated repair factor</td><td>ERF = MOP_local / P_safe; above 1 means the safe pressure is below MOP; blank where P_safe or MOP is not a finite positive number</td></tr>
+<tr><td>Failure pressure ratio</td><td>FPR = P_F / MOP_local; below 1 means the predicted burst pressure is below MOP; blank where P_safe or MOP is not a finite positive number</td></tr>
 <tr><td>Deep metal loss</td><td>d/t ≥ 0.80 is flagged as exceeding 80 % of wall regardless of pressure</td></tr>
 </tbody></table></div>
 
@@ -304,10 +385,21 @@ criterion is already met at τ = 0.</p>
 <tr><td>τ_burst</td><td>P_F(τ) &lt; MOP_local</td></tr>
 <tr><td>τ_safe</td><td>P_safe(τ) &lt; MOP_local</td></tr>
 <tr><td>Remaining life</td><td>RL = min(τ_80, τ_burst, τ_safe); the governing criterion is recorded</td></tr>
+<tr><td>Predicted failure mode</td><td>leak when τ_80 ≤ τ_burst, otherwise burst (a pit reaching 80 % of wall before the predicted burst pressure falls below MOP is expected to leak); blank when τ_80 or τ_burst is NaN, or both are inf</td></tr>
 <tr><td>Repair-by date</td><td>run_date + RL × rl_factor</td></tr>
 <tr><td>Dig flag</td><td>dig_required_by_remaining_life when RL × rl_factor &lt; years to the segment's next planned assessment
 (missing dates: config defaults, HCA 5 years not to exceed 68 months, non-HCA 10 years)</td></tr>
 <tr><td>Reinspection interval</td><td>min over the segment's features of RL × rl_factor, capped at the regulatory maximum</td></tr>
+<tr><td>Condition dates</td><td>tau_80_date, tau_burst_date, tau_safe_date = run_date + ⌊τ·365.25⌋ days (rounded down, never a day late); blank when τ is NaN or the criterion is not met within horizon_yr</td></tr>
+<tr><td>Next-assessment projection</td><td>depth, pressures, ERF and FPR at τ_next, the years to the segment's next assessment, projected from the assessed depth (reported + tolerance under the default <code>reported_plus_tolerance</code> basis), not the reported depth; exceeds_80pct_next when depth(τ_next) ≥ 0.80·t (values kept, flagged); burst_next_psig, safe_next_psig, erf_next and fpr_next are blank where depth(τ_next) ≥ t (projected through the wall), as a pressure for a through-wall pit is not meaningful</td></tr>
+</tbody></table></div>
+
+<p><strong>Pipe summary</strong> (spec 6.10, item 1): design pressure and operating stress.</p>
+<div class="table-wrap formula"><table>
+<thead><tr><th>Quantity</th><th>Formula</th></tr></thead>
+<tbody>
+<tr><td>Design pressure</td><td>P_design = 2 · SMYS · t · design_factor / D</td></tr>
+<tr><td>Stress at MOP</td><td>MOP · D / (2 · t · SMYS), as a percentage of SMYS, shown as a range over the line</td></tr>
 </tbody></table></div>
 
 <h3>Repair criteria</h3>

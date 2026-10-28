@@ -41,10 +41,14 @@ from ili.category_change import CHANGE_COLUMNS, CategoryChangeResult, category_c
 from ili.classify import CATEGORY_PRIORITY, IMMEDIATE_ACTION_NOTE, criteria_path
 from ili.config import DEFAULT_SETTINGS, PROJECT_ROOT, Settings, load_settings
 from ili.match import CONFIDENCES
-from ili.report_charts import (CATEGORY_COLOURS, depth_vs_distance, feature_map, figure_div, growth_histograms,
-                               growth_vs_distance, rl_distribution, unity_chart)
+from ili.report_charts import (CATEGORY_COLOURS, depth_vs_distance, elevation_chart, feature_map, figure_div,
+                               growth_histograms, growth_vs_distance, orientation_charts, rl_distribution,
+                               unity_chart)
 from ili.report_data import (ReportInputs, _sha256, backtest, config_rows, criteria_rows, dig_list, input_hashes,
                              largest_growth, load_report_inputs, match_stats, pending_reviews)
+from ili.report_tables import (DEPTH_COLUMNS, LOCATIONS, anomaly_distribution, anomaly_distribution_table,
+                               anomalies_of_interest, imp_class_rows, imp_class_summary, joint_ml_counts,
+                               largest_joints, length_check, pipe_summary)
 from ili.review import FLAG_COLUMNS, REVIEW_COLUMNS
 
 TEMPLATES = Path(__file__).parent / "templates"
@@ -178,9 +182,27 @@ def _header(inputs: ReportInputs, header: ReportHeader, generated_utc: datetime)
         [role, run_id, _run_dates(std), _vendor(inputs.ingest_manifest, run_id), tool or NOT_STATED]
         for role, run_id, std, tool in (("previous", prev_id, inputs.prev_std, header.prev_tool),
                                         ("current", curr_id, inputs.curr_std, header.curr_tool))])
+    ps = pipe_summary(inputs.pipe, inputs.mop, inputs.segments, inputs.settings)
+
+    def span(pair) -> str:
+        return "not available" if pair is None else f"{cell(pair[0])} to {cell(pair[1])}"
+
+    pipe = {"by_wall_grade": table(ps.by_wall_grade),
+            "design_pressure": span(ps.design_pressure_psig), "stress": span(ps.stress_at_mop_pct_smys),
+            "install_years": cell(ps.install_years) or NOT_STATED, "coatings": cell(ps.coatings) or NOT_STATED,
+            "hca_length_ft": cell(ps.hca_length_ft),
+            "hca_pct": "not available" if ps.hca_pct is None else cell(ps.hca_pct),
+            "design_factor": cell(inputs.settings.strength.design_factor),
+            "length_check": table(length_check(inputs.prev_std, inputs.curr_std, inputs.pipe))}
     return {"line_name": header.line_name or NOT_STATED, "prev_run_id": prev_id, "curr_run_id": curr_id,
-            "runs": runs, "generated_utc": generated_utc.isoformat(timespec="seconds"),
+            "runs": runs, "pipe": pipe, "generated_utc": generated_utc.isoformat(timespec="seconds"),
             "generator": f"ili.report {__version__}"}
+
+
+def _imp_class_rows(inputs: ReportInputs) -> pd.DataFrame:
+    """Each classified feature's IMP class (``imp_class.csv``; the summary table is aggregated from it)."""
+    return imp_class_rows(inputs.classification, inputs.match_table, inputs.remaining_life, inputs.repairs,
+                          inputs.settings)
 
 
 def _summary(inputs: ReportInputs, dig: pd.DataFrame) -> dict:
@@ -191,11 +213,16 @@ def _summary(inputs: ReportInputs, dig: pd.DataFrame) -> dict:
         "immediate_note": IMMEDIATE_ACTION_NOTE,
         "category_counts": Table(["category", "count"], [[c, cell(n)] for c, n in counts.items()],
                                  [f"cat-{c}" for c in counts.index]),
+        "imp_class": table(imp_class_summary(_imp_class_rows(inputs), inputs.settings, inputs.repairs is not None)),
+        "ytc_flag_years": cell(inputs.settings.report.ytc_flag_years),
+        "repairs_given": inputs.repairs is not None,
         "n_features": len(cls),
         "n_rl_dig": int(inputs.remaining_life.dig_required_by_remaining_life.eq(True).sum()),
         "n_rl_feature": len(inputs.remaining_life),
         "n_imp_scheduled": int(counts["imp_scheduled"]),
         "intervals": table(inputs.intervals),
+        "aoi": table(anomalies_of_interest(inputs)),
+        "aoi_count": cell(inputs.settings.report.aoi_count),
         "discovery_warning": inputs.summaries["classification"].get("discovery_warning"),
     }
 
@@ -232,25 +259,73 @@ def _data_quality(inputs: ReportInputs) -> dict:
     }
 
 
+STATS_SCOPE = "the segment and joint percentiles and these statistics"
+
+
+def recoat_note(summary: dict, settings: Settings) -> str:
+    """What the recoat exclusion left out of the percentiles and the per-segment statistics, from
+    ``growth_summary.json`` (``repairs_file_given``, ``n_excluded_recoated``) and
+    ``growth.exclude_recoated_from_stats`` (checked against the summary when it records it)."""
+    if summary.get("repairs_file_given") is False:
+        return f"No repairs file was given to the growth step, so no recoated feature was left out of {STATS_SCOPE}."
+    if not settings.growth.exclude_recoated_from_stats:
+        return (f"No recoated feature was left out of {STATS_SCOPE}, because exclude_recoated_from_stats is "
+                "false.")
+    n = summary.get("n_excluded_recoated")
+    if n is None:
+        return f"growth_summary.json does not record how many recoated features were left out of {STATS_SCOPE}."
+    return f"{n} recoated feature(s) left out of {STATS_SCOPE} (exclude_recoated_from_stats: true)."
+
+
 def _growth(inputs: ReportInputs) -> dict:
     summary = inputs.summaries["growth"]
     pct_negative = cell(summary.get("pct_negative_raw"))
     return {
         "segments": table(inputs.growth_segments),
-        "pct_negative_raw": f"{pct_negative} % of matched features" if pct_negative else "not available",
+        "profile": summary.get("governing_profile"),
+        "recoat_note": recoat_note(summary, inputs.settings),
+        "by_surface": table(inputs.growth_by_surface),
+        "pct_negative_raw": (f"{pct_negative} % of matched features in the statistics (recoated left out when the "
+                             "setting is on)") if pct_negative else "not available",
         "methods": _counts(summary.get("counts_by_governing_method") or {}, "governing_method"),
         "histograms": Markup(figure_div(growth_histograms(inputs))),
     }
 
 
+LOCATION_TITLES = {"all": "all metal loss", "girth_weld": "metal loss at a girth weld",
+                   "long_seam": "metal loss on the long seam"}
+
+
+def _distribution(inputs: ReportInputs) -> dict:
+    """The depth-bin tables (one per location, both runs) and the dent-bin table, with the notes."""
+    result = anomaly_distribution(inputs)
+    columns = [c for c in DEPTH_COLUMNS if c != "location"]
+    return {
+        "depth": [(LOCATION_TITLES[loc], table(result.depth[result.depth.location == loc], columns),
+                   [n.text for n in result.notes if n.table == "depth" and n.location == loc])
+                  for loc in LOCATIONS],
+        "dent": table(result.dent),
+        "dent_notes": [n.text for n in result.notes if n.table == "dent"],
+    }
+
+
+def _joints(inputs: ReportInputs) -> dict:
+    """The per-joint metal-loss tables: the joints with the largest current count and the largest change."""
+    n = inputs.settings.report.largest_changes_n
+    by_count, by_change = largest_joints(joint_ml_counts(inputs.weld_map, inputs.prev_std, inputs.curr_std), n)
+    return {"n": n, "by_count": table(by_count), "by_change": table(by_change)}
+
+
 def _charts(inputs: ReportInputs, dig: pd.DataFrame) -> dict:
     tolerance = inputs.settings.tool.depth_tolerance_pct_wt
     bt = backtest(inputs.digs, inputs.curr_std, inputs.settings)
-    fmap, unity = feature_map(inputs, dig), unity_chart(bt, tolerance)
+    fmap, unity, elevation = feature_map(inputs, dig), unity_chart(bt, tolerance), elevation_chart(inputs)
     return {
         "depth": Markup(figure_div(depth_vs_distance(inputs))),
         "growth": Markup(figure_div(growth_vs_distance(inputs))),
         "rl": Markup(figure_div(rl_distribution(inputs))),
+        "orientation": [Markup(figure_div(fig)) for fig in orientation_charts(inputs).values()],
+        "elevation": None if elevation is None else Markup(figure_div(elevation)),
         "map": None if fmap is None else Markup(figure_div(fmap)),
         "unity": None if unity is None else Markup(figure_div(unity)),
         "backtest": None if bt is None else {
@@ -337,6 +412,8 @@ def render_report(inputs: ReportInputs, changes: CategoryChangeResult, header: R
         "summary": _summary(inputs, dig),
         "quality": _data_quality(inputs),
         "growth": _growth(inputs),
+        "distribution": _distribution(inputs),
+        "joints": _joints(inputs),
         "dig_list": table(dig, row_classes=[f"cat-{c}" for c in dig.governing_category],
                           print_columns=DIG_LIST_PRINT_COLUMNS),
         "largest": {"n": n_largest, "growth": table(largest_growth(inputs, n_largest), LARGEST_GROWTH_COLUMNS),
@@ -350,7 +427,8 @@ def render_report(inputs: ReportInputs, changes: CategoryChangeResult, header: R
 
 # --- dig list workbook, manifest, CLI -----------------------------------------------------------------
 
-OUTPUT_NAMES = ("category_changes.csv", "report.html", "dig_list.xlsx", "run_manifest.json")
+OUTPUT_NAMES = ("category_changes.csv", "report.html", "dig_list.xlsx", "anomaly_distribution.csv",
+                "joint_ml_counts.csv", "anomalies_of_interest.csv", "imp_class.csv", "run_manifest.json")
 DATE_COLUMNS = ("due_date",)
 GIT_TIMEOUT_S = 10
 
@@ -467,12 +545,20 @@ def write_report(inputs: ReportInputs, header: ReportHeader, out_dir: Path,
                                inputs.criteria, prev_dates.iloc[0])
     html = render_report(inputs, changes, header, generated_utc)
     workbook = dig_list_workbook(dig_list(inputs), inputs.settings, _sheet_label(inputs))
+    distribution = anomaly_distribution_table(anomaly_distribution(inputs))
+    joints = joint_ml_counts(inputs.weld_map, inputs.prev_std, inputs.curr_std)
+    aoi = anomalies_of_interest(inputs)
+    imp_rows = _imp_class_rows(inputs)
     manifest = json.dumps(run_manifest(inputs, list(OUTPUT_NAMES), generated_utc), indent=2, allow_nan=False)
     paths = {name: Path(out_dir) / name for name in OUTPUT_NAMES}
     _write_all({
         "category_changes.csv": lambda p: changes.table.to_csv(p, index=False, lineterminator="\n"),
         "report.html": lambda p: p.write_text(html, encoding="utf-8"),
         "dig_list.xlsx": workbook.save,
+        "anomaly_distribution.csv": lambda p: distribution.to_csv(p, index=False, lineterminator="\n"),
+        "joint_ml_counts.csv": lambda p: joints.to_csv(p, index=False, lineterminator="\n"),
+        "anomalies_of_interest.csv": lambda p: aoi.to_csv(p, index=False, lineterminator="\n"),
+        "imp_class.csv": lambda p: imp_rows.to_csv(p, index=False, lineterminator="\n"),
         "run_manifest.json": lambda p: p.write_text(manifest, encoding="utf-8"),
     }, paths)
     return paths, changes
@@ -489,6 +575,8 @@ def _parser() -> argparse.ArgumentParser:
     ap.add_argument("--segments", type=Path, required=True, help="hca_segments.csv")
     ap.add_argument("--crossings", type=Path, default=None, help="foreign_crossings.csv (optional)")
     ap.add_argument("--digs", type=Path, default=None, help="digs.csv, field results for the back-test (optional)")
+    ap.add_argument("--repairs", type=Path, default=None,
+                    help="repairs_between_runs.csv (optional; counts previously repaired anomalies)")
     ap.add_argument("--ingest-dir", type=Path, default=None,
                     help="folder with ingest_manifest.json and validation_issues.csv (default: the parent of "
                          "--curr's folder)")
@@ -508,7 +596,7 @@ def main(argv: list[str] | None = None) -> int:
         ingest_dir = args.ingest_dir or args.curr.resolve().parent.parent
         inputs = load_report_inputs(args.comparison, args.prev, args.curr, ingest_dir, args.pipe, args.mop,
                                     args.segments, args.crossings, args.digs, args.settings,
-                                    criteria_path(args.criteria, settings))
+                                    criteria_path(args.criteria, settings), repairs=args.repairs)
         header = ReportHeader(args.line_name, args.prev_tool, args.curr_tool)
         paths, changes = write_report(inputs, header, args.comparison, datetime.now(timezone.utc))
     except (ValueError, OSError) as exc:

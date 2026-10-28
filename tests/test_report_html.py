@@ -12,7 +12,7 @@ from ili.category_change import category_changes
 from ili.classify import IMMEDIATE_ACTION_NOTE
 from ili.report import (DIG_LIST_PRINT_COLUMNS, MOVED_PRINT_COLUMNS, SECTION_IDS, ReportHeader, _css_string, _vendor,
                         cell, render_report)
-from ili.report_data import backtest, pending_reviews
+from ili.report_data import backtest, dig_list, pending_reviews
 from test_report_inputs import _load, built  # noqa: F401  (built is the module fixture)
 
 GENERATED = datetime(2026, 10, 27, 12, 0, tzinfo=timezone.utc)
@@ -136,7 +136,7 @@ def test_self_contained(report):
     assert html.count("plotly.js v") == 1
     assert not re.search(r"<link[^>]*stylesheet", html, flags=re.I)
     assert not re.search(r"<script[^>]*\bsrc\s*=", html, flags=re.I)
-    assert html.count('class="plotly-graph-div"') == 6  # histograms + depth, growth, RL, map, unity
+    assert html.count('class="plotly-graph-div"') == 10  # histograms + depth, growth, RL, 3 orientation, elevation, map, unity
 
 
 def _outside_scripts(html):
@@ -191,7 +191,12 @@ def test_no_immediate_message(report):
 
 
 def test_blank_cells_not_nan(report):
-    _, _, html = report
+    inputs, _, html = report
+    # the IMP class named "None" (spec 6.8) is a label, not a blank: the summary row and the dig list's imp_class
+    html = html.replace("<tr><td>None</td>", "<tr>")
+    n_dig_none = int((dig_list(inputs).imp_class == "None").sum())
+    assert html.count('<td class="noprint">None</td>') == n_dig_none
+    html = html.replace('<td class="noprint">None</td>', "<td></td>")
     for bad in (">nan<", ">None<", ">NaT<", ">&lt;NA&gt;<", ">NaN<"):
         assert bad not in html, bad
     assert "<td></td>" in _section(html, "dig-list")  # blanks exist, and render empty
@@ -215,7 +220,7 @@ def test_missing_optional_notes(report):
     assert "digs.csv not provided" in charts
     assert "No map: no dig-list feature has a latitude and longitude." in charts
     assert "Foreign crossings file not provided" in _section_text(html, "data-quality")
-    assert html.count('class="plotly-graph-div"') == 4
+    assert html.count('class="plotly-graph-div"') == 8
 
 
 def test_placeholder_rows_highlighted(report):
@@ -287,8 +292,37 @@ def test_methods_caption_says_which_settings_are_verified(report):
     _, _, html = report
     text = _section_text(html, "methods")
     assert ("Strength, remaining-life and classification values, and the tool tolerances they use, were verified "
-            "against the M6 and M7 summaries; alignment, matching and growth values (and the other tool values) are "
-            "the settings at report time, as no summary records them.") in text
+            "against the M6 and M7 summaries, and the growth profile, recoat exclusion, joint percentile settings and "
+            "shrinking rate against the M5 summary; alignment, matching and the other growth values (and the other "
+            "tool values) are the settings at report time, as no summary records them.") in text
+
+
+def test_methods_lists_new_formulas(report):
+    _, _, html = report
+    text = _section_text(html, "methods")
+    for method in ("half_life", "joint_percentile", "shrinking_fixed"):
+        assert method in text
+    assert "conservative" in text and "pit_to_pit" in text
+    assert "d_curr / ((current run year − install_year) / 2)" in text
+    assert "joint_percentile_min_matches" in text
+    assert "Δd ≥ 0" in text and "Δd < 0" in text
+    assert "ERF = MOP_local / P_safe" in text and "FPR = P_F / MOP_local" in text
+    assert "leak when τ_80 ≤ τ_burst, otherwise burst" in text
+    assert "blank when τ_80 or τ_burst is NaN, or both are inf" in text
+    assert "blank where P_safe or MOP is not a finite positive number" in text
+    assert "P_design = 2 · SMYS · t · design_factor / D" in text
+    assert "MOP · D / (2 · t · SMYS)" in text
+
+
+def test_methods_states_the_next_assessment_projection_rules(report):
+    _, _, html = report
+    text = _section_text(html, "methods")
+    assert "run_date + ⌊τ·365.25⌋ days" in text
+    assert ("projected from the assessed depth (reported + tolerance under the default reported_plus_tolerance "
+            "basis)") in text
+    assert "exceeds_80pct_next when depth(τ_next) ≥ 0.80·t" in text
+    assert ("burst_next_psig, safe_next_psig, erf_next and fpr_next are blank where depth(τ_next) ≥ t (projected "
+            "through the wall)") in text
 
 
 def test_missing_pct_negative_raw_is_not_available(report):
@@ -323,3 +357,89 @@ def test_vendor_map_relative_to_project_root(tmp_path, monkeypatch):
     manifest = {"runs": [{"run_id": "R1", "vendor_map": "config/vendor_maps/synthetic_vendor_a.yaml"}]}
     assert _vendor(manifest, "R1") == "synthetic_vendor_a"
     assert _vendor({"runs": [{"run_id": "R1", "vendor_map": "config/vendor_maps/nope.yaml"}]}, "R1") == "not stated"
+
+
+def test_report_html_has_imp_class_and_profile(report):
+    inputs, _, html = report
+    summary = _section_text(html, "summary")
+    assert "IMP class summary" in summary and "YTC &lt; 5 yrs".replace("&lt;", "<") in summary
+    assert "approved" not in summary.lower() and "final" not in summary.lower().replace("not final", "")
+    growth = _section_text(html, "growth")
+    assert "conservative" in growth and "Growth summary by surface" in growth
+    assert "excluding_recoated" in growth and "rows inside recoat spans, whatever the setting" in growth
+
+
+def _growth_text(inputs, changes, settings=None, **summary):
+    """The growth section rendered with ``summary`` keys replacing growth_summary.json's (and other settings)."""
+    bare = dataclasses.replace(inputs, summaries={**inputs.summaries, "growth": {**inputs.summaries["growth"],
+                                                                                 **summary}},
+                               settings=settings or inputs.settings)
+    return _section_text(render_report(bare, changes, ReportHeader(None, None, None), GENERATED), "growth")
+
+
+def test_no_joint_increased_message(report, monkeypatch):
+    import ili.report as report_mod
+    inputs, changes, html = report
+    assert "joints with the largest increase in metal loss" in _section_text(html, "growth")
+    real = report_mod.largest_joints
+    monkeypatch.setattr(report_mod, "largest_joints", lambda counts, n: (real(counts, n)[0], real(counts, n)[1][:0]))
+    text = _section_text(render_report(inputs, changes, ReportHeader(None, None, None), GENERATED), "growth")
+    assert "No joint increased in metal loss." in text
+    assert "joints with the largest increase in metal loss" not in text
+
+
+def test_recoat_note_sits_with_the_segment_statistics(report):
+    inputs, changes, html = report
+    text = _growth_text(inputs, changes, repairs_file_given=True, n_excluded_recoated=3)
+    note = ("3 recoated feature(s) left out of the segment and joint percentiles and these statistics "
+            "(exclude_recoated_from_stats: true).")
+    assert note in text
+    assert text.index("Growth summary by surface") < text.index(note) < text.index("Per-segment statistics")
+    assert "% of matched features in the statistics (recoated left out when the setting is on)" in text
+    off = inputs.settings.model_copy(update={"growth": inputs.settings.growth.model_copy(
+        update={"exclude_recoated_from_stats": False})})
+    text = _growth_text(inputs, changes, settings=off, repairs_file_given=True, n_excluded_recoated=0)
+    assert ("No recoated feature was left out of the segment and joint percentiles and these statistics, because "
+            "exclude_recoated_from_stats is false.") in text
+    assert "No repairs file was given to the growth step" in _growth_text(inputs, changes, repairs_file_given=False)
+
+
+def test_methods_say_what_the_joint_and_shrinking_rates_leave_out(report):
+    _, _, html = report
+    text = _section_text(html, "methods")
+    assert ("recoated features (when exclude_recoated_from_stats is true) and non-finite raw rates are left out"
+            in text)
+    assert "empty when shrinking_rate_mpy is null (under pit_to_pit the row is then no_governing)" in text
+
+
+def test_growth_section_shows_depth_and_dent_bins_with_notes(report):
+    inputs, _, html = report
+    growth = _section_text(html, "growth")
+    assert "Depth bins" in growth and "Dent bins" in growth
+    for title in ("all metal loss", "metal loss at a girth weld", "metal loss on the long seam"):
+        assert f"Depth bins, {title}" in growth
+    assert ">=80" in growth and "0-2" in growth
+    assert "classification.girth_weld_proximity_in is not set" in growth  # the default leaves the setting null
+
+
+def test_report_header_has_pipe_summary(report):
+    inputs, _, html = report
+    text = _section_text(html, "header")
+    assert "Pipe summary" in text and "pipe_properties.csv" in text and "mop_profile.csv" in text
+    assert f"design factor F = {inputs.settings.strength.design_factor:g}" in text
+    assert "Length check" in text and "Design pressure (psig)" in text and "Stress at MOP (% SMYS)" in text
+    for run_id in (inputs.prev_std.run_id.iloc[0], inputs.curr_std.run_id.iloc[0]):
+        assert run_id in text
+
+
+def test_report_html_has_orientation_and_elevation(report):
+    inputs, changes, html = report
+    charts = _section_text(html, "charts")
+    for label in ("External corrosion: clock position", "Internal corrosion: clock position",
+                  "Manufacturing: clock position"):
+        assert label in html
+    assert "Elevation profile with internal metal loss" in html
+    assert "elevation is not available" not in charts
+    bare = dataclasses.replace(inputs, curr_std=inputs.curr_std.assign(elev_ft=np.nan))
+    text = _section_text(render_report(bare, changes, ReportHeader(None, None, None), GENERATED), "charts")
+    assert "elevation is not available" in text

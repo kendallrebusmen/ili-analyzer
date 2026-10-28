@@ -41,7 +41,8 @@ def test_cli_writes_outputs(built, capsys):
     capsys.readouterr()
     assert main(_argv(built, "--line-name", "Line 7")) == 0
     printed = capsys.readouterr().out
-    names = ["category_changes.csv", "report.html", "dig_list.xlsx", "run_manifest.json"]
+    names = ["category_changes.csv", "report.html", "dig_list.xlsx", "anomaly_distribution.csv",
+             "joint_ml_counts.csv", "anomalies_of_interest.csv", "run_manifest.json"]
     assert all((folder / n).is_file() for n in names)
     assert DRAFT_LABEL in printed and "pending" in printed and "dig list" in printed
 
@@ -67,6 +68,18 @@ def test_cli_writes_outputs(built, capsys):
     assert manifest["config"]["settings"]["sha256"] and manifest["config"]["criteria"]["sha256"]
     assert {r["run_id"] for r in manifest["tallies"]} == {"2021_vendorA", "2026_vendorB"}
     assert "Line 7" in (folder / "report.html").read_text(encoding="utf-8")
+
+
+def test_report_cli_writes_all_outputs(built, capsys):
+    from ili.report import OUTPUT_NAMES
+    _, _, _, folder = built
+    assert main(_argv(built, "--line-name", "Line 7")) == 0
+    capsys.readouterr()
+    assert len(OUTPUT_NAMES) == 8
+    manifest = json.loads((folder / "run_manifest.json").read_text(encoding="utf-8"))
+    for name in OUTPUT_NAMES:
+        assert (folder / name).is_file()
+        assert name in manifest["outputs"]
 
 
 def test_empty_dig_list_workbook(tmp_path):
@@ -216,3 +229,64 @@ def test_dig_list_row_1_carries_the_discovery_warning(built, tmp_path, warning):
     paths, _ = write_report(inputs, ReportHeader(None, None, None), tmp_path, datetime.now(timezone.utc))
     a1 = openpyxl.load_workbook(paths["dig_list.xlsx"]).active["A1"].value
     assert a1 == (DRAFT_LABEL if warning is None else f"{DRAFT_LABEL} WARNING: {warning}")
+
+
+def test_report_writes_anomaly_distribution(built):
+    _, _, _, folder = built
+    assert main(_argv(built)) == 0
+    out = pd.read_csv(folder / "anomaly_distribution.csv", dtype={"bin": str})
+    settings = config.load_settings()
+    n_depth, n_dent = len(settings.report.depth_bins_pct_wt), len(settings.report.dent_bins_pct_od)
+    assert list(out.columns[:2]) == ["table", "run_id"]
+    assert set(out.table) == {"depth", "dent"}
+    assert (out.table == "depth").sum() == 2 * 3 * n_depth and (out.table == "dent").sum() == 2 * n_dent
+    depth = out[(out.table == "depth") & (out.location == "all")]
+    assert depth.total.sum() > 0 and {"2021_vendorA", "2026_vendorB"} == set(depth.run_id)
+    assert settings.classification.girth_weld_proximity_in is None  # so the girth-weld rows are not evaluated
+    gw = out[(out.table == "depth") & (out.location == "girth_weld")]
+    assert (gw.total == 0).all() and (gw.n_location_unknown > 0).all()
+    assert (depth.n_location_unknown == 0).all()
+    manifest = json.loads((folder / "run_manifest.json").read_text(encoding="utf-8"))
+    assert "anomaly_distribution.csv" in manifest["outputs"]
+
+
+def test_report_writes_joint_counts(built):
+    _, _, _, folder = built
+    assert main(_argv(built)) == 0
+    out = pd.read_csv(folder / "joint_ml_counts.csv", dtype={"prev_gw_ids": str, "curr_gw_ids": str})
+    weld_map = pd.read_csv(folder / "weld_map.csv")
+    assert len(out) == len(weld_map) and list(out.columns[:5]) == [
+        "section_id", "match_type", "prev_gw_ids", "curr_gw_ids", "curr_start_ft"]
+    assert out.curr_total.sum() > 0 and out.prev_total.sum() > 0
+    both = out.dropna(subset=["curr_total"])
+    assert (both.curr_total == both.curr_ext + both.curr_int + both.curr_other).all()
+    assert out.prev_total[out.match_type == "inserted"].isna().all()
+    manifest = json.loads((folder / "run_manifest.json").read_text(encoding="utf-8"))
+    assert "joint_ml_counts.csv" in manifest["outputs"]
+    html = (folder / "report.html").read_text(encoding="utf-8")
+    assert "Per-joint metal-loss counts" in html
+
+
+def test_report_writes_imp_class_rows(built):
+    from ili.report_tables import IMP_CLASS_ROW_COLUMNS
+    _, _, _, folder = built
+    assert main(_argv(built)) == 0
+    rows = pd.read_csv(folder / "imp_class.csv", dtype={"match_id": str, "curr_feature_id": str})
+    assert tuple(rows.columns) == IMP_CLASS_ROW_COLUMNS
+    classification = pd.read_csv(folder / "classification.csv", dtype={"match_id": str})
+    assert rows.match_id.tolist() == classification.match_id.tolist()
+    manifest = json.loads((folder / "run_manifest.json").read_text(encoding="utf-8"))
+    assert "imp_class.csv" in manifest["outputs"]
+
+
+def test_report_writes_aoi(built):
+    _, _, _, folder = built
+    assert main(_argv(built)) == 0
+    out = pd.read_csv(folder / "anomalies_of_interest.csv")
+    assert list(out.columns) == ["rank", "start_ft", "end_ft", "surfaces", "origins", "max_depth_pct",
+                                 "n_anomalies", "min_rl_yr", "min_rl_is_bound", "hca", "description"]
+    assert 0 < len(out) <= config.load_settings().report.aoi_count
+    assert list(out["rank"]) == list(range(1, len(out) + 1))
+    manifest = json.loads((folder / "run_manifest.json").read_text(encoding="utf-8"))
+    assert "anomalies_of_interest.csv" in manifest["outputs"]
+    assert "Anomalies of interest" in (folder / "report.html").read_text(encoding="utf-8")

@@ -49,6 +49,9 @@ from ili.strength import assessed_depth_in
 from ili.vocabulary import VARIABLES
 
 IN_PER_FT = 12.0
+# A percentage is rounded to this many decimals before it is compared with an edge or a rule threshold, so an
+# exact ratio stays exact (0.645 in on a 10.75 in OD is 6 %, not 6.000000000000001 %); the report's bins use it.
+PCT_DECIMALS = 9
 # Match-table rows that have a current-run side (a "missing" row is a previous-run feature only).
 CURRENT_SIDE_MATCH_TYPES = ("matched_1to1", "matched_cluster", "new")
 # Spec 6.8: "top of pipe" means above the 4 and 8 o'clock positions, i.e. clock_min >= 480 or <= 240.
@@ -127,6 +130,14 @@ def assessed_depth_pct(depth_pct, settings: Settings) -> np.ndarray:
     (``strength.assessed_depth_in``). As a percentage of wall it does not depend on the wall, so it is
     evaluated on a unit wall: a missing wall never makes a reported depth unknown. NaN in, NaN out."""
     return np.asarray(assessed_depth_in(_floats(depth_pct), 1.0, settings), dtype=float) * PCT_PER_FRACTION
+
+
+def dent_depth_pct_od(dent_depth_in, od_in) -> np.ndarray:
+    """Dent depth as a percentage of OD = dent_depth_in / od_in x 100, rounded to ``PCT_DECIMALS`` places (the
+    same value the report's dent bins use); NaN where either is NaN or the OD is not positive."""
+    depth, od = np.asarray(dent_depth_in, dtype=float), np.asarray(od_in, dtype=float)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        return np.where(od > 0, depth / od * PCT_PER_FRACTION, np.nan).round(PCT_DECIMALS)
 
 
 def top_of_pipe(clock_min) -> np.ndarray:
@@ -340,7 +351,8 @@ def feature_variables(match_table: pd.DataFrame, remaining_life: pd.DataFrame, c
     - ``wt_in`` otherwise (and for a blank M6 value): the match table's ``curr_wt_nom_in``.
       ``depth_pct_assessed`` otherwise: ``assessed_depth_pct`` of the reported depth (gouges; dents
       with a reported metal-loss depth; metal loss without an M6 value), None without a depth.
-    - Dents only: ``dent_depth_in``, ``dent_depth_pct_od`` = dent_depth_in / od_in x 100,
+    - Dents only: ``dent_depth_in``, ``dent_depth_pct_od`` = dent_depth_in / od_in x 100 rounded to
+      ``PCT_DECIMALS`` places (``dent_depth_pct_od``, as the report's dent bins),
       ``dent_metal_loss``. None for metal loss and gouges, as are the pressures for dents and gouges.
     - ``seam_interaction``, ``near_girth_weld`` (current-run girth welds of ``curr_std``),
       ``near_foreign_crossing`` (``crossings`` None: unknown; no rows: False), ``general_corrosion``,
@@ -394,8 +406,7 @@ def feature_variables(match_table: pd.DataFrame, remaining_life: pd.DataFrame, c
         repair_by_date[k] = _as_date(rl.repair_by_date.iloc[j[k]], "remaining-life repair_by_date")
 
     dent_depth = np.where(is_dent, _floats(rows.curr_dent_depth_in), np.nan)
-    with np.errstate(invalid="ignore", divide="ignore"):
-        dent_pct_od = np.where(od > 0, dent_depth / od * PCT_PER_FRACTION, np.nan)
+    dent_pct_od = dent_depth_pct_od(dent_depth, od)
     dml = dent_metal_loss(rows.curr_dent_metal_loss, depth)
     dml[~is_dent] = None
 

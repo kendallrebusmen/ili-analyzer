@@ -12,11 +12,12 @@ from ili.synth import SynthParams, generate
 
 FEATURE_COLUMNS = [
     "match_id", "match_type", "prev_feature_id", "curr_feature_id", "curr_log_dist_ft", "segment_id",
+    "joint_id", "surface", "ml_origin", "in_recoat", "in_stats",
     "history_class", "confidence", "implausible", "match_needs_review",
     "wt_in", "d_prev_pct", "d_curr_pct", "d_prev_in", "d_curr_in", "dt_yr", "sigma_diff_pct", "k_sigma",
     "install_year",
     "raw_mpy", "tolerance_adjusted_mpy", "segment_percentile_mpy", "new_feature_mpy", "full_life_mpy",
-    "default_rate_mpy",
+    "default_rate_mpy", "half_life_mpy", "joint_percentile_mpy", "shrinking_fixed_mpy",
     "governing_mpy", "governing_method", "needs_review", "review_reasons", "length_in", "length_rate_ipy",
 ]
 SEGMENT_COLUMNS = [
@@ -111,7 +112,7 @@ def test_one_row_per_current_metal_loss(synth_growth):
     want = mt[(mt.match_type != "missing") & (mt.curr_feature_type == "metal_loss")]
     assert list(f.columns) == FEATURE_COLUMNS
     assert f.match_id.tolist() == want.match_id.tolist()  # one row each, in table order
-    assert len(f) == 494 + 6 + 54
+    assert len(f) == 494 + 6 + 54 + 10  # + 10 mill anomalies (M11)
     excluded = mt[(mt.match_type == "missing") | (mt.curr_feature_type != "metal_loss")]
     assert set(excluded.curr_feature_type.dropna()) == {"dent"}  # the synth has dents to exclude
     assert not set(excluded.match_id) & set(f.match_id)
@@ -182,7 +183,7 @@ def test_segment_percentile_hand_built(settings):
     assert s["counts_by_history_class"] == {"matched": 5, "new": 3, "no_history": 0}
     assert s["counts_by_governing_method"] == {
         "raw": 0, "tolerance_adjusted": 3, "segment_percentile": 3, "new_feature": 2, "full_life": 0,
-        "default_rate": 0,
+        "default_rate": 0, "half_life": 0, "joint_percentile": 0, "shrinking_fixed": 0,
     }
     assert s["n_needs_review"] == 2
     assert s["counts_by_review_reason"] == {"no_governing": 0, "incomplete_rule": 2, "below_min_rate": 0,
@@ -409,3 +410,214 @@ def test_requires_match_table_columns(settings):
     with pytest.raises(ValueError, match="curr_depth_pct"):
         growth.compute_growth(_table([_row("K1", "new", 140.0, d_curr=20.0)]).drop(columns="curr_depth_pct"),
                               DT, PREV_YEAR, CURR_YEAR, PIPE, SEGS, settings)
+
+
+# --- M11: new rates and recoat exclusion --------------------------------------------------------------------
+
+
+def _recoat_rows():
+    rows = [_row(f"M{i}", "matched_1to1", 100.0 + 50 * i, 30.0, 30.0 + 2 * i) for i in range(1, 5)]
+    rows.append(_row("R1", "matched_1to1", 400.0, 30.0, 80.0))  # raw 25 mpy, inside the recoat
+    for r, j in zip(rows, ["J1"] * 5):
+        r["curr_us_gw_id"] = j
+    return rows
+
+
+RECOAT = pd.DataFrame({"start_ft": [390.0], "end_ft": [410.0], "repair_type": ["recoat"]})
+
+
+def _run_repairs(rows, settings, repairs):
+    return growth.compute_growth(_table(rows), DT, PREV_YEAR, CURR_YEAR, PIPE, SEGS, settings, repairs=repairs)
+
+
+def test_recoated_rows_left_out_of_distributions(settings):
+    rows = _recoat_rows()
+    on = _run_repairs(rows, _with_growth(settings, joint_percentile_min_matches=3), RECOAT)
+    off = _run_repairs(rows, _with_growth(settings, joint_percentile_min_matches=3, exclude_recoated_from_stats=False),
+                       RECOAT)
+    none = _run_repairs(rows, _with_growth(settings, joint_percentile_min_matches=3), None)
+    f_on, f_off = _by_id(on), _by_id(off)
+    assert f_on.loc["R1", "in_recoat"] and not f_on.loc["R1", "in_stats"]
+    assert f_off.loc["R1", "in_recoat"] and f_off.loc["R1", "in_stats"]
+    assert f_on.loc["R1", "raw_mpy"] == pytest.approx(25.0)  # still gets its own rate
+    assert f_on.loc["M1", "segment_percentile_mpy"] < f_off.loc["M1", "segment_percentile_mpy"]
+    assert f_on.loc["M1", "joint_percentile_mpy"] < f_off.loc["M1", "joint_percentile_mpy"]
+    assert f_on.loc["R1", "segment_percentile_mpy"] == f_on.loc["M1", "segment_percentile_mpy"]
+    assert on.summary["n_excluded_recoated"] == 1 and off.summary["n_excluded_recoated"] == 0
+    # no recoat in the repairs: nothing excluded, same numbers as exclusion off
+    assert none.summary["n_excluded_recoated"] == 0
+    assert on.summary["repairs_file_given"] and not none.summary["repairs_file_given"]
+    assert on.summary["exclude_recoated_from_stats"] and not off.summary["exclude_recoated_from_stats"]
+    assert _by_id(none).governing_mpy.tolist() == f_off.governing_mpy.tolist()
+
+
+def test_growth_result_by_surface_is_required():
+    import dataclasses
+    field = {f.name: f for f in dataclasses.fields(growth.GrowthResult)}["by_surface"]
+    assert field.default is dataclasses.MISSING and field.default_factory is dataclasses.MISSING
+
+
+def test_no_recoat_leaves_governing_unchanged(settings):
+    rows = SEG_A_MATCHED + [_row("N1", "new", 400.0, d_curr=18.0)]
+    base = _by_id(_run(rows, settings))
+    other = _by_id(_run_repairs(rows, settings, RECOAT.assign(repair_type="sleeve")))
+    assert base.governing_mpy.tolist() == other.governing_mpy.tolist()
+    assert base.governing_method.tolist() == other.governing_method.tolist()
+    assert not base.in_recoat.any() and base.in_stats.all()
+
+
+def test_new_columns_and_summary(settings):
+    rows = _recoat_rows()
+    for r in rows:
+        r.update(curr_surface="external", curr_ml_origin="corrosion")
+    res = _run(rows, settings)
+    f = _by_id(res)
+    assert f.loc["M1", "joint_id"] == "J1" and f.loc["M1", "surface"] == "external"
+    assert f.loc["M1", "ml_origin"] == "corrosion"
+    s = res.summary
+    assert s["governing_profile"] == settings.growth.governing_profile
+    assert s["joint_percentile"] == settings.growth.joint_percentile
+    assert {"joint_percentile_min_matches", "shrinking_rate_mpy", "n_excluded_recoated"} <= set(s)
+
+
+# --- M11: pit_to_pit governing profile ----------------------------------------------------------------------
+
+
+def _pit(settings, **kw):
+    return _with_growth(settings, governing_profile="pit_to_pit", shrinking_rate_mpy=2.5, **kw)
+
+
+def test_pit_to_pit_matched_grew_and_shrank(settings):
+    rows = [
+        _row("G1", "matched_1to1", 100.0, 30.0, 30.8),   # raw 0.4 mpy, grew: floored at min_rate_mpy
+        _row("G2", "matched_1to1", 150.0, 30.0, 36.0),   # raw 3.0
+        _row("G3", "matched_1to1", 200.0, 30.0, 30.0),   # raw 0, no change counts as grew
+        _row("S1", "matched_1to1", 250.0, 30.0, 26.0),   # raw -2.0, shrank
+    ]
+    f = _by_id(_run(rows, _pit(settings)))
+    assert f.loc["G1", "governing_mpy"] == pytest.approx(settings.growth.min_rate_mpy) == pytest.approx(1.0)
+    assert f.loc["G1", "governing_method"] == "raw"
+    assert f.loc["G2", "governing_mpy"] == pytest.approx(3.0) and f.loc["G2", "governing_method"] == "raw"
+    assert f.loc["G3", "governing_mpy"] == pytest.approx(1.0) and f.loc["G3", "governing_method"] == "raw"
+    assert f.loc["S1", "governing_mpy"] == pytest.approx(2.5) and f.loc["S1", "governing_method"] == "shrinking_fixed"
+    assert not f.needs_review.any()  # a by-design rule is not "incomplete"
+
+
+def test_pit_to_pit_new_falls_back_to_half_life(settings):
+    rows = [_row(f"M{i}", "matched_1to1", 100.0 + 50 * i, 30.0, 30.0 + 2 * i) for i in range(1, 4)]
+    for r in rows:
+        r["curr_us_gw_id"] = "J1"
+    rows += [
+        _row("N1", "new", 400.0, d_curr=20.0),             # no joint: half_life
+        _row("N2", "new", 410.0, d_curr=20.0),             # joint J1 with 3 matches: joint_percentile
+        _row("H1", "new", 1050.0, d_curr=20.0),            # new pipe (2023): no_history, half_life
+    ]
+    rows[4]["curr_us_gw_id"] = "J1"
+    f = _by_id(_run(rows, _pit(settings, joint_percentile_min_matches=3)))
+    assert f.loc["N1", "governing_method"] == "half_life"
+    assert f.loc["N1", "governing_mpy"] == pytest.approx(f.loc["N1", "half_life_mpy"])
+    assert f.loc["N2", "governing_method"] == "joint_percentile"
+    assert f.loc["N2", "governing_mpy"] == pytest.approx(f.loc["N2", "joint_percentile_mpy"])
+    assert f.loc["H1", "history_class"] == "no_history" and f.loc["H1", "governing_method"] == "half_life"
+    assert f.loc["H1", "governing_mpy"] == pytest.approx(f.loc["H1", "half_life_mpy"])
+    assert not f.needs_review.any()
+
+
+def test_pit_to_pit_shrinking_null_is_flagged(settings):
+    rows = [_row("S1", "matched_1to1", 250.0, 30.0, 26.0), _row("G1", "matched_1to1", 100.0, 30.0, 36.0)]
+    f = _by_id(_run(rows, _with_growth(settings, governing_profile="pit_to_pit", shrinking_rate_mpy=None)))
+    assert math.isnan(f.loc["S1", "governing_mpy"]) and f.loc["S1", "governing_method"] is None
+    assert f.loc["S1", "review_reasons"] == "no_governing" and bool(f.loc["S1", "needs_review"])
+    assert f.loc["G1", "governing_mpy"] == pytest.approx(3.0)
+
+
+def test_conservative_default_unchanged(synth_growth, settings):
+    mt, res = synth_growth
+    assert settings.growth.governing_profile == "conservative"
+    f = res.features
+    # The default profile is the pre-M11 list rule: same values as the list rule applied directly.
+    cls = f.history_class.to_numpy(object)
+    gov, method = growth.governing_rate(f, cls, _with_growth(settings, governing_profile="conservative"))
+    assert np.array_equal(f.governing_mpy.to_numpy(float), gov, equal_nan=True)
+    assert f.governing_method.tolist() == list(method)
+    # and it differs from pit_to_pit on the same data, so the profile is really dispatched
+    other, _ = growth.governing_rate(f, cls, _pit(settings))
+    assert not np.array_equal(gov, other, equal_nan=True)
+
+
+# --- M11: recoated rows out of the summary statistics; growth summary by surface -----------------------------
+
+
+def test_recoated_rows_left_out_of_summary_statistics(settings):
+    rows = _recoat_rows()
+    on = _run_repairs(rows, settings, RECOAT)
+    off = _run_repairs(rows, _with_growth(settings, exclude_recoated_from_stats=False), RECOAT)
+    none = _run_repairs(rows, settings, None)
+    seg_on, seg_off = on.segments.set_index("segment_id"), off.segments.set_index("segment_id")
+    # M1..M4 raw 1, 2, 3, 4 mpy (+R1 25 mpy at 400 ft, same segment); n_features and governing max cover all rows
+    seg = seg_on.index[seg_on.n_features == seg_on.n_features.max()][0]
+    assert seg_on.loc[seg, "n_matched"] == seg_off.loc[seg, "n_matched"] - 1
+    assert seg_on.loc[seg, "raw_mean_mpy"] < seg_off.loc[seg, "raw_mean_mpy"]
+    assert seg_on.loc[seg, "n_features"] == seg_off.loc[seg, "n_features"]
+    assert seg_on.loc[seg, "governing_max_mpy"] == seg_off.loc[seg, "governing_max_mpy"]
+    assert on.summary["raw_histogram"]["counts"] != off.summary["raw_histogram"]["counts"]
+    assert sum(on.summary["raw_histogram"]["counts"]) == sum(off.summary["raw_histogram"]["counts"]) - 1
+    assert on.summary["n_features"] == off.summary["n_features"]
+    # no recoat in the repairs: statistics identical to exclusion off
+    pd.testing.assert_frame_equal(none.segments, off.segments)
+    assert none.summary["raw_histogram"] == off.summary["raw_histogram"]
+    assert none.summary["pct_negative_raw"] == off.summary["pct_negative_raw"]
+
+
+def _surface_features():
+    cols = ["curr_feature_id", "surface", "ml_origin", "in_recoat", "history_class", "d_prev_pct", "d_curr_pct",
+            "d_curr_in", "install_year", "half_life_mpy", "full_life_mpy", "raw_mpy"]
+    return pd.DataFrame([
+        ["E1", "EXT", "corrosion", False, "matched", 20.0, 30.0, 0.075, 1970, 2.0, 1.5, 4.0],
+        ["E2", "EXT", "corrosion", True, "matched", 20.0, 50.0, 0.125, 1980, 3.0, 2.5, 10.0],
+        ["E3", "EXT", None, False, "new", NAN, 40.0, 0.100, 1975, 2.5, 2.0, NAN],
+        ["I1", "INT", "corrosion", False, "no_history", NAN, 25.0, 0.0625, 1990, 1.0, 0.5, NAN],
+    ], columns=cols)
+
+
+def test_growth_summary_by_surface_values():
+    out = growth.growth_summary_by_surface(_surface_features(), 2026).set_index(["surface", "scope"])
+    assert list(out.columns) == growth.SURFACE_SUMMARY_COLUMNS[2:]
+    a = out.loc[("EXT", "all")]
+    assert (a.n_features, a.n_matched, a.matched_share) == (3, 2, "2 of 3")
+    assert (a.max_depth_pct, a.max_depth_in, a.deepest_curr_feature_id) == (50.0, 0.125, "E2")
+    assert a.pipe_age_yr == 46 and a.deepest_half_life_mpy == 3.0 and a.deepest_full_life_mpy == 2.5
+    assert a.max_raw_mpy == 10.0 and a.mean_raw_mpy == 7.0 and a.mean_depth_change_pct == 20.0  # (10 + 30) / 2
+    x = out.loc[("EXT", "excluding_recoated")]
+    assert (x.n_features, x.n_matched, x.matched_share) == (2, 1, "1 of 2")
+    assert (x.max_depth_pct, x.deepest_curr_feature_id, x.pipe_age_yr) == (40.0, "E3", 51)
+    assert (x.max_raw_mpy, x.mean_raw_mpy, x.mean_depth_change_pct) == (4.0, 4.0, 10.0)
+    i = out.loc[("INT", "all")]
+    assert (i.matched_share, i.max_depth_pct, i.deepest_curr_feature_id) == ("0 of 1", 25.0, "I1")
+    assert math.isnan(i.max_raw_mpy) and math.isnan(i.mean_depth_change_pct)
+    assert len(out) == 4
+
+
+def test_manufacturing_left_out():
+    f = _surface_features()
+    f.loc[1, "ml_origin"] = "manufacturing"  # E2, the deepest
+    ext = growth.growth_summary_by_surface(f, 2026).set_index(["surface", "scope"]).loc[("EXT", "all")]
+    assert ext.n_features == 2 and ext.deepest_curr_feature_id == "E3" and ext.max_raw_mpy == 4.0
+
+
+def test_empty_surface_row_blank():
+    f = _surface_features()
+    out = growth.growth_summary_by_surface(f[f.surface == "EXT"], 2026).set_index(["surface", "scope"])
+    r = out.loc[("INT", "all")]
+    assert r.n_features == 0 and r.matched_share == "0 of 0"
+    assert r.isna()[["max_depth_pct", "max_depth_in", "deepest_curr_feature_id", "pipe_age_yr", "max_raw_mpy",
+                     "mean_raw_mpy", "mean_depth_change_pct"]].all()
+
+
+def test_compute_growth_carries_by_surface(settings):
+    rows = _recoat_rows()
+    for r in rows:
+        r.update(curr_surface="EXT", curr_ml_origin="corrosion")
+    res = _run_repairs(rows, settings, RECOAT)
+    s = res.by_surface.set_index(["surface", "scope"])
+    assert s.loc[("EXT", "all"), "n_features"] == 5 and s.loc[("EXT", "excluding_recoated"), "n_features"] == 4

@@ -4,7 +4,7 @@ that they describe one comparison made with one set of criteria.
 ``load_report_inputs`` reads the M2-M7 outputs with their own loaders, so every table arrives with the
 types its producer wrote. It refuses (``ValueError`` naming the files) a missing required file, outputs
 from different runs, an ingest folder that did not ingest both runs, a classification made with other
-criteria than the ones now on disk, settings that differ from the values the M6 and M7 summaries record
+criteria than the ones now on disk, settings that differ from the values the M5-M7 summaries record
 (``RECORDED_SETTINGS``), and a dig file without the columns the report needs. Validation issues are kept
 for the two compared runs only. ``input_hashes`` fingerprints every file read, for the
 report's methods appendix and the run manifest.
@@ -25,12 +25,15 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from ili.align_welds import load_weld_map
 from ili.classify import CATEGORY_PRIORITY, FLAG_STATUS_COLUMNS, FLAG_STATUS_FILE, load_classification_table
 from ili.config import RepairCriteria, Settings, load_repair_criteria, load_settings
 from ili.growth import load_growth_table
 from ili.ingest import load_standardized
 from ili.match import load_match_table
-from ili.remaining_life import load_remaining_life_table
+from ili.reference import load_repairs
+from ili.report_tables import imp_class_rows
+from ili.remaining_life import RL_FEATURE_COLUMNS, load_remaining_life_table
 from ili.review import FLAG_COLUMNS, FLAGS_FILE, REVIEW_COLUMNS, REVIEWS_FILE, load_flags, load_reviews
 
 SUMMARY_FILES = {
@@ -48,16 +51,17 @@ DIG_LIST_COLUMNS = (
     "prev_depth_pct", "curr_depth_pct", "depth_pct_assessed", "prev_length_in", "curr_length_in",
     "dent_depth_pct_od",
     "governing_mpy", "governing_method",
-    "p_fail", "p_safe", "mop_local",
-    "rl_yr", "rl_governing",
+    "p_fail", "p_safe", "mop_local", "erf", "fpr", "burst_next_psig", "safe_next_psig", "erf_next", "fpr_next",
+    "exceeds_80pct_next", "rl_yr", "rl_governing", "failure_mode", "imp_class", "previously_repaired",
     "triggered_rules", "due_date", "due_date_basis", "worst_case_category", "requires_review",
     "review_reasons", "action_note",
 )
-_ID_COLUMNS = ("match_id", "curr_feature_id", "feature_id", "segment_id", "decision_id")
+_ID_COLUMNS = ("match_id", "curr_feature_id", "feature_id", "segment_id", "decision_id", "deepest_curr_feature_id")
 REVIEW_STATUS_COLUMNS = ["decision_id", "decision", "applied_status", "reason"]  # match's review_status.csv
 CLUSTER_SEP = ";"  # a matched cluster's member feature ids are joined with this (M4)
 # Settings the summaries record, as (summary, summary key, dotted settings key). The report refuses settings
-# that differ from them; alignment, matching and growth settings are not recorded and are used as they are.
+# that differ from them. Alignment and matching settings, and the growth settings other than the profile and
+# the consultant-practice values below, are not recorded and are used as they are.
 RECORDED_SETTINGS = (
     *(("remaining_life", key, f"{section}.{key}") for section, key in (
         ("strength", "method"), ("strength", "design_factor"), ("strength", "depth_basis"),
@@ -68,10 +72,15 @@ RECORDED_SETTINGS = (
     *(("classification", key, f"classification.{key}") for key in (
         "girth_weld_proximity_in", "crossing_proximity_ft", "seam_clock_min", "seam_clock_tol_min",
         "general_corrosion_min_dim_in", "widespread_circ_min_width_frac", "due_days", "discovery_max_days")),
+    ("growth", "governing_profile", "growth.governing_profile"),
+    *(("growth", key, f"growth.{key}") for key in (
+        "exclude_recoated_from_stats", "joint_percentile", "joint_percentile_min_matches", "shrinking_rate_mpy")),
     ("classification", "depth_basis", "strength.depth_basis"),
     ("classification", "depth_tolerance_pct_wt", "tool.depth_tolerance_pct_wt"),
 )
 SETTING_REL_TOL = 1e-9  # recorded numbers round-trip through JSON; a real edit is far larger
+PRE_M11 = ("{folder} predates M11 ({detail}): re-run the pipeline on it; the saved reviews (reviews.csv) and "
+           "flags (feature_flags.csv) re-apply")
 
 
 @dataclass(frozen=True)
@@ -81,6 +90,9 @@ class ReportInputs:
     match_table: pd.DataFrame
     growth: pd.DataFrame
     growth_segments: pd.DataFrame
+    growth_by_surface: pd.DataFrame  # growth_summary.csv: the consultant's CGR summary, EXT/INT x with/without recoats
+    weld_map: pd.DataFrame  # weld_map.csv (align_welds.load_weld_map)
+    repairs: pd.DataFrame | None  # repairs_between_runs.csv, when given
     remaining_life: pd.DataFrame
     intervals: pd.DataFrame
     classification: pd.DataFrame
@@ -199,15 +211,16 @@ def _log_warnings(comparison: Path, summaries: dict[str, dict]) -> list[str]:
 
 def load_report_inputs(comparison: Path, prev_std: Path, curr_std: Path, ingest_dir: Path, pipe: Path, mop: Path,
                        segments: Path, crossings: Path | None, digs: Path | None, settings_path: Path,
-                       criteria_path: Path) -> ReportInputs:
+                       criteria_path: Path, *, repairs: Path | None = None) -> ReportInputs:
     """Load and cross-check everything the report reads. ``comparison`` is the
     ``<prev>_vs_<curr>`` folder; ``ingest_dir`` holds ``ingest_manifest.json`` and
-    ``validation_issues.csv``; ``crossings`` and ``digs`` are optional (None)."""
+    ``validation_issues.csv``; ``crossings``, ``digs`` and ``repairs`` (repairs_between_runs.csv) are optional (None)."""
     comparison, ingest_dir = Path(comparison), Path(ingest_dir)
     files = {
         "prev_std": Path(prev_std), "curr_std": Path(curr_std),
         "match_table": comparison / "match_table.csv", "growth": comparison / "growth.csv",
         "growth_segments": comparison / "growth_segments.csv",
+        "growth_by_surface": comparison / "growth_summary.csv", "weld_map": comparison / "weld_map.csv",
         "remaining_life": comparison / "remaining_life.csv",
         "intervals": comparison / "reinspection_intervals.csv",
         "classification": comparison / "classification.csv",
@@ -226,13 +239,17 @@ def load_report_inputs(comparison: Path, prev_std: Path, curr_std: Path, ingest_
         files["crossings"] = Path(crossings)
     if digs is not None:
         files["digs"] = Path(digs)
+    if repairs is not None:
+        files["repairs"] = Path(repairs)
     contexts = {
         "ingest_manifest": f"an ingest output, looked for in {ingest_dir}",
         "validation_issues": f"an ingest output, looked for in {ingest_dir}",
         "prev_std": "a standardized run given to the report", "curr_std": "a standardized run given to the report",
-        **{r: "a reference file given to the report" for r in ("pipe", "mop", "segments", "crossings", "digs")},
+        **{r: "a reference file given to the report" for r in ("pipe", "mop", "segments", "crossings", "digs", "repairs")},
         **{r: "a configuration file given to the report" for r in ("settings", "criteria")},
     }
+    if files["growth"].is_file() and not files["growth_by_surface"].is_file():  # M5 wrote both since M11
+        raise ValueError(PRE_M11.format(folder=comparison, detail="it has growth.csv but no growth_summary.csv"))
     for role, path in files.items():
         _require(path, role.replace("_", " "),
                  context=contexts.get(role, f"the report needs it alongside {comparison}"))
@@ -282,6 +299,12 @@ def load_report_inputs(comparison: Path, prev_std: Path, curr_std: Path, ingest_
         if missing:
             raise ValueError(f"{files['digs']}: missing column(s) {missing}")
 
+    remaining = load_remaining_life_table(files["remaining_life"])
+    absent = [c for c in RL_FEATURE_COLUMNS if c not in remaining.columns]
+    if absent:
+        raise ValueError(PRE_M11.format(folder=comparison, detail=f"remaining_life.csv lacks column(s) "
+                                                                  f"{', '.join(absent)}"))
+
     reviews = load_reviews(files["reviews"]) if "reviews" in files else pd.DataFrame(columns=REVIEW_COLUMNS)
     flags = load_flags(files["flags"]) if "flags" in files else pd.DataFrame(columns=FLAG_COLUMNS)
     review_status = (_read_csv(files["review_status"]) if "review_status" in files
@@ -295,7 +318,9 @@ def load_report_inputs(comparison: Path, prev_std: Path, curr_std: Path, ingest_
         match_table=load_match_table(files["match_table"]),
         growth=load_growth_table(files["growth"]),
         growth_segments=_read_csv(files["growth_segments"]),
-        remaining_life=load_remaining_life_table(files["remaining_life"]),
+        growth_by_surface=_read_csv(files["growth_by_surface"]), weld_map=load_weld_map(files["weld_map"]),
+        repairs=load_repairs(files["repairs"]) if repairs is not None else None,
+        remaining_life=remaining,
         intervals=_read_csv(files["intervals"]),
         classification=load_classification_table(files["classification"]),
         changed_sections=_read_csv(files["changed_sections"]),
@@ -324,7 +349,8 @@ def _lookup(source: pd.DataFrame, keys: pd.Series, columns: list[str]) -> pd.Dat
 
 def dig_list(inputs: ReportInputs) -> pd.DataFrame:
     """The classification rows in ``DIG_LIST_CATEGORIES`` with the columns ``DIG_LIST_COLUMNS``, most severe
-    category first, then shortest remaining life (none last), earliest due date (none last), match id."""
+    category first, then shortest remaining life (none last), earliest due date (none last), match id.
+    ``imp_class`` and ``previously_repaired`` are the feature's ``imp_class_rows`` values (imp_class.csv)."""
     cls = inputs.classification
     out = cls[cls.governing_category.isin(DIG_LIST_CATEGORIES)].reset_index(drop=True)
     keys = out.match_id
@@ -332,7 +358,11 @@ def dig_list(inputs: ReportInputs) -> pd.DataFrame:
         "prev_feature_id", "curr_log_dist_ft", "curr_us_gw_id", "curr_dist_from_us_gw_ft", "prev_depth_pct",
         "curr_depth_pct", "prev_length_in", "curr_length_in"]))
     out = out.join(_lookup(inputs.growth, keys, ["governing_mpy", "governing_method"]))
-    out = out.join(_lookup(inputs.remaining_life, keys, ["rl_yr", "rl_governing"]))
+    imp = imp_class_rows(cls, inputs.match_table, inputs.remaining_life, inputs.repairs, inputs.settings)
+    out = out.join(_lookup(imp, keys, ["imp_class", "previously_repaired"]))
+    out = out.join(_lookup(inputs.remaining_life, keys, [
+        "rl_yr", "rl_governing", "failure_mode", "erf", "fpr", "burst_next_psig", "safe_next_psig", "erf_next",
+        "fpr_next", "exceeds_80pct_next"]))
     std = inputs.curr_std.drop_duplicates("feature_id").set_index("feature_id")
     located = pd.Series([_nearest_member(f, p, std.log_dist_ft)
                          for f, p in zip(out.curr_feature_id, out.curr_log_dist_ft)], index=out.index, dtype=object)

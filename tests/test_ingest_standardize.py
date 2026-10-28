@@ -2,9 +2,10 @@ from datetime import date
 
 import pandas as pd
 import pytest
+import yaml
 from conftest import MAP_A, MAP_B, assert_matches_oracle
 
-from ili.ingest import load_vendor_map, parse_clock, read_tally, standardize
+from ili.ingest import VendorMap, load_standardized, load_vendor_map, parse_clock, read_tally, standardize
 from ili.schema import STANDARD_COLUMNS
 
 
@@ -195,3 +196,39 @@ def test_missing_mapped_column_raises(synth, tmp_path):
     df.to_csv(path, index=False)
     with pytest.raises(ValueError, match="O'clock"):
         read_tally(path, load_vendor_map(MAP_A))
+
+
+def _origin_map(**ml_origins):
+    raw = yaml.safe_load(MAP_B.read_text(encoding="utf-8"))
+    raw["feature_types"] = {"ML-CORR": "metal_loss", "ML-MILL": "metal_loss", "DENT": "dent"}
+    raw.pop("ml_origins", None)
+    if ml_origins:
+        raw["ml_origins"] = ml_origins
+    return VendorMap.model_validate(raw)
+
+
+def _origins(vmap, *codes):
+    raw = pd.concat([_raw_b(Feature=c) for c in codes], ignore_index=True)
+    std, issues = standardize(raw, vmap, "r", date(2026, 1, 1))
+    assert issues.empty
+    return list(std.ml_origin)
+
+
+def test_ml_origin_from_vendor_code():
+    vmap = _origin_map(**{"ML-CORR": "corrosion", "ML-MILL": "manufacturing"})
+    assert _origins(vmap, "ML-CORR", "ML-MILL", "DENT") == ["corrosion", "manufacturing", None]
+
+
+def test_ml_origin_defaults_unknown():
+    assert _origins(_origin_map(**{"ML-CORR": "corrosion"}), "ML-CORR", "ML-MILL", "DENT") == [
+        "corrosion", "unknown", None]
+    assert _origins(_origin_map(), "ML-CORR", "DENT") == ["unknown", None]
+
+
+def test_load_standardized_without_ml_origin_column(tmp_path):
+    std, _ = standardize(_raw_b(Feature="ML-CORR"), _origin_map(), "r", date(2026, 1, 1))
+    dent, _ = standardize(_raw_b(Feature="DENT"), _origin_map(), "r", date(2026, 1, 1))
+    path = tmp_path / "old.csv"
+    pd.concat([std, dent]).drop(columns=["ml_origin"]).to_csv(path, index=False)
+    loaded = load_standardized(path)
+    assert list(loaded.ml_origin) == ["unknown", None]

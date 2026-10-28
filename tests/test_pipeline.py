@@ -1,15 +1,19 @@
 """The pipeline runner: every stage in order, stopping at a failure, re-applying reviews (M9 done-when)."""
 
+import json
 import sys
 import threading
 from dataclasses import replace
 
+import numpy as np
 import pandas as pd
 import pytest
+import yaml
 from conftest import MAP_A, MAP_B
 
 from ili import pipeline
 from ili.align_welds import DRAFT_LABEL
+from ili.config import DEFAULT_SETTINGS
 from ili.match import load_match_table
 from ili.pipeline import STAGES, PipelineInputs, load_pipeline_inputs, run_pipeline
 from ili.review import FLAGS_FILE, REVIEWS_FILE, append_flag, append_review
@@ -32,10 +36,16 @@ def _inputs(data, out, **over):
     return PipelineInputs(**{**base, **over})
 
 
-def test_full_pipeline_on_synth(synth, tmp_path):
+@pytest.fixture(scope="module")
+def conservative_run(synth, tmp_path_factory):
+    """One full default-settings (conservative profile) pipeline run, shared by the tests that read its outputs."""
     _, data = synth
-    inputs = _inputs(data, tmp_path / "out", line_name="Line 7")
-    results = run_pipeline(inputs)
+    inputs = _inputs(data, tmp_path_factory.mktemp("conservative") / "out", line_name="Line 7")
+    return inputs, run_pipeline(inputs)
+
+
+def test_full_pipeline_on_synth(conservative_run):
+    inputs, results = conservative_run
     assert [r.stage for r in results] == list(STAGES)
     assert [r.exit_code for r in results] == [0] * len(STAGES), [r.stderr for r in results]
     folder = inputs.out / FOLDER
@@ -43,6 +53,49 @@ def test_full_pipeline_on_synth(synth, tmp_path):
     assert DRAFT_LABEL in (folder / "report.html").read_text(encoding="utf-8")
     assert DRAFT_LABEL in results[-1].stdout
     assert load_pipeline_inputs(folder / "pipeline_inputs.json") == inputs
+
+
+M11_HEADINGS = ("Pipe summary", "IMP class summary", "Anomalies of interest", "Growth summary by surface",
+                "Depth bins", "Dent bins", "Per-joint metal-loss counts", "Methods and assumptions")
+M11_OUTPUTS = ("growth_summary.json", "growth_summary.csv", "anomaly_distribution.csv", "joint_ml_counts.csv",
+               "anomalies_of_interest.csv", "imp_class.csv")
+
+
+def test_pipeline_conservative_end_to_end(conservative_run):
+    inputs, results = conservative_run
+    assert [r.exit_code for r in results] == [0] * len(STAGES), [r.stderr for r in results]
+    folder = inputs.out / FOLDER
+    assert all((folder / n).is_file() for n in M11_OUTPUTS)
+    html = (folder / "report.html").read_text(encoding="utf-8")
+    for heading in M11_HEADINGS:
+        assert heading in html, heading
+    assert json.loads((folder / "growth_summary.json").read_text(encoding="utf-8"))["governing_profile"] == "conservative"
+
+
+def test_pipeline_pit_to_pit_reported(synth, conservative_run, tmp_path):
+    _, data = synth
+    cons_inputs, _ = conservative_run
+    settings = yaml.safe_load(DEFAULT_SETTINGS.read_text(encoding="utf-8"))
+    settings["growth"].update(governing_profile="pit_to_pit", shrinking_rate_mpy=6)
+    settings["strength"]["depth_basis"] = "reported"
+    settings["tool"]["depth_tolerance_pct_wt"] = 0
+    settings_path = tmp_path / "pit_to_pit.yaml"
+    settings_path.write_text(yaml.safe_dump(settings), encoding="utf-8")
+    inputs = _inputs(data, tmp_path / "out", line_name="Line 7", settings=settings_path)
+    results = run_pipeline(inputs)
+    assert [r.exit_code for r in results] == [0] * len(STAGES), [r.stderr for r in results]
+    folder = inputs.out / FOLDER
+    summary = json.loads((folder / "growth_summary.json").read_text(encoding="utf-8"))
+    assert summary["governing_profile"] == "pit_to_pit"
+    assert all(n in (folder / "report.html").read_text(encoding="utf-8") for n in M11_HEADINGS)
+
+    cols = ["match_id", "rl_yr"]
+    cons = pd.read_csv(cons_inputs.out / FOLDER / "remaining_life.csv", usecols=cols)
+    pit = pd.read_csv(folder / "remaining_life.csv", usecols=cols)
+    both = cons.merge(pit, on="match_id", suffixes=("_cons", "_pit"))
+    both = both[np.isfinite(both.rl_yr_cons) & np.isfinite(both.rl_yr_pit)]
+    assert len(both) > 0
+    assert both.rl_yr_pit.median() >= both.rl_yr_cons.median(), (both.rl_yr_pit.median(), both.rl_yr_cons.median())
 
 
 def test_stops_at_first_failure(synth, tmp_path):
@@ -193,3 +246,21 @@ def test_system_exit_mapping(raised, code, err):
     finally:
         pipeline._MODULES["growth"] = saved
     assert result.exit_code == code and err in result.stderr
+
+
+def test_pipeline_passes_repairs_to_growth(tmp_path):
+    ref = tmp_path / "ref"
+    with_rep = _inputs(tmp_path, tmp_path / "out", repairs=ref / "repairs_between_runs.csv")
+    argv = pipeline._argv("growth", with_rep, "2021_vendorA", "2026_vendorB")
+    assert argv[argv.index("--repairs") + 1] == str(ref / "repairs_between_runs.csv")
+    assert "--repairs" not in pipeline._argv("growth", _inputs(tmp_path, tmp_path / "out", repairs=None),
+                                             "2021_vendorA", "2026_vendorB")
+
+
+def test_pipeline_passes_repairs_to_report(tmp_path):
+    ref = tmp_path / "ref"
+    with_rep = _inputs(tmp_path, tmp_path / "out", repairs=ref / "repairs_between_runs.csv")
+    argv = pipeline._argv("report", with_rep, "2021_vendorA", "2026_vendorB")
+    assert argv[argv.index("--repairs") + 1] == str(ref / "repairs_between_runs.csv")
+    assert "--repairs" not in pipeline._argv("report", _inputs(tmp_path, tmp_path / "out", repairs=None),
+                                             "2021_vendorA", "2026_vendorB")

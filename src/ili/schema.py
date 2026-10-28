@@ -34,6 +34,14 @@ class Surface(StrEnum):
     UNK = "UNK"
 
 
+class MlOrigin(StrEnum):
+    """Metal-loss origin: from the vendor feature-type code, `unknown` when the map is silent."""
+
+    corrosion = "corrosion"
+    manufacturing = "manufacturing"
+    unknown = "unknown"
+
+
 class StandardFeature(BaseModel):
     run_id: str
     run_date: date
@@ -50,6 +58,7 @@ class StandardFeature(BaseModel):
     width_in: float | None = Field(default=None, ge=0)
     clock_min: int | None = Field(default=None, ge=0, le=719)
     surface: Surface | None = None
+    ml_origin: MlOrigin | None = None
     seam_interaction: bool | None = None
     dent_metal_loss: bool | None = None
     vendor_cluster_id: str | None = None

@@ -52,6 +52,8 @@ HEAVY_WALL_SPAN = (0.45, 0.55)  # fraction of line length
 REPLACED_JOINTS = 3
 REPLACEMENT_NEW_JOINTS = 4
 REPLACEMENT_CLEARANCE_JOINTS = 5  # from any fitting joint or line end
+RECOAT_AT = 0.3  # fraction of line length where the recoat search starts
+RECOAT_JOINTS = 8  # consecutive normal joints recoated between the runs
 
 # Feature population (D: see docs/DECISIONS.md)
 EXT_ML_PREV_DEPTH_PCT = (5.0, 55.0)
@@ -60,6 +62,7 @@ SEVERE_PREV_DEPTH_PCT = (70.0, 75.0)
 SEVERE_GROWTH_MPY = (8.0, 10.0)
 INTERNAL_PREV_DEPTH_PCT = (10.0, 40.0)
 PIT_PREV_DEPTH_PCT = (15.0, 40.0)
+MILL_DEPTH_PCT = (10.0, 25.0)  # mill anomalies do not grow; above the reporting threshold in both runs
 ML_LENGTH_IN = (0.5, 4.0)
 ML_WIDTH_IN = (0.5, 3.0)
 PIT_SIZE_IN = (0.3, 0.8)
@@ -94,6 +97,7 @@ class SynthParams:
     n_ext_ml_prev: int = 500
     n_new: int = 50
     n_internal: int = 8
+    n_mill: int = 10
     n_dents: int = 12
     n_valves: int = 4
     n_tees: int = 6
@@ -375,6 +379,12 @@ def build_features(p: SynthParams, line: LineTruth, rng: np.random.Generator) ->
                                growth=lambda m: rng.uniform(*SEVERE_GROWTH_MPY, m)))
     blocks.append(_reported_ml(p, rng, placer, "internal", p.n_internal, INTERNAL_PREV_DEPTH_PCT,
                                reported_prev, surface="INT"))
+    # Mill anomalies: manufacturing metal loss, true growth 0, reported in both runs.
+    mill = _reported_ml(p, rng, placer, "mill", p.n_mill, MILL_DEPTH_PCT,
+                        lambda b: (b["prev_meas"] >= thr) & (b["curr_meas"] >= thr),
+                        growth=lambda m: np.zeros(m))
+    mill["surface"] = rng.choice(["EXT", "INT"], len(mill))
+    blocks.append(mill)
 
     # Cluster sites: 2-4 pits closer together than the interaction spacing.
     for site in range(p.n_cluster_sites):
@@ -622,6 +632,7 @@ def observe_run(
         "width_in": width_obs,
         "clock_min": clock_obs,
         "surface": f.surface,
+        "ml_origin": np.where(is_ml, np.where(f.population == "mill", "manufacturing", "corrosion"), None),
         "seam_interaction": np.where(f.population == "anchor", None, f.seam_interaction.astype(object)),
         "dent_metal_loss": np.where(is_dent, f.dent_metal_loss.astype(object), None),
         "vendor_cluster_id": None,
@@ -669,6 +680,7 @@ def observe_run(
             "width_in": env["width_in"],
             "clock_min": env["clock_min"],
             "surface": "EXT",
+            "ml_origin": "corrosion",
             "seam_interaction": env["seam_interaction"],
             "dent_metal_loss": None,
             "vendor_cluster_id": f"{vendor}C{n_clusters:03d}",
@@ -731,6 +743,8 @@ def observe_run(
 DRAFT_LABEL = "DRAFT – for review by qualified personnel. SYNTHETIC DATA – not from any real pipeline."
 
 _A_EVENT = {"girth_weld": "Girth Weld", "metal_loss": "Metal Loss", "dent": "Dent", "valve": "Valve", "tee": "Tee"}
+_A_MILL = "Mill Anomaly"
+_B_MILL = "ML-MILL"
 _A_SURFACE = {"EXT": "External", "INT": "Internal", "MID": "Mid-wall", "UNK": "Unknown"}
 _B_EVENT = {"girth_weld": "GWLD", "metal_loss": "ML-CORR", "dent": "DENT", "valve": "VALVE", "tee": "TEE"}
 
@@ -743,11 +757,16 @@ def _flag01(s: pd.Series) -> pd.Series:
     return pd.Series([pd.NA if v is None or pd.isna(v) else int(bool(v)) for v in s], dtype="Int64")
 
 
+def _is_mill(std: pd.DataFrame) -> pd.Series:
+    """Metal-loss rows of manufacturing origin (written with the vendor's mill code)."""
+    return (std.feature_type == "metal_loss") & (std.ml_origin == "manufacturing")
+
+
 def to_vendor_a(std: pd.DataFrame) -> pd.DataFrame:
     """Vendor A: CSV, feet and inches, hh:mm clock, spelled-out vocabulary, Y/N flags."""
     return pd.DataFrame({
         "Feature No": std.feature_id.to_numpy(),
-        "Event": std.feature_type.map(_A_EVENT).to_numpy(),
+        "Event": std.feature_type.map(_A_EVENT).where(~_is_mill(std), _A_MILL).to_numpy(),
         "Abs Dist (ft)": std.log_dist_ft.round(3).to_numpy(),
         "US GW No": std.us_gw_id.to_numpy(),
         "Dist to US GW (ft)": std.dist_from_us_gw_ft.round(3).to_numpy(),
@@ -772,6 +791,7 @@ def to_vendor_a(std: pd.DataFrame) -> pd.DataFrame:
 def to_vendor_b(std: pd.DataFrame) -> pd.DataFrame:
     """Vendor B: metres and millimetres, degrees, coded vocabulary, 1/0 flags, own column order."""
     feature = std.feature_type.map(_B_EVENT)
+    feature = feature.where(~_is_mill(std), _B_MILL)
     feature = feature.where(std.vendor_cluster_id.isna(), "ML-CLUS")
     m_per_ft, mm_per_in = 1 / FT_PER_M, 1 / IN_PER_MM
     return pd.DataFrame({
@@ -831,6 +851,18 @@ def _segments(bounds_chain, to_log) -> tuple[np.ndarray, np.ndarray]:
     return edges[:-1], edges[1:]
 
 
+def _recoat_span(line: LineTruth) -> tuple[float, float] | None:
+    """True-chainage span of ``RECOAT_JOINTS`` consecutive normal joints from the first one at or
+    after ``RECOAT_AT`` of the line, clear of fittings and the replacement; None if none fits."""
+    j = line.joints[line.joints.in_curr].sort_values("start_ft")
+    normal = (j.fitting.isna() & j.in_prev).to_numpy()
+    start, length = j.start_ft.to_numpy(), j.length_ft.to_numpy()
+    for i in np.nonzero(start >= RECOAT_AT * line.length_ft)[0]:
+        if i + RECOAT_JOINTS <= len(j) and normal[i:i + RECOAT_JOINTS].all():
+            return float(start[i]), float(start[i + RECOAT_JOINTS - 1] + length[i + RECOAT_JOINTS - 1])
+    return None
+
+
 def build_reference(p: SynthParams, line: LineTruth, features: pd.DataFrame, curr: ObservedRun,
                     rng: np.random.Generator) -> dict[str, pd.DataFrame]:
     """Synthetic reference files, keyed to current-run log distance (spec 5.2)."""
@@ -866,6 +898,11 @@ def build_reference(p: SynthParams, line: LineTruth, features: pd.DataFrame, cur
     repairs = pd.DataFrame({"start_ft": [rep_lo], "end_ft": [rep_hi], "repair_type": ["pipe_replacement"],
                             "repair_date": [repair_date.isoformat()],
                             "notes": [f"Synthetic {REPLACED_JOINTS}-joint replacement"]})
+    recoat = _recoat_span(line)
+    if recoat is not None:
+        r_lo, r_hi = to_log(np.array(recoat))
+        repairs.loc[len(repairs)] = [r_lo, r_hi, "recoat", repair_date.isoformat(),
+                                     f"Synthetic {RECOAT_JOINTS}-joint recoat"]
 
     # Crossings sit beside existing metal loss so crossing rules have something to find.
     ext = features[features.population == "ext_ml"]

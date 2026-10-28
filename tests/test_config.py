@@ -168,3 +168,40 @@ def test_review_window_must_be_positive(tmp_path, window):
 
 def test_shipped_review_window():
     assert load_settings().review.nearby_window_ft == 10
+
+
+def test_growth_profile_values(tmp_path):
+    g = load_settings().growth
+    assert g.governing_profile == "conservative"
+    assert g.shrinking_rate_mpy is None
+    assert g.joint_percentile == 90
+    assert g.joint_percentile_min_matches == 3
+    assert g.exclude_recoated_from_stats is True
+    path = _write_settings(tmp_path, lambda r: r["growth"].update(governing_profile="median"))
+    with pytest.raises(ValueError):
+        load_settings(path)
+    path = _write_settings(tmp_path, lambda r: r["growth"].update(shrinking_rate_mpy=-1.0))
+    with pytest.raises(ValueError):
+        load_settings(path)
+
+
+@pytest.mark.parametrize("value", [101, -1])
+def test_joint_percentile_bounds(tmp_path, value):
+    path = _write_settings(tmp_path, lambda r: r["growth"].update(joint_percentile=value))
+    with pytest.raises(ValueError):
+        load_settings(path)
+
+
+@pytest.mark.parametrize("value", [0, 2.5])
+def test_min_matches_positive_int(tmp_path, value):
+    path = _write_settings(tmp_path, lambda r: r["growth"].update(joint_percentile_min_matches=value))
+    with pytest.raises(ValueError):
+        load_settings(path)
+
+
+@pytest.mark.parametrize("key", ["depth_bins_pct_wt", "dent_bins_pct_od"])
+@pytest.mark.parametrize("bins", [[0, 10, 10], [5, 10], [0, 20, 10], []])
+def test_bins_must_increase(tmp_path, key, bins):
+    path = _write_settings(tmp_path, lambda r: r["report"].update({key: bins}))
+    with pytest.raises(ValueError, match=key):
+        load_settings(path)

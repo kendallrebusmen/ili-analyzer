@@ -27,14 +27,15 @@ def built(synth, tmp_path_factory):
 
 
 def _load(built, comparison=None, std=None, crossings=True, digs=True, criteria=config.DEFAULT_CRITERIA,
-          settings=config.DEFAULT_SETTINGS):
+          settings=config.DEFAULT_SETTINGS, repairs=True):
     data, out, std0, folder = built
     std = std or std0
     ref = data / "reference"
     return load_report_inputs(comparison or folder, std / "2021_vendorA.csv", std / "2026_vendorB.csv", out,
                               ref / "pipe_properties.csv", ref / "mop_profile.csv", ref / "hca_segments.csv",
                               ref / "foreign_crossings.csv" if crossings else None,
-                              ref / "digs.csv" if digs else None, settings, criteria)
+                              ref / "digs.csv" if digs else None, settings, criteria,
+                              repairs=ref / "repairs_between_runs.csv" if repairs else None)
 
 
 def _copy_comparison(built, tmp_path):
@@ -104,10 +105,23 @@ def test_digs_missing_column_is_error(built, tmp_path):
                            None, bad, config.DEFAULT_SETTINGS, config.DEFAULT_CRITERIA)
 
 
+def test_pre_m11_comparison_folder_says_to_rerun(built, tmp_path):
+    folder = _copy_comparison(built, tmp_path)
+    (folder / "growth_summary.csv").unlink()
+    with pytest.raises(ValueError, match=r"predates M11.*growth_summary\.csv.*re-run the pipeline.*re-apply"):
+        _load(built, comparison=folder)
+    folder = _copy_comparison(built, tmp_path / "rl")
+    rl = pd.read_csv(folder / "remaining_life.csv")
+    rl.drop(columns=["erf", "failure_mode"]).to_csv(folder / "remaining_life.csv", index=False)
+    with pytest.raises(ValueError, match=r"predates M11.*remaining_life\.csv.*erf.*failure_mode.*re-run the pipeline"):
+        _load(built, comparison=folder)
+
+
 def test_optional_inputs_absent(built):
-    inputs = _load(built, crossings=False, digs=False)
-    assert inputs.crossings is None and inputs.digs is None
-    assert "digs" not in inputs.paths and "crossings" not in inputs.paths
+    inputs = _load(built, crossings=False, digs=False, repairs=False)
+    assert inputs.crossings is None and inputs.digs is None and inputs.repairs is None
+    assert "digs" not in inputs.paths and "crossings" not in inputs.paths and "repairs" not in inputs.paths
+    assert inputs.weld_map is not None and len(inputs.growth_by_surface) == 4  # required, always loaded
 
 
 def test_report_settings_validated(tmp_path):
@@ -117,6 +131,42 @@ def test_report_settings_validated(tmp_path):
     path.write_text(yaml.safe_dump(raw), encoding="utf-8")
     with pytest.raises(ValueError, match="largest_changes_n"):
         config.load_settings(path)
+
+
+def test_report_settings_defaults():
+    r = config.load_settings().report
+    assert r.ytc_flag_years == 5
+    assert r.depth_bins_pct_wt == [0, 10, 20, 30, 40, 50, 60, 70, 80]
+    assert r.dent_bins_pct_od == [0, 2, 6]
+    assert r.aoi_group_ft == 2.0 and r.aoi_count == 10
+
+
+def test_report_refuses_changed_profile(built, tmp_path):
+    settings = _settings_file(tmp_path, "growth", "governing_profile", "pit_to_pit")
+    with pytest.raises(ValueError, match=r"growth\.governing_profile"):
+        _load(built, settings=settings)
+
+
+def test_repairs_and_growth_summary_loaded(built):
+    inputs = _load(built)
+    assert inputs.repairs is not None and "repairs" in inputs.paths
+    assert {"surface", "scope"} <= set(inputs.growth_by_surface.columns)
+    assert "match_type" in inputs.weld_map.columns
+
+
+def test_report_repairs_are_normalised_and_checked(built, tmp_path):
+    data = built[0]
+    rep = pd.read_csv(data / "reference" / "repairs_between_runs.csv")
+    path = tmp_path / "repairs_between_runs.csv"
+    rep.assign(repair_type=rep.repair_type.str.upper()).to_csv(path, index=False)
+    data_dir, out, std, folder = built
+    args = (folder, std / "2021_vendorA.csv", std / "2026_vendorB.csv", out,
+            data / "reference" / "pipe_properties.csv", data / "reference" / "mop_profile.csv",
+            data / "reference" / "hca_segments.csv", None, None, config.DEFAULT_SETTINGS, config.DEFAULT_CRITERIA)
+    assert load_report_inputs(*args, repairs=path).repairs.repair_type.tolist() == rep.repair_type.tolist()
+    rep.assign(repair_type="patch").to_csv(path, index=False)
+    with pytest.raises(ValueError, match=r"repairs_between_runs\.csv.*'patch'"):
+        load_report_inputs(*args, repairs=path)
 
 
 def _settings_file(tmp_path, section, key, value):
@@ -133,6 +183,10 @@ def _settings_file(tmp_path, section, key, value):
     ("strength", "method", "original_b31g", "remaining_life_summary.json"),
     ("classification", "discovery_max_days", 170, "classification_summary.json"),
     ("classification", "due_days", {"60_day": 60, "180_day": 170}, "classification_summary.json"),
+    ("growth", "joint_percentile", 75, "growth_summary.json"),  # recorded by M5 (M11)
+    ("growth", "joint_percentile_min_matches", 5, "growth_summary.json"),
+    ("growth", "shrinking_rate_mpy", 2.5, "growth_summary.json"),
+    ("growth", "exclude_recoated_from_stats", False, "growth_summary.json"),
 ])
 def test_settings_changed_since_classification_is_error(built, tmp_path, section, key, value, summary):
     changed = _settings_file(tmp_path, section, key, value)

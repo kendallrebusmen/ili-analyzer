@@ -52,6 +52,12 @@ feature_types:
   "DENT": dent
   "VALVE": valve
   "TEE": tee
+  "ML-MILL": metal_loss     # mill-related metal loss; origin manufacturing (ml_origins)
+
+ml_origins:                 # metal-loss code -> origin; a code not listed is unknown
+  "ML-CORR": corrosion
+  "ML-CLUS": corrosion
+  "ML-MILL": manufacturing
 
 surfaces:
   "EXT": EXT

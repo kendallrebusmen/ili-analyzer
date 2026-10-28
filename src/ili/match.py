@@ -25,7 +25,7 @@ from scipy.sparse.csgraph import connected_components
 from ili.align_welds import DRAFT_LABEL, comparison_dir, load_weld_map
 from ili.config import DEFAULT_SETTINGS, PROJECT_ROOT, Settings, ToolCfg, load_settings
 from ili.ingest import load_standardized
-from ili.reference import lookup
+from ili.reference import load_repairs, lookup, normalize_repairs
 from ili.review import REVIEWS_FILE, EffectiveReviews, effective_reviews, load_reviews_hashed
 from ili.schema import ANOMALY_TYPES
 from ili.units import CLOCK_MINUTES, wrap_clock_min
@@ -351,7 +351,8 @@ def envelope(f: pd.DataFrame) -> dict:
     (pi * OD), boxed, and the centre converted back to minutes and wrapped (as
     ``synth._cluster_envelope``); a missing clock uses only the members that have one; with none (or no
     OD) ``clock_min`` is NaN and the width the widest member. Depth is the maximum; the surface is the
-    first non-UNK member surface; ``wt_nom_in`` the first non-missing value."""
+    first non-UNK member surface; ``wt_nom_in`` the first non-missing value; ``ml_origin`` the members'
+    common origin (missing values ignored), else ``unknown``; None when no member has one."""
     half = np.nan_to_num(_num(f.length_in)) / 24  # ft
 
     def axial(col):
@@ -379,11 +380,13 @@ def envelope(f: pd.DataFrame) -> dict:
     wt = _num(f.wt_nom_in)
     wt = wt[~np.isnan(wt)]
     depth = _num(f.depth_pct)
+    origins = set(f.ml_origin.dropna())
+    ml_origin = None if not origins else origins.pop() if len(origins) == 1 else "unknown"
     return {
         "pos_prev_ft": centre_prev, "pos_curr_ft": centre_curr, "length_in": length, "width_in": width_in,
         "clock_min": clock_min, "depth_pct": np.nan if np.isnan(depth).all() else np.nanmax(depth),
         "surface": surf[0] if surf else "UNK", "wt_nom_in": wt[0] if len(wt) else np.nan,
-        "od_in": od,
+        "od_in": od, "ml_origin": ml_origin,
     }
 
 
@@ -524,12 +527,13 @@ def _log_order(f: pd.DataFrame, rows: list) -> list:
 SIDE_FIELDS = (
     "feature_type", "log_dist_ft", "wm_row", "us_gw_id", "dist_from_us_gw_ft", "wt_nom_in", "depth_pct",
     "dent_depth_in", "length_in", "width_in", "clock_min", "surface", "seam_interaction", "dent_metal_loss",
-    "vendor_cluster_id",
+    "vendor_cluster_id", "ml_origin",
 )
 _FLOAT_FIELDS = ("log_dist_ft", "dist_from_us_gw_ft", "wt_nom_in", "depth_pct", "dent_depth_in", "length_in",
                  "width_in")
 _INT_FIELDS = ("wm_row", "clock_min")
-_OBJECT_FIELDS = ("feature_type", "us_gw_id", "surface", "seam_interaction", "dent_metal_loss", "vendor_cluster_id")
+_OBJECT_FIELDS = ("feature_type", "us_gw_id", "surface", "seam_interaction", "dent_metal_loss", "vendor_cluster_id",
+                  "ml_origin")
 METRIC_COLS = ["axial_diff_in", "clock_diff_min", "depth_change_pct", "implausible", "score"]
 MATCH_TYPES = ("matched_1to1", "matched_cluster", "missing", "new")
 CONFIDENCES = ("high", "medium", "low")
@@ -601,7 +605,7 @@ def _cluster_side_row(members: pd.DataFrame, run: str) -> dict:
         "depth_pct": env["depth_pct"], "dent_depth_in": np.nan, "length_in": env["length_in"],
         "width_in": env["width_in"], "clock_min": clock, "surface": env["surface"],
         "seam_interaction": _any_flag(members.seam_interaction), "dent_metal_loss": _any_flag(members.dent_metal_loss),
-        "vendor_cluster_id": vendor.iloc[0] if len(vendor) else None,
+        "vendor_cluster_id": vendor.iloc[0] if len(vendor) else None, "ml_origin": env["ml_origin"],
         "pos_prev_ft": env["pos_prev_ft"], "feature_id": ";".join(members.feature_id.astype(str)), "n": len(members),
     }
 
@@ -901,7 +905,7 @@ def match_anomalies(prev_std, curr_std, weld_map, settings: Settings, pipe, repa
     table."""
     _require_columns(weld_map, WELD_MAP_COLUMNS, "weld map")
     if repairs is not None:
-        _require_columns(repairs, ("start_ft", "end_ft"), "repairs")
+        repairs = normalize_repairs(repairs, "repairs")
     tol = settings.alignment.anchor_tol_ft
     pmap = PositionMap.from_weld_map(weld_map)
     prev = _with_od(place(prev_std, weld_map, "prev", pmap), pipe, tol)
@@ -964,7 +968,7 @@ def write_matches(result: MatchResult, out_dir: Path) -> dict[str, Path]:
 
 _TABLE_TEXT = (
     "match_id", "match_type", "confidence", "review_status", "missing_hint", "prev_feature_id", "curr_feature_id",
-    *(f"{s}_{c}" for s in ("prev", "curr") for c in ("feature_type", "us_gw_id", "surface", "vendor_cluster_id")),
+    *(f"{s}_{c}" for s in ("prev", "curr") for c in ("feature_type", "us_gw_id", "surface", "vendor_cluster_id", "ml_origin")),
 )
 _TABLE_FLAGS = (
     "needs_review", "absorbed", "implausible",
@@ -1039,7 +1043,7 @@ def main(argv: list[str] | None = None) -> int:
         prev, curr = load_standardized(args.prev), load_standardized(args.curr)
         weld_map = load_weld_map(args.weld_map)
         pipe = pd.read_csv(args.pipe)
-        repairs = pd.read_csv(args.repairs) if args.repairs else None
+        repairs = load_repairs(args.repairs) if args.repairs else None
         reviews_path = _reviews_path(args, prev, curr)
         log, digest = load_reviews_hashed(reviews_path) if reviews_path else (None, None)
         reviews = effective_reviews(log) if reviews_path else None
