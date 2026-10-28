@@ -1,6 +1,7 @@
 import math
 
 import numpy as np
+import pandas as pd
 import pytest
 
 from ili import growth
@@ -126,3 +127,9 @@ def test_segment_percentile_in_stats_excludes_rows(settings):
     with_all, _ = growth.segment_percentile(raw, cls, sid, seg, settings)
     kept, _ = growth.segment_percentile(raw, cls, sid, seg, settings, np.array([True, True, False]))
     assert kept[2] == kept[0] and kept[0] < with_all[0]
+
+
+def test_in_recoat_requires_span_columns():
+    bad = pd.DataFrame({"repair_type": ["recoat"], "start_ft": [1.0]})
+    with pytest.raises(ValueError, match="end_ft"):
+        growth.in_recoat([1.0], bad)

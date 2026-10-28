@@ -470,3 +470,68 @@ def test_new_columns_and_summary(settings):
     assert s["governing_profile"] == settings.growth.governing_profile
     assert s["joint_percentile"] == settings.growth.joint_percentile
     assert {"joint_percentile_min_matches", "shrinking_rate_mpy", "n_excluded_recoated"} <= set(s)
+
+
+# --- M11: pit_to_pit governing profile ----------------------------------------------------------------------
+
+
+def _pit(settings, **kw):
+    return _with_growth(settings, governing_profile="pit_to_pit", shrinking_rate_mpy=2.5, **kw)
+
+
+def test_pit_to_pit_matched_grew_and_shrank(settings):
+    rows = [
+        _row("G1", "matched_1to1", 100.0, 30.0, 30.8),   # raw 0.4 mpy, grew: floored at min_rate_mpy
+        _row("G2", "matched_1to1", 150.0, 30.0, 36.0),   # raw 3.0
+        _row("G3", "matched_1to1", 200.0, 30.0, 30.0),   # raw 0, no change counts as grew
+        _row("S1", "matched_1to1", 250.0, 30.0, 26.0),   # raw -2.0, shrank
+    ]
+    f = _by_id(_run(rows, _pit(settings)))
+    assert f.loc["G1", "governing_mpy"] == pytest.approx(settings.growth.min_rate_mpy) == pytest.approx(1.0)
+    assert f.loc["G1", "governing_method"] == "raw"
+    assert f.loc["G2", "governing_mpy"] == pytest.approx(3.0) and f.loc["G2", "governing_method"] == "raw"
+    assert f.loc["G3", "governing_mpy"] == pytest.approx(1.0) and f.loc["G3", "governing_method"] == "raw"
+    assert f.loc["S1", "governing_mpy"] == pytest.approx(2.5) and f.loc["S1", "governing_method"] == "shrinking_fixed"
+    assert not f.needs_review.any()  # a by-design rule is not "incomplete"
+
+
+def test_pit_to_pit_new_falls_back_to_half_life(settings):
+    rows = [_row(f"M{i}", "matched_1to1", 100.0 + 50 * i, 30.0, 30.0 + 2 * i) for i in range(1, 4)]
+    for r in rows:
+        r["curr_us_gw_id"] = "J1"
+    rows += [
+        _row("N1", "new", 400.0, d_curr=20.0),             # no joint: half_life
+        _row("N2", "new", 410.0, d_curr=20.0),             # joint J1 with 3 matches: joint_percentile
+        _row("H1", "new", 1050.0, d_curr=20.0),            # new pipe (2023): no_history, half_life
+    ]
+    rows[4]["curr_us_gw_id"] = "J1"
+    f = _by_id(_run(rows, _pit(settings, joint_percentile_min_matches=3)))
+    assert f.loc["N1", "governing_method"] == "half_life"
+    assert f.loc["N1", "governing_mpy"] == pytest.approx(f.loc["N1", "half_life_mpy"])
+    assert f.loc["N2", "governing_method"] == "joint_percentile"
+    assert f.loc["N2", "governing_mpy"] == pytest.approx(f.loc["N2", "joint_percentile_mpy"])
+    assert f.loc["H1", "history_class"] == "no_history" and f.loc["H1", "governing_method"] == "half_life"
+    assert f.loc["H1", "governing_mpy"] == pytest.approx(f.loc["H1", "half_life_mpy"])
+    assert not f.needs_review.any()
+
+
+def test_pit_to_pit_shrinking_null_is_flagged(settings):
+    rows = [_row("S1", "matched_1to1", 250.0, 30.0, 26.0), _row("G1", "matched_1to1", 100.0, 30.0, 36.0)]
+    f = _by_id(_run(rows, _with_growth(settings, governing_profile="pit_to_pit", shrinking_rate_mpy=None)))
+    assert math.isnan(f.loc["S1", "governing_mpy"]) and f.loc["S1", "governing_method"] is None
+    assert f.loc["S1", "review_reasons"] == "no_governing" and bool(f.loc["S1", "needs_review"])
+    assert f.loc["G1", "governing_mpy"] == pytest.approx(3.0)
+
+
+def test_conservative_default_unchanged(synth_growth, settings):
+    mt, res = synth_growth
+    assert settings.growth.governing_profile == "conservative"
+    f = res.features
+    # The default profile is the pre-M11 list rule: same values as the list rule applied directly.
+    cls = f.history_class.to_numpy(object)
+    gov, method = growth.governing_rate(f, cls, _with_growth(settings, governing_profile="conservative"))
+    assert np.array_equal(f.governing_mpy.to_numpy(float), gov, equal_nan=True)
+    assert f.governing_method.tolist() == list(method)
+    # and it differs from pit_to_pit on the same data, so the profile is really dispatched
+    other, _ = growth.governing_rate(f, cls, _pit(settings))
+    assert not np.array_equal(gov, other, equal_nan=True)

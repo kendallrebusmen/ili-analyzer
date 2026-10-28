@@ -100,6 +100,9 @@ def in_recoat(pos_ft, repairs: pd.DataFrame | None) -> np.ndarray:
     out = np.zeros(len(pos), dtype=bool)
     if repairs is None or "repair_type" not in repairs.columns:
         return out
+    missing = [c for c in ("start_ft", "end_ft") if c not in repairs.columns]
+    if missing:
+        raise ValueError(f"repairs table is missing column(s): {', '.join(missing)}")
     for span in repairs[repairs.repair_type == RECOAT_TYPE].itertuples(index=False):
         out |= (pos >= float(span.start_ft)) & (pos <= float(span.end_ft))
     return out
@@ -124,6 +127,7 @@ MATCHED_TYPES = ("matched_1to1", "matched_cluster")
 NEW_TYPE = "new"
 GROWTH_FEATURE_TYPE = "metal_loss"
 PIPE_WHAT = "pipe properties table"
+MATCH_M11_COLUMNS = ("curr_us_gw_id", "curr_surface", "curr_ml_origin")  # the CLI needs them for joint rates
 
 INPUT_COLUMNS = (
     "match_id", "match_type", "prev_feature_id", "curr_feature_id", "curr_feature_type", "curr_log_dist_ft",
@@ -236,10 +240,9 @@ def joint_percentile(raw_mpy, cls, joint_id, in_stats, settings: Settings):
     return np.where(np.isnan(p_rows), np.nan, np.maximum(p_rows, g.min_rate_mpy)), p_by_joint
 
 
-def governing_rate(rates: pd.DataFrame, cls, settings: Settings) -> tuple[np.ndarray, np.ndarray]:
-    """Per row, the max (NaN ignored) over the ``<method>_mpy`` columns ``growth.governing`` lists for its
-    class, and the first listed method attaining it. A NaN rate has method None."""
-    cls = np.asarray(cls, dtype=object)
+def _list_governing(rates: pd.DataFrame, cls, settings: Settings) -> tuple[np.ndarray, np.ndarray]:
+    """The ``conservative`` rule: per row, the max (NaN ignored) over the ``<method>_mpy`` columns
+    ``growth.governing`` lists for its class, and the first listed method attaining it."""
     gov = np.full(len(rates), np.nan)
     method = np.full(len(rates), None, dtype=object)
     for c in HISTORY_CLASSES:
@@ -254,18 +257,53 @@ def governing_rate(rates: pd.DataFrame, cls, settings: Settings) -> tuple[np.nda
     return gov, method
 
 
+def _pit_to_pit_governing(rates: pd.DataFrame, cls, settings: Settings) -> tuple[np.ndarray, np.ndarray]:
+    """The ``pit_to_pit`` rule (spec 6.5): ``matched`` rows that did not shrink (d_curr >= d_prev) take ``raw``
+    floored at ``min_rate_mpy``, those that shrank take ``shrinking_fixed``; ``new`` rows take
+    ``joint_percentile`` when finite, else ``half_life``; ``no_history`` rows take ``half_life``."""
+    n = len(rates)
+    col = lambda name: rates[f"{name}_mpy"].to_numpy(float)  # noqa: E731
+    matched, new = cls == "matched", cls == "new"
+    shrank = matched & (rates.d_curr_in.to_numpy(float) < rates.d_prev_in.to_numpy(float))
+    grew = matched & ~shrank
+    raw_floored = np.fmax(col("raw"), settings.growth.min_rate_mpy)
+    use_joint = new & np.isfinite(col("joint_percentile"))
+    gov = np.full(n, np.nan)
+    method = np.full(n, None, dtype=object)
+    for mask, name, values in ((grew, "raw", np.where(np.isnan(col("raw")), np.nan, raw_floored)),
+                               (shrank, "shrinking_fixed", col("shrinking_fixed")),
+                               (use_joint, "joint_percentile", col("joint_percentile")),
+                               (~matched & ~use_joint, "half_life", col("half_life"))):
+        gov[mask] = values[mask]
+        method[mask] = name
+    method[np.isnan(gov)] = None
+    return gov, method
+
+
+def governing_rate(rates: pd.DataFrame, cls, settings: Settings) -> tuple[np.ndarray, np.ndarray]:
+    """Per row, the governing rate (mpy) and the method that supplied it, by ``growth.governing_profile``:
+    ``conservative`` maxes over the methods ``growth.governing`` lists for the row's class; ``pit_to_pit``
+    follows the fixed spec 6.5 logic. A NaN rate has method None."""
+    cls = np.asarray(cls, dtype=object)
+    if settings.growth.governing_profile == "pit_to_pit":
+        return _pit_to_pit_governing(rates, cls, settings)
+    return _list_governing(rates, cls, settings)
+
+
 def review_flags(rates: pd.DataFrame, cls, governing_mpy, match_review, settings: Settings) -> dict[str, np.ndarray]:
-    """Per ``REVIEW_REASONS`` name, a bool array of the rows it applies to. ``incomplete_rule``: any method
+    """Per ``REVIEW_REASONS`` name, a bool array of the rows it applies to. ``incomplete_rule`` (``conservative``
+    only; ``pit_to_pit`` falls back by design and ``no_governing`` catches a missing rate): any method
     ``growth.governing`` lists for the row's class is NaN, so the max was taken over fewer rates than the
     rule intends. ``below_min_rate``: governing < ``min_rate_mpy`` (governing itself is never floored).
     ``match_review``: the M4 match row's ``needs_review``, carried so the match evidence reaches M6."""
     cls = np.asarray(cls, dtype=object)
     gov = np.asarray(governing_mpy, dtype=float)
     incomplete = np.zeros(len(rates), dtype=bool)
-    for c in HISTORY_CLASSES:
-        rows = cls == c
-        for m in getattr(settings.growth.governing, c):
-            incomplete |= rows & np.isnan(rates[f"{m}_mpy"].to_numpy(float))
+    if settings.growth.governing_profile == "conservative":
+        for c in HISTORY_CLASSES:
+            rows = cls == c
+            for m in getattr(settings.growth.governing, c):
+                incomplete |= rows & np.isnan(rates[f"{m}_mpy"].to_numpy(float))
     return {"no_governing": np.isnan(gov), "incomplete_rule": incomplete,
             "below_min_rate": gov < settings.growth.min_rate_mpy,  # False for NaN
             "match_review": np.asarray(match_review, dtype=bool)}
@@ -504,6 +542,10 @@ def main(argv: list[str] | None = None) -> int:
         settings = load_settings(args.settings)
         prev, curr = load_standardized(args.prev), load_standardized(args.curr)
         matches = load_match_table(args.matches)
+        absent = [c for c in MATCH_M11_COLUMNS if c not in matches.columns]
+        if absent:
+            raise ValueError(f"match table {args.matches} lacks column(s) {', '.join(absent)}; "
+                             "it predates M11, re-run ili.match")
         pipe = pd.read_csv(args.pipe)
         segments = pd.read_csv(args.segments) if args.segments else None
         repairs = pd.read_csv(args.repairs) if args.repairs else None

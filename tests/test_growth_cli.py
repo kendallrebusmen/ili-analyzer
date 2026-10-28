@@ -75,3 +75,16 @@ def test_growth_cli_repairs_optional(synth, tmp_path, capsys):
         assert "n_excluded_recoated" in summary
         table = growth.load_growth_table(folder / "growth.csv")
         assert table.in_recoat.dtype == bool or table.in_recoat.notna().all()
+
+
+def test_growth_cli_rejects_stale_match_table(synth, tmp_path, capsys):
+    _, data = synth
+    out = tmp_path / "out"
+    std, folder = _prepare(data, out)
+    path = folder / "match_table.csv"
+    pd.read_csv(path, dtype=str, keep_default_na=False).drop(columns=["curr_surface", "curr_ml_origin"]).to_csv(
+        path, index=False)
+    capsys.readouterr()
+    assert growth.main(_args(std, folder, data, out, "--segments", str(data / "reference" / "hca_segments.csv"))) == 2
+    err = capsys.readouterr().err
+    assert "curr_surface" in err and "curr_ml_origin" in err and "ili.match" in err
