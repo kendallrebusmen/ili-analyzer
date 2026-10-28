@@ -535,3 +535,81 @@ def test_conservative_default_unchanged(synth_growth, settings):
     # and it differs from pit_to_pit on the same data, so the profile is really dispatched
     other, _ = growth.governing_rate(f, cls, _pit(settings))
     assert not np.array_equal(gov, other, equal_nan=True)
+
+
+# --- M11: recoated rows out of the summary statistics; growth summary by surface -----------------------------
+
+
+def test_recoated_rows_left_out_of_summary_statistics(settings):
+    rows = _recoat_rows()
+    on = _run_repairs(rows, settings, RECOAT)
+    off = _run_repairs(rows, _with_growth(settings, exclude_recoated_from_stats=False), RECOAT)
+    none = _run_repairs(rows, settings, None)
+    seg_on, seg_off = on.segments.set_index("segment_id"), off.segments.set_index("segment_id")
+    # M1..M4 raw 1, 2, 3, 4 mpy (+R1 25 mpy at 400 ft, same segment); n_features and governing max cover all rows
+    seg = seg_on.index[seg_on.n_features == seg_on.n_features.max()][0]
+    assert seg_on.loc[seg, "n_matched"] == seg_off.loc[seg, "n_matched"] - 1
+    assert seg_on.loc[seg, "raw_mean_mpy"] < seg_off.loc[seg, "raw_mean_mpy"]
+    assert seg_on.loc[seg, "n_features"] == seg_off.loc[seg, "n_features"]
+    assert seg_on.loc[seg, "governing_max_mpy"] == seg_off.loc[seg, "governing_max_mpy"]
+    assert on.summary["raw_histogram"]["counts"] != off.summary["raw_histogram"]["counts"]
+    assert sum(on.summary["raw_histogram"]["counts"]) == sum(off.summary["raw_histogram"]["counts"]) - 1
+    assert on.summary["n_features"] == off.summary["n_features"]
+    # no recoat in the repairs: statistics identical to exclusion off
+    pd.testing.assert_frame_equal(none.segments, off.segments)
+    assert none.summary["raw_histogram"] == off.summary["raw_histogram"]
+    assert none.summary["pct_negative_raw"] == off.summary["pct_negative_raw"]
+
+
+def _surface_features():
+    cols = ["curr_feature_id", "surface", "ml_origin", "in_recoat", "history_class", "d_prev_pct", "d_curr_pct",
+            "d_curr_in", "install_year", "half_life_mpy", "full_life_mpy", "raw_mpy"]
+    return pd.DataFrame([
+        ["E1", "EXT", "corrosion", False, "matched", 20.0, 30.0, 0.075, 1970, 2.0, 1.5, 4.0],
+        ["E2", "EXT", "corrosion", True, "matched", 20.0, 50.0, 0.125, 1980, 3.0, 2.5, 10.0],
+        ["E3", "EXT", None, False, "new", NAN, 40.0, 0.100, 1975, 2.5, 2.0, NAN],
+        ["I1", "INT", "corrosion", False, "no_history", NAN, 25.0, 0.0625, 1990, 1.0, 0.5, NAN],
+    ], columns=cols)
+
+
+def test_growth_summary_by_surface_values():
+    out = growth.growth_summary_by_surface(_surface_features(), 2026).set_index(["surface", "scope"])
+    assert list(out.columns) == growth.SURFACE_SUMMARY_COLUMNS[2:]
+    a = out.loc[("EXT", "all")]
+    assert (a.n_features, a.n_matched, a.matched_share) == (3, 2, "2 of 3")
+    assert (a.max_depth_pct, a.max_depth_in, a.deepest_curr_feature_id) == (50.0, 0.125, "E2")
+    assert a.pipe_age_yr == 46 and a.deepest_half_life_mpy == 3.0 and a.deepest_full_life_mpy == 2.5
+    assert a.max_raw_mpy == 10.0 and a.mean_raw_mpy == 7.0 and a.mean_depth_change_pct == 20.0  # (10 + 30) / 2
+    x = out.loc[("EXT", "excluding_recoated")]
+    assert (x.n_features, x.n_matched, x.matched_share) == (2, 1, "1 of 2")
+    assert (x.max_depth_pct, x.deepest_curr_feature_id, x.pipe_age_yr) == (40.0, "E3", 51)
+    assert (x.max_raw_mpy, x.mean_raw_mpy, x.mean_depth_change_pct) == (4.0, 4.0, 10.0)
+    i = out.loc[("INT", "all")]
+    assert (i.matched_share, i.max_depth_pct, i.deepest_curr_feature_id) == ("0 of 1", 25.0, "I1")
+    assert math.isnan(i.max_raw_mpy) and math.isnan(i.mean_depth_change_pct)
+    assert len(out) == 4
+
+
+def test_manufacturing_left_out():
+    f = _surface_features()
+    f.loc[1, "ml_origin"] = "manufacturing"  # E2, the deepest
+    ext = growth.growth_summary_by_surface(f, 2026).set_index(["surface", "scope"]).loc[("EXT", "all")]
+    assert ext.n_features == 2 and ext.deepest_curr_feature_id == "E3" and ext.max_raw_mpy == 4.0
+
+
+def test_empty_surface_row_blank():
+    f = _surface_features()
+    out = growth.growth_summary_by_surface(f[f.surface == "EXT"], 2026).set_index(["surface", "scope"])
+    r = out.loc[("INT", "all")]
+    assert r.n_features == 0 and r.matched_share == "0 of 0"
+    assert r.isna()[["max_depth_pct", "max_depth_in", "deepest_curr_feature_id", "pipe_age_yr", "max_raw_mpy",
+                     "mean_raw_mpy", "mean_depth_change_pct"]].all()
+
+
+def test_compute_growth_carries_by_surface(settings):
+    rows = _recoat_rows()
+    for r in rows:
+        r.update(curr_surface="EXT", curr_ml_origin="corrosion")
+    res = _run_repairs(rows, settings, RECOAT)
+    s = res.by_surface.set_index(["surface", "scope"])
+    assert s.loc[("EXT", "all"), "n_features"] == 5 and s.loc[("EXT", "excluding_recoated"), "n_features"] == 4

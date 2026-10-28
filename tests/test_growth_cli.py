@@ -88,3 +88,17 @@ def test_growth_cli_rejects_stale_match_table(synth, tmp_path, capsys):
     assert growth.main(_args(std, folder, data, out, "--segments", str(data / "reference" / "hca_segments.csv"))) == 2
     err = capsys.readouterr().err
     assert "curr_surface" in err and "curr_ml_origin" in err and "ili.match" in err
+
+
+def test_growth_cli_writes_summary_csv(synth, tmp_path, capsys):
+    _, data = synth
+    out = tmp_path / "out"
+    std, folder = _prepare(data, out)
+    args = _args(std, folder, data, out, "--segments", str(data / "reference" / "hca_segments.csv"),
+                 "--repairs", str(data / "reference" / "repairs_between_runs.csv"))
+    assert growth.main(args) == 0, capsys.readouterr().err
+    table = pd.read_csv(folder / "growth_summary.csv")
+    assert list(table.columns) == growth.SURFACE_SUMMARY_COLUMNS
+    assert table[["surface", "scope"]].values.tolist() == [["EXT", "all"], ["EXT", "excluding_recoated"],
+                                                           ["INT", "all"], ["INT", "excluding_recoated"]]
+    assert (table.n_features[table.scope == "all"].to_numpy() >= table.n_features[table.scope != "all"].to_numpy()).all()

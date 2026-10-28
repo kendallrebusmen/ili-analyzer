@@ -143,6 +143,13 @@ FEATURE_COLUMNS = [
     *(f"{m}_mpy" for m in METHODS),
     "governing_mpy", "governing_method", "needs_review", "review_reasons", "length_in", "length_rate_ipy",
 ]
+SURFACES = ("EXT", "INT")
+MANUFACTURING_ORIGIN = "manufacturing"
+SURFACE_SUMMARY_COLUMNS = [
+    "surface", "scope", "n_features", "n_matched", "matched_share", "max_depth_pct", "max_depth_in",
+    "deepest_curr_feature_id", "pipe_age_yr", "deepest_half_life_mpy", "deepest_full_life_mpy", "max_raw_mpy",
+    "mean_depth_change_pct", "mean_raw_mpy",
+]
 SEGMENT_STAT_COLUMNS = [
     "segment_id", "start_ft", "end_ft", "n_features", "n_matched", "raw_mean_mpy", "raw_median_mpy",
     "raw_p_mpy", "pct_negative_raw", "governing_max_mpy",
@@ -156,6 +163,7 @@ class GrowthResult:
     features: pd.DataFrame
     segments: pd.DataFrame
     summary: dict
+    by_surface: pd.DataFrame | None = None
 
 
 def _none_for_nan(values: pd.Series, kind: type) -> pd.Series:
@@ -341,12 +349,14 @@ def _pct_negative(raw: np.ndarray) -> float:
 
 
 def segment_stats(features: pd.DataFrame, seg_table: pd.DataFrame, p_by_seg: dict) -> pd.DataFrame:
-    """Per-segment diagnostics of the matched raw rates (``raw_p_mpy`` unfloored) and the governing max."""
+    """Per-segment diagnostics of the matched raw rates (``raw_p_mpy`` unfloored) and the governing max.
+    The raw statistics and ``n_matched`` use only ``in_stats`` rows (spec 6.5 leaves recoated rows out of
+    the summary statistics); ``n_features`` and the governing max cover every row."""
     out = []
     for seg in seg_table.itertuples(index=False):
         sid = str(seg.segment_id)
         in_seg = features[features.segment_id == sid]
-        raw = in_seg.raw_mpy[in_seg.history_class == "matched"].to_numpy(float)
+        raw = in_seg.raw_mpy[(in_seg.history_class == "matched") & in_seg.in_stats].to_numpy(float)
         gov = in_seg.governing_mpy.to_numpy(float)
         out.append({
             "segment_id": sid, "start_ft": float(seg.start_ft), "end_ft": float(seg.end_ft),
@@ -378,10 +388,47 @@ def raw_histogram(raw_mpy, bin_mpy: float) -> dict:
     return {"bin_edges_mpy": [float(e) for e in edges], "counts": [int(c) for c in counts]}
 
 
+def _surface_row(rows: pd.DataFrame, surface: str, scope: str, curr_year: int) -> dict:
+    """One ``growth_summary_by_surface`` row over ``rows``; NaN statistics when there are none."""
+    matched = rows[rows.history_class == "matched"]
+    out = dict.fromkeys(SURFACE_SUMMARY_COLUMNS, np.nan)
+    out.update(surface=surface, scope=scope, n_features=len(rows), n_matched=len(matched),
+               matched_share=f"{len(matched)} of {len(rows)}", deepest_curr_feature_id=None)
+    depth = rows.d_curr_pct.to_numpy(float)
+    if np.isfinite(depth).any():
+        top = rows.iloc[int(np.nanargmax(depth))]
+        out.update(max_depth_pct=float(top.d_curr_pct), max_depth_in=float(top.d_curr_in),
+                   deepest_curr_feature_id=top.curr_feature_id, pipe_age_yr=float(curr_year - top.install_year),
+                   deepest_half_life_mpy=float(top.half_life_mpy), deepest_full_life_mpy=float(top.full_life_mpy))
+    raw = matched.raw_mpy.to_numpy(float)
+    change = (matched.d_curr_pct - matched.d_prev_pct).to_numpy(float)
+    if np.isfinite(raw).any():
+        out.update(max_raw_mpy=float(np.nanmax(raw)), mean_raw_mpy=float(np.nanmean(raw)))
+    if np.isfinite(change).any():
+        out["mean_depth_change_pct"] = float(np.nanmean(change))
+    return out
+
+
+def growth_summary_by_surface(features: pd.DataFrame, curr_year: int) -> pd.DataFrame:
+    """Growth summary for each surface in ``SURFACES`` with and without recoated areas: one row per surface
+    and scope (``all``, ``excluding_recoated``, which drops ``in_recoat`` rows whatever the exclusion
+    setting). Rows with ``ml_origin`` manufacturing are left out (unknown counts as corrosion). The deepest
+    feature is the largest ``d_curr_pct``; its depth, ``pipe_age_yr`` (``curr_year`` minus install year) and
+    life rates are reported. Rates are mpy, depths % wall and inches; NaN where there are no rows."""
+    corrosion = features[features.ml_origin.ne(MANUFACTURING_ORIGIN)]
+    rows = []
+    for surface in SURFACES:
+        on_surface = corrosion[corrosion.surface == surface]
+        rows.append(_surface_row(on_surface, surface, "all", curr_year))
+        rows.append(_surface_row(on_surface[~on_surface.in_recoat.astype(bool)], surface, "excluding_recoated",
+                                 curr_year))
+    return pd.DataFrame(rows, columns=SURFACE_SUMMARY_COLUMNS)
+
+
 def _summary(features: pd.DataFrame, dt_yr: float, prev_year: int, curr_year: int, settings: Settings,
              prev_run_id: str | None, curr_run_id: str | None) -> dict:
     g = settings.growth
-    raw = features.raw_mpy[features.history_class == "matched"].to_numpy(float)
+    raw = features.raw_mpy[(features.history_class == "matched") & features.in_stats].to_numpy(float)
     by_class = features.history_class.value_counts()
     by_method = features.governing_method.value_counts()
     pct_neg = _pct_negative(raw)
@@ -468,7 +515,7 @@ def compute_growth(match_table: pd.DataFrame, dt_yr: float, prev_year: int, curr
     f["length_rate_ipy"] = length_growth_rate(f.length_in, f.governing_mpy, d_curr, settings)
     f = f[FEATURE_COLUMNS]
     summary = _summary(f, dt_yr, prev_year, curr_year, settings, prev_run_id, curr_run_id)
-    return GrowthResult(f, segment_stats(f, seg_table, p_by_seg), summary)
+    return GrowthResult(f, segment_stats(f, seg_table, p_by_seg), summary, growth_summary_by_surface(f, curr_year))
 
 
 # ---------------------------------------------------------------------------
@@ -480,9 +527,11 @@ def write_growth(result: GrowthResult, out_dir: Path) -> dict[str, Path]:
     s = result.summary
     folder = comparison_dir(out_dir, s["prev_run_id"], s["curr_run_id"])
     folder.mkdir(parents=True, exist_ok=True)
-    paths = {name: folder / name for name in ("growth.csv", "growth_segments.csv", "growth_summary.json")}
+    paths = {name: folder / name for name in ("growth.csv", "growth_segments.csv", "growth_summary.json",
+                                                                 "growth_summary.csv")}
     result.features.to_csv(paths["growth.csv"], index=False, lineterminator="\n")
     result.segments.to_csv(paths["growth_segments.csv"], index=False, lineterminator="\n")
+    result.by_surface.to_csv(paths["growth_summary.csv"], index=False, lineterminator="\n")
     paths["growth_summary.json"].write_text(json.dumps({"label": DRAFT_LABEL, **s}, indent=2), encoding="utf-8")
     return paths
 
