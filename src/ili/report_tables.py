@@ -32,8 +32,8 @@ def imp_class_summary(classification: pd.DataFrame, match_table: pd.DataFrame, r
     """The IMP class summary (spec 6.8), one row per class: Immediate, 60-day and 180-day by
     ``governing_category``; ``YTC < N yrs`` for any other row whose years to condition (``rl_yr``, else
     ``rl_upper_bound_yr``) is below ``report.ytc_flag_years``; ``None`` for the rest. A row with neither
-    remaining life nor bound (a dent or gouge, say) falls in ``None``. ``n_rl_not_evaluated`` counts, per
-    class, the rows with neither. A feature is previously repaired when its current-run position
+    remaining life nor bound falls in ``None``. ``n_rl_not_evaluated`` counts, per class, the metal-loss rows
+    (``feature_type``) with neither; dents and gouges never have a remaining life and are not counted. A feature is previously repaired when its current-run position
     (``curr_log_dist_ft`` of the match table, by ``match_id``) is inside any repair span; without a repairs
     table ``n_previously_repaired`` and ``n_unrepaired`` are None. Summary view only; categories drive due dates."""
     ytc = settings.report.ytc_flag_years
@@ -44,7 +44,7 @@ def imp_class_summary(classification: pd.DataFrame, match_table: pd.DataFrame, r
     years = rl.rl_yr.astype(float).reindex(keys).to_numpy()
     bound = rl.rl_upper_bound_yr.astype(float).reindex(keys).to_numpy()
     years = np.where(np.isnan(years), bound, years)  # rl_yr (inf: no failure within the horizon), else the bound
-    not_evaluated = np.isnan(years)
+    not_evaluated = np.isnan(years) & cls.feature_type.eq("metal_loss").to_numpy(bool)
     ytc_hit = years < ytc  # NaN and inf are never below
     imp = np.where(cls.governing_category.isin(_CATEGORY_CLASSES), cls.governing_category.map(_CATEGORY_CLASSES),
                    np.where(ytc_hit, ytc_label, NO_CLASS))

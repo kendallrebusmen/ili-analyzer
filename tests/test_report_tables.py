@@ -2,6 +2,7 @@ from datetime import date
 from types import SimpleNamespace
 
 import numpy as np
+import pytest
 import pandas as pd
 
 from ili import config
@@ -172,10 +173,12 @@ def test_dig_list_has_erf_fpr():
     assert (row.erf, row.fpr, row.erf_next, row.fpr_next, row.failure_mode) == (0.8, 1.25, 0.9, 1.5, "leak")
 
 
-def _imp(rows, repairs, positions=None):
+def _imp(rows, repairs, positions=None, types=None):
     """``imp_class_summary`` over hand-built rows: ``rows`` are (category, rl_yr, rl_upper_bound_yr)."""
     ids = [f"M{i}" for i in range(len(rows))]
-    cls = _cls([{"match_id": m, "curr_feature_id": f"C{m}", "governing_category": c} for m, (c, _, _) in zip(ids, rows)])
+    types = types or ["metal_loss"] * len(rows)
+    cls = _cls([{"match_id": m, "curr_feature_id": f"C{m}", "governing_category": c, "feature_type": t}
+                for m, (c, _, _), t in zip(ids, rows, types)])
     pos = positions if positions is not None else [100.0] * len(rows)
     match = pd.DataFrame({"match_id": ids, "curr_log_dist_ft": pos})
     rl = pd.DataFrame({"match_id": ids, "rl_yr": [r[1] for r in rows], "rl_upper_bound_yr": [r[2] for r in rows]})
@@ -197,8 +200,20 @@ def test_imp_class_summary_rows():
     assert list(out.n_classified) == [1, 1, 1, 2, 3]
     assert list(out.n_previously_repaired) == [1, 0, 0, 2, 0]  # span ends are inclusive
     assert list(out.n_unrepaired) == [0, 1, 1, 0, 3]
-    assert list(out.n_rl_not_evaluated) == [0, 1, 0, 0, 1]
+    assert list(out.n_rl_not_evaluated) == [0, 1, 0, 0, 1]  # all metal loss here
     assert out.n_classified.sum() == len(rows)
+
+
+def test_imp_class_not_evaluated_counts_metal_loss_only():
+    rows = [("immediate", NAN, NAN), ("evaluate", NAN, NAN), ("evaluate", NAN, NAN), ("60_day", NAN, NAN)]
+    out = _imp(rows, None, types=["metal_loss", "metal_loss", "dent", "gouge"])
+    assert list(out.n_classified) == [1, 1, 0, 0, 2]
+    assert list(out.n_rl_not_evaluated) == [1, 0, 0, 0, 1]  # the dent and the gouge are never counted
+
+
+def test_imp_class_repairs_without_span_columns_is_error():
+    with pytest.raises(ValueError, match="start_ft"):
+        _imp([("immediate", 1.0, NAN)], pd.DataFrame({"repair_type": ["sleeve"]}))
 
 
 def test_imp_class_summary_no_repairs_file():

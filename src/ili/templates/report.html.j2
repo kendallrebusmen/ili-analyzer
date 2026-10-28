@@ -126,7 +126,8 @@ code { font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; font-siz
 <p>A summary view only: the repair categories above still drive due dates. Immediate, 60-day and 180-day are the
 governing categories; "YTC &lt; {{ summary.ytc_flag_years }} yrs" is every other feature whose years to condition
 (remaining life, else its upper bound) is under <code>report.ytc_flag_years</code>; None is every other feature,
-including those with no remaining life or bound ("RL not evaluated"). Previously repaired means inside a span of
+including those with no remaining life or bound. "RL not evaluated" counts metal loss with no remaining life or
+bound (dents and gouges have none by design). Previously repaired means inside a span of
 <code>repairs_between_runs.csv</code>.
 {% if not summary.repairs_given %}No repairs file was given to the report, so the repaired columns are blank.{% endif %}</p>
 {{ render_table(summary.imp_class, "IMP class summary") }}
