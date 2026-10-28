@@ -23,7 +23,7 @@ FLOAT_TOL = {
     "elev_ft": 0.051,
 }
 EXACT = [
-    "run_id", "run_date", "feature_id", "feature_type", "us_gw_id", "clock_min", "surface",
+    "run_id", "run_date", "feature_id", "feature_type", "us_gw_id", "clock_min", "surface", "ml_origin",
     "seam_interaction", "dent_metal_loss", "vendor_cluster_id", "comments",
 ]
 
@@ -46,7 +46,7 @@ def assert_matches_oracle(got: pd.DataFrame, expected: pd.DataFrame) -> None:
     expected = expected.reset_index(drop=True)
     assert len(got) == len(expected)
     for col in EXACT:
-        g = [str(v) if col in ("feature_type", "surface") and v is not None else v for v in _plain(got[col])]
+        g = [str(v) if col in ("feature_type", "surface", "ml_origin") and v is not None else v for v in _plain(got[col])]
         e = [None if v is None else (bool(v) if col in ("seam_interaction", "dent_metal_loss") else v)
              for v in _plain(expected[col])]
         if col == "clock_min":

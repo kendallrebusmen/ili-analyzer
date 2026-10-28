@@ -3,7 +3,7 @@ from datetime import date
 import pytest
 from pydantic import ValidationError
 
-from ili.schema import ANCHOR_TYPES, STANDARD_COLUMNS, FeatureType, StandardFeature, Surface
+from ili.schema import ANCHOR_TYPES, STANDARD_COLUMNS, FeatureType, MlOrigin, StandardFeature, Surface
 
 
 def _row(**overrides):
@@ -55,8 +55,14 @@ def test_required_fields():
 def test_columns_match_model():
     assert STANDARD_COLUMNS == list(StandardFeature.model_fields)
     assert STANDARD_COLUMNS[:3] == ["run_id", "run_date", "feature_id"]
+    assert STANDARD_COLUMNS.index("ml_origin") == STANDARD_COLUMNS.index("surface") + 1
     assert STANDARD_COLUMNS[-4:] == ["lat", "lon", "elev_ft", "comments"]
 
 
 def test_anchor_types():
     assert ANCHOR_TYPES == {FeatureType.valve, FeatureType.tee, FeatureType.fitting}
+
+
+def test_ml_origin_enum():
+    assert [m.value for m in MlOrigin] == ["corrosion", "manufacturing", "unknown"]
+    assert StandardFeature(**_row()).ml_origin is None

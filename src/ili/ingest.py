@@ -27,14 +27,15 @@ import numpy as np
 import openpyxl
 import pandas as pd
 import yaml
-from pydantic import BaseModel, ConfigDict, field_validator
+from pydantic import BaseModel, ConfigDict, ValidationInfo, field_validator
 
 import ili
 from ili.config import PROJECT_ROOT
-from ili.schema import STANDARD_COLUMNS, FeatureType, Surface
+from ili.schema import STANDARD_COLUMNS, FeatureType, MlOrigin, Surface
 from ili.units import CLOCK_MINUTES, FT_PER_M, IN_PER_MM, hhmm_to_clock_min
 
-MAPPABLE_FIELDS = [c for c in STANDARD_COLUMNS if c not in ("run_id", "run_date")]
+# ml_origin is derived from the feature-type code (``VendorMap.ml_origins``), not read from a column.
+MAPPABLE_FIELDS = [c for c in STANDARD_COLUMNS if c not in ("run_id", "run_date", "ml_origin")]
 ISSUE_COLUMNS = ["run_id", "source_row", "feature_id", "field", "value", "reason"]
 
 # Standard field -> which vendor-map unit governs it.
@@ -101,6 +102,7 @@ class VendorMap(_Strict):
     clock_format: Literal["hhmm", "degrees", "decimal_hours"]
     feature_types: dict[str, FeatureType]
     surfaces: dict[str, Surface]
+    ml_origins: dict[str, MlOrigin] = {}   # metal-loss feature-type code -> origin; absent code = unknown
     true_values: list[str]
     false_values: list[str]
 
@@ -117,6 +119,16 @@ class VendorMap(_Strict):
     def _normalize_keys(cls, vocab: dict) -> dict:
         return _normalized_vocab(vocab)
 
+    @field_validator("ml_origins", mode="before")
+    @classmethod
+    def _origin_keys_are_metal_loss(cls, vocab: dict, info: ValidationInfo) -> dict:
+        types = info.data.get("feature_types")
+        if types is not None:
+            for key in vocab:
+                if types.get(_norm(key)) is not FeatureType.metal_loss:
+                    raise ValueError(f"ml_origins key {key!r} is not a metal_loss code in feature_types")
+        return _normalized_vocab(vocab)
+
     @field_validator("true_values", "false_values")
     @classmethod
     def _normalize_flags(cls, values: list[str]) -> list[str]:
@@ -131,10 +143,13 @@ def load_vendor_map(path: Path) -> VendorMap:
 def load_standardized(path: Path) -> pd.DataFrame:
     """Read a ``standardized/<run_id>.csv`` back with the schema's types: ids stay text
     (``"1"``, never ``1.0``), clock is Int64, run_date a date, flags True/False/None."""
-    text_cols = ["run_id", "feature_id", "feature_type", "us_gw_id", "surface", "vendor_cluster_id", "comments"]
+    text_cols = ["run_id", "feature_id", "feature_type", "us_gw_id", "surface", "ml_origin", "vendor_cluster_id",
+                 "comments"]
     numeric_cols = [*UNIT_GROUP, *PLAIN_NUMBERS, "clock_min", "source_row"]
     df = pd.read_csv(path, dtype={c: str for c in text_cols + FLAG_FIELDS + ["run_date"]}, keep_default_na=False,
                      na_values={c: [""] for c in numeric_cols})
+    if "ml_origin" not in df.columns:  # written before M11: metal loss of unrecorded origin
+        df["ml_origin"] = np.where(df.feature_type == FeatureType.metal_loss.value, MlOrigin.unknown.value, "")
     for c in text_cols:
         df[c] = df[c].astype(object).where(df[c] != "", None)
     for c in FLAG_FIELDS:
@@ -331,6 +346,10 @@ def standardize(raw: pd.DataFrame, vmap: VendorMap, run_id: str, run_date: date)
     issues.append(_issues(run_id, ident, unknown, "feature_type", src["feature_type"], "unknown_feature_type"))
     out["surface"], unknown = _vocab(src["surface"], vmap.surfaces)
     issues.append(_issues(run_id, ident, unknown, "surface", src["surface"], "unknown_surface"))
+    codes = src["feature_type"].astype(str).str.strip().str.casefold()
+    is_ml = (out["feature_type"] == FeatureType.metal_loss.value).to_numpy()
+    out["ml_origin"] = pd.Series([vmap.ml_origins.get(k, MlOrigin.unknown).value if ml else None
+                                  for k, ml in zip(codes, is_ml)], index=raw.index, dtype=object)
 
     for f in [*UNIT_GROUP, *PLAIN_NUMBERS]:
         text = src[f]

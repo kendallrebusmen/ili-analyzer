@@ -48,6 +48,11 @@ feature_types:              # vendor vocabulary -> standard (matched after strip
   "Dent": dent
   "Valve": valve
   "Tee": tee
+  "Mill Anomaly": metal_loss  # mill-related metal loss; origin manufacturing (ml_origins)
+
+ml_origins:                 # metal-loss code -> origin; a code not listed is unknown
+  "Metal Loss": corrosion
+  "Mill Anomaly": manufacturing
 
 surfaces:
   "External": EXT

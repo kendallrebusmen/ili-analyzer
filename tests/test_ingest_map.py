@@ -56,3 +56,12 @@ def test_every_synth_vocab_mapped():
     b = load_vendor_map(MAPS / "synthetic_vendor_b.yaml")
     assert {v.casefold() for v in _A_EVENT.values()} <= set(a.feature_types)
     assert {v.casefold() for v in [*_B_EVENT.values(), "ML-CLUS"]} <= set(b.feature_types)
+
+
+def test_ml_origins_key_must_be_metal_loss_code(tmp_path):
+    path = _write(tmp_path, lambda r: r.update(ml_origins={"DENT": "corrosion"}))
+    with pytest.raises(ValidationError, match="DENT"):
+        load_vendor_map(path)
+    path = _write(tmp_path, lambda r: r.update(ml_origins={"NOPE": "corrosion"}))
+    with pytest.raises(ValidationError, match="NOPE"):
+        load_vendor_map(path)
