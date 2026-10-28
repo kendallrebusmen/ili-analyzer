@@ -193,3 +193,12 @@ def test_system_exit_mapping(raised, code, err):
     finally:
         pipeline._MODULES["growth"] = saved
     assert result.exit_code == code and err in result.stderr
+
+
+def test_pipeline_passes_repairs_to_growth(tmp_path):
+    ref = tmp_path / "ref"
+    with_rep = _inputs(tmp_path, tmp_path / "out", repairs=ref / "repairs_between_runs.csv")
+    argv = pipeline._argv("growth", with_rep, "2021_vendorA", "2026_vendorB")
+    assert argv[argv.index("--repairs") + 1] == str(ref / "repairs_between_runs.csv")
+    assert "--repairs" not in pipeline._argv("growth", _inputs(tmp_path, tmp_path / "out", repairs=None),
+                                             "2021_vendorA", "2026_vendorB")

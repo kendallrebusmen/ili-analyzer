@@ -62,3 +62,16 @@ def test_cli_segments_required_unless_fixed_length(synth, tmp_path, capsys):
     path.write_text(yaml.safe_dump(settings), encoding="utf-8")
     assert growth.main(_args(std, folder, data, out, "--settings", str(path))) == 0
     assert (folder / "growth_segments.csv").exists()
+
+
+def test_growth_cli_repairs_optional(synth, tmp_path, capsys):
+    _, data = synth
+    segs = str(data / "reference" / "hca_segments.csv")
+    for name, extra in (("without", []), ("with", ["--repairs", str(data / "reference" / "repairs_between_runs.csv")])):
+        out = tmp_path / name
+        std, folder = _prepare(data, out)
+        assert growth.main(_args(std, folder, data, out, "--segments", segs, *extra)) == 0, capsys.readouterr().err
+        summary = json.loads((folder / "growth_summary.json").read_text(encoding="utf-8"))
+        assert "n_excluded_recoated" in summary
+        table = growth.load_growth_table(folder / "growth.csv")
+        assert table.in_recoat.dtype == bool or table.in_recoat.notna().all()

@@ -12,11 +12,12 @@ from ili.synth import SynthParams, generate
 
 FEATURE_COLUMNS = [
     "match_id", "match_type", "prev_feature_id", "curr_feature_id", "curr_log_dist_ft", "segment_id",
+    "joint_id", "surface", "ml_origin", "in_recoat", "in_stats",
     "history_class", "confidence", "implausible", "match_needs_review",
     "wt_in", "d_prev_pct", "d_curr_pct", "d_prev_in", "d_curr_in", "dt_yr", "sigma_diff_pct", "k_sigma",
     "install_year",
     "raw_mpy", "tolerance_adjusted_mpy", "segment_percentile_mpy", "new_feature_mpy", "full_life_mpy",
-    "default_rate_mpy",
+    "default_rate_mpy", "half_life_mpy", "joint_percentile_mpy", "shrinking_fixed_mpy",
     "governing_mpy", "governing_method", "needs_review", "review_reasons", "length_in", "length_rate_ipy",
 ]
 SEGMENT_COLUMNS = [
@@ -182,7 +183,7 @@ def test_segment_percentile_hand_built(settings):
     assert s["counts_by_history_class"] == {"matched": 5, "new": 3, "no_history": 0}
     assert s["counts_by_governing_method"] == {
         "raw": 0, "tolerance_adjusted": 3, "segment_percentile": 3, "new_feature": 2, "full_life": 0,
-        "default_rate": 0,
+        "default_rate": 0, "half_life": 0, "joint_percentile": 0, "shrinking_fixed": 0,
     }
     assert s["n_needs_review"] == 2
     assert s["counts_by_review_reason"] == {"no_governing": 0, "incomplete_rule": 2, "below_min_rate": 0,
@@ -409,3 +410,63 @@ def test_requires_match_table_columns(settings):
     with pytest.raises(ValueError, match="curr_depth_pct"):
         growth.compute_growth(_table([_row("K1", "new", 140.0, d_curr=20.0)]).drop(columns="curr_depth_pct"),
                               DT, PREV_YEAR, CURR_YEAR, PIPE, SEGS, settings)
+
+
+# --- M11: new rates and recoat exclusion --------------------------------------------------------------------
+
+
+def _recoat_rows():
+    rows = [_row(f"M{i}", "matched_1to1", 100.0 + 50 * i, 30.0, 30.0 + 2 * i) for i in range(1, 5)]
+    rows.append(_row("R1", "matched_1to1", 400.0, 30.0, 80.0))  # raw 25 mpy, inside the recoat
+    for r, j in zip(rows, ["J1"] * 5):
+        r["curr_us_gw_id"] = j
+    return rows
+
+
+RECOAT = pd.DataFrame({"start_ft": [390.0], "end_ft": [410.0], "repair_type": ["recoat"]})
+
+
+def _run_repairs(rows, settings, repairs):
+    return growth.compute_growth(_table(rows), DT, PREV_YEAR, CURR_YEAR, PIPE, SEGS, settings, repairs=repairs)
+
+
+def test_recoated_rows_left_out_of_distributions(settings):
+    rows = _recoat_rows()
+    on = _run_repairs(rows, _with_growth(settings, joint_percentile_min_matches=3), RECOAT)
+    off = _run_repairs(rows, _with_growth(settings, joint_percentile_min_matches=3, exclude_recoated_from_stats=False),
+                       RECOAT)
+    none = _run_repairs(rows, _with_growth(settings, joint_percentile_min_matches=3), None)
+    f_on, f_off = _by_id(on), _by_id(off)
+    assert f_on.loc["R1", "in_recoat"] and not f_on.loc["R1", "in_stats"]
+    assert f_off.loc["R1", "in_recoat"] and f_off.loc["R1", "in_stats"]
+    assert f_on.loc["R1", "raw_mpy"] == pytest.approx(25.0)  # still gets its own rate
+    assert f_on.loc["M1", "segment_percentile_mpy"] < f_off.loc["M1", "segment_percentile_mpy"]
+    assert f_on.loc["M1", "joint_percentile_mpy"] < f_off.loc["M1", "joint_percentile_mpy"]
+    assert f_on.loc["R1", "segment_percentile_mpy"] == f_on.loc["M1", "segment_percentile_mpy"]
+    assert on.summary["n_excluded_recoated"] == 1 and off.summary["n_excluded_recoated"] == 0
+    # no recoat in the repairs: nothing excluded, same numbers as exclusion off
+    assert none.summary["n_excluded_recoated"] == 0
+    assert _by_id(none).governing_mpy.tolist() == f_off.governing_mpy.tolist()
+
+
+def test_no_recoat_leaves_governing_unchanged(settings):
+    rows = SEG_A_MATCHED + [_row("N1", "new", 400.0, d_curr=18.0)]
+    base = _by_id(_run(rows, settings))
+    other = _by_id(_run_repairs(rows, settings, RECOAT.assign(repair_type="sleeve")))
+    assert base.governing_mpy.tolist() == other.governing_mpy.tolist()
+    assert base.governing_method.tolist() == other.governing_method.tolist()
+    assert not base.in_recoat.any() and base.in_stats.all()
+
+
+def test_new_columns_and_summary(settings):
+    rows = _recoat_rows()
+    for r in rows:
+        r.update(curr_surface="external", curr_ml_origin="corrosion")
+    res = _run(rows, settings)
+    f = _by_id(res)
+    assert f.loc["M1", "joint_id"] == "J1" and f.loc["M1", "surface"] == "external"
+    assert f.loc["M1", "ml_origin"] == "corrosion"
+    s = res.summary
+    assert s["governing_profile"] == settings.growth.governing_profile
+    assert s["joint_percentile"] == settings.growth.joint_percentile
+    assert {"joint_percentile_min_matches", "shrinking_rate_mpy", "n_excluded_recoated"} <= set(s)

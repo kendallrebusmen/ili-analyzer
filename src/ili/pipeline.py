@@ -84,7 +84,7 @@ def _argv(stage: str, i: PipelineInputs, prev_id: str | None, curr_id: str | Non
                 *_optional("--repairs", i.repairs), *settings, "--out", out]
     if stage == "growth":
         return ["--prev", prev, "--curr", curr, "--matches", str(folder / "match_table.csv"),
-                "--pipe", str(i.pipe), "--segments", str(i.segments), *settings, "--out", out]
+                "--pipe", str(i.pipe), "--segments", str(i.segments), *_optional("--repairs", i.repairs), *settings, "--out", out]
     if stage == "remaining_life":
         return ["--curr", curr, "--growth", str(folder / "growth.csv"), "--pipe", str(i.pipe), "--mop", str(i.mop),
                 "--segments", str(i.segments), "--next-inspection", str(i.next_inspection), *settings, "--out", out]

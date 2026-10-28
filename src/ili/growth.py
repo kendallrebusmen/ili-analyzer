@@ -76,6 +76,35 @@ def full_life_rate(d_curr_in, curr_year, install_year):
     return np.where(valid, d * MILS_PER_IN / safe_age, np.nan)
 
 
+def half_life_rate(d_curr_in, curr_year, install_year):
+    """Rate in mpy = d_curr * 1000 / ((curr_year - install_year) / 2), i.e. twice the full-life rate;
+    NaN if the age is <= 0 or unknown."""
+    return 2.0 * full_life_rate(d_curr_in, curr_year, install_year)
+
+
+def shrinking_fixed_rate(d_prev_in, d_curr_in, cls, settings: Settings):
+    """``shrinking_rate_mpy`` where the row is ``matched`` and its depth dropped (d_curr < d_prev), else NaN;
+    NaN everywhere when the setting is null."""
+    d_prev, d_curr = np.asarray(d_prev_in, dtype=float), np.asarray(d_curr_in, dtype=float)
+    value = settings.growth.shrinking_rate_mpy
+    if value is None:
+        return np.full(len(d_prev), np.nan)
+    shrank = (np.asarray(cls, dtype=object) == "matched") & (d_curr < d_prev)  # False for NaN
+    return np.where(shrank, float(value), np.nan)
+
+
+def in_recoat(pos_ft, repairs: pd.DataFrame | None) -> np.ndarray:
+    """True where the position (ft) lies inside any ``repair_type == "recoat"`` span, ends inclusive. All
+    False when there is no repairs table or it has no ``repair_type`` column."""
+    pos = np.asarray(pos_ft, dtype=float)
+    out = np.zeros(len(pos), dtype=bool)
+    if repairs is None or "repair_type" not in repairs.columns:
+        return out
+    for span in repairs[repairs.repair_type == RECOAT_TYPE].itertuples(index=False):
+        out |= (pos >= float(span.start_ft)) & (pos <= float(span.end_ft))
+    return out
+
+
 def default_rate(n: int, settings: Settings):
     """Array of n copies of default_rate_mpy (mpy), or NaN when it is null."""
     value = settings.growth.default_rate_mpy
@@ -84,7 +113,8 @@ def default_rate(n: int, settings: Settings):
 
 # --- assembled growth table -----------------------------------------------------------------------------
 
-METHODS = get_args(GrowthMethod)  # raw, tolerance_adjusted, segment_percentile, new_feature, full_life, default_rate
+METHODS = get_args(GrowthMethod)  # raw ... default_rate, half_life, joint_percentile, shrinking_fixed
+RECOAT_TYPE = "recoat"
 HISTORY_CLASSES = ("matched", "new", "no_history")
 # Why a row needs review, in this order in ``review_reasons``: no governing rate; a method of its class's
 # governing rule is NaN; governing below ``min_rate_mpy`` (not floored, so flagged); M4 flagged the match.
@@ -102,6 +132,7 @@ INPUT_COLUMNS = (
 )
 FEATURE_COLUMNS = [
     "match_id", "match_type", "prev_feature_id", "curr_feature_id", "curr_log_dist_ft", "segment_id",
+    "joint_id", "surface", "ml_origin", "in_recoat", "in_stats",
     "history_class", "confidence", "implausible", "match_needs_review",
     "wt_in", "d_prev_pct", "d_curr_pct", "d_prev_in", "d_curr_in", "dt_yr", "sigma_diff_pct", "k_sigma",
     "install_year",
@@ -126,6 +157,13 @@ class GrowthResult:
 def _none_for_nan(values: pd.Series, kind: type) -> pd.Series:
     """Object column of ``kind`` values with None (not NaN) where blank, as ``match.load_match_table`` gives."""
     return pd.Series([None if pd.isna(v) else kind(v) for v in values], dtype=object)
+
+
+def _text_column(rows: pd.DataFrame, name: str) -> pd.Series:
+    """Object column of the match-table text column ``name`` with None where blank or absent."""
+    if name not in rows.columns:
+        return pd.Series([None] * len(rows), dtype=object)
+    return pd.Series([None if pd.isna(v) else str(v) for v in rows[name]], dtype=object)
 
 
 def growth_rows(match_table: pd.DataFrame) -> pd.DataFrame:
@@ -159,14 +197,17 @@ def history_class(match_type, d_prev_pct, d_curr_pct, install_year, prev_year: i
     return np.where(matched, "matched", np.where(new, "new", "no_history")).astype(object)
 
 
-def segment_percentile(raw_mpy, cls, segment_id, seg_table: pd.DataFrame, settings: Settings):
+def segment_percentile(raw_mpy, cls, segment_id, seg_table: pd.DataFrame, settings: Settings, in_stats=None):
     """Per-row rate (mpy) and the unfloored percentile by segment id. The ``segment_percentile``-th
     percentile (linear) of the matched raw rates in each segment, negatives included, floored at
-    ``min_rate_mpy`` for the rows. NaN for a segment without matched rows and a row outside every segment."""
+    ``min_rate_mpy`` for the rows. Rows with ``in_stats`` False (recoated) stay out of the distribution but
+    still get the rate. NaN for a segment without matched rows and a row outside every segment."""
     g = settings.growth
     raw = np.asarray(raw_mpy, dtype=float)
     seg_ids = np.asarray(segment_id, dtype=object)
     usable = (np.asarray(cls, dtype=object) == "matched") & np.isfinite(raw)
+    if in_stats is not None:
+        usable &= np.asarray(in_stats, dtype=bool)
     p_by_seg = {}
     for sid in seg_table.segment_id.astype(str):
         vals = raw[usable & (seg_ids == sid)]
@@ -174,6 +215,25 @@ def segment_percentile(raw_mpy, cls, segment_id, seg_table: pd.DataFrame, settin
     p_rows = np.array([np.nan if s is None else p_by_seg.get(s, np.nan) for s in seg_ids], dtype=float)
     floored = np.where(np.isnan(p_rows), np.nan, np.maximum(p_rows, g.min_rate_mpy))
     return floored, p_by_seg
+
+
+def joint_percentile(raw_mpy, cls, joint_id, in_stats, settings: Settings):
+    """Per-row rate (mpy) and the unfloored percentile by joint id. The ``joint_percentile``-th percentile
+    (linear) of the raw rates of ``matched`` rows with ``in_stats`` True in the row's joint, floored at
+    ``min_rate_mpy`` for the rows. NaN when the joint has fewer than ``joint_percentile_min_matches`` such
+    rows or the row has no joint (None/NaN)."""
+    g = settings.growth
+    raw = np.asarray(raw_mpy, dtype=float)
+    joints = np.array([None if pd.isna(j) else j for j in joint_id], dtype=object)
+    usable = ((np.asarray(cls, dtype=object) == "matched") & np.isfinite(raw)
+              & np.asarray(in_stats, dtype=bool) & np.array([j is not None for j in joints], dtype=bool))
+    p_by_joint = {}
+    for jid in set(joints[usable]):
+        vals = raw[usable & (joints == jid)]
+        if len(vals) >= g.joint_percentile_min_matches:
+            p_by_joint[jid] = float(np.percentile(vals, g.joint_percentile, method="linear"))
+    p_rows = np.array([np.nan if j is None else p_by_joint.get(j, np.nan) for j in joints], dtype=float)
+    return np.where(np.isnan(p_rows), np.nan, np.maximum(p_rows, g.min_rate_mpy)), p_by_joint
 
 
 def governing_rate(rates: pd.DataFrame, cls, settings: Settings) -> tuple[np.ndarray, np.ndarray]:
@@ -282,6 +342,7 @@ def raw_histogram(raw_mpy, bin_mpy: float) -> dict:
 
 def _summary(features: pd.DataFrame, dt_yr: float, prev_year: int, curr_year: int, settings: Settings,
              prev_run_id: str | None, curr_run_id: str | None) -> dict:
+    g = settings.growth
     raw = features.raw_mpy[features.history_class == "matched"].to_numpy(float)
     by_class = features.history_class.value_counts()
     by_method = features.governing_method.value_counts()
@@ -291,6 +352,11 @@ def _summary(features: pd.DataFrame, dt_yr: float, prev_year: int, curr_year: in
         "prev_run_id": prev_run_id, "curr_run_id": curr_run_id,
         "delta_t_years": float(dt_yr), "prev_year": int(prev_year), "curr_year": int(curr_year),
         "n_features": len(features),
+        "governing_profile": g.governing_profile,
+        "n_excluded_recoated": int((features.in_recoat & ~features.in_stats).sum()),
+        "joint_percentile": float(g.joint_percentile),
+        "joint_percentile_min_matches": int(g.joint_percentile_min_matches),
+        "shrinking_rate_mpy": None if g.shrinking_rate_mpy is None else float(g.shrinking_rate_mpy),
         "counts_by_history_class": {c: int(by_class.get(c, 0)) for c in HISTORY_CLASSES},
         "counts_by_governing_method": {m: int(by_method.get(m, 0)) for m in METHODS},
         "n_needs_review": int(features.needs_review.sum()),
@@ -302,14 +368,17 @@ def _summary(features: pd.DataFrame, dt_yr: float, prev_year: int, curr_year: in
 
 def compute_growth(match_table: pd.DataFrame, dt_yr: float, prev_year: int, curr_year: int, pipe: pd.DataFrame,
                    seg_table: pd.DataFrame, settings: Settings, *, prev_run_id: str | None = None,
-                   curr_run_id: str | None = None) -> GrowthResult:
+                   curr_run_id: str | None = None, repairs: pd.DataFrame | None = None) -> GrowthResult:
     """Every spec 6.5 method for each current-run metal-loss row of the M4 match table, the governing rate
     by ``growth.governing`` per history class, and length growth. ``prev_year``/``curr_year`` are the runs'
     calendar years; reference positions are ``curr_log_dist_ft``. A position outside the pipe table is a
     ValueError (reference coverage is a data error). The governing rate is never floored; ``needs_review``
     and ``review_reasons`` flag a row whose rate is missing, incomplete under its rule, or below
     ``min_rate_mpy``, or whose M4 match row needs review (``REVIEW_REASONS``); M4's ``confidence``,
-    ``implausible`` and ``needs_review`` (as ``match_needs_review``) are carried as columns."""
+    ``implausible`` and ``needs_review`` (as ``match_needs_review``) are carried as columns. ``repairs``
+    (``repairs_between_runs``, optional) marks rows inside ``recoat`` spans as ``in_recoat``; with
+    ``exclude_recoated_from_stats`` they are ``in_stats`` False and stay out of the segment and joint
+    percentile distributions (they still get the rates)."""
     if not dt_yr > 0:
         raise ValueError("dt_yr must be positive")
     g = settings.growth
@@ -327,9 +396,15 @@ def compute_growth(match_table: pd.DataFrame, dt_yr: float, prev_year: int, curr
     matched, new = cls == "matched", cls == "new"
     match_review = np.array([not pd.isna(v) and bool(v) for v in rows.needs_review], dtype=bool)  # None: unflagged
 
+    in_rc = in_recoat(pos, repairs)
+    in_stats = ~(in_rc & bool(g.exclude_recoated_from_stats))
+    joint_id = _text_column(rows, "curr_us_gw_id")
+
     f = pd.DataFrame({
         "match_id": rows.match_id, "match_type": rows.match_type, "prev_feature_id": rows.prev_feature_id,
         "curr_feature_id": rows.curr_feature_id, "curr_log_dist_ft": pos, "segment_id": pd.Series(seg_id, dtype=object),
+        "joint_id": joint_id, "surface": _text_column(rows, "curr_surface"),
+        "ml_origin": _text_column(rows, "curr_ml_origin"), "in_recoat": in_rc, "in_stats": in_stats,
         "history_class": cls, "confidence": _none_for_nan(rows.confidence, str),
         "implausible": _none_for_nan(rows.implausible, bool), "match_needs_review": match_review, "wt_in": wt, "d_prev_pct": d_prev_pct, "d_curr_pct": d_curr_pct,
         "d_prev_in": d_prev, "d_curr_in": d_curr, "dt_yr": np.full(n, float(dt_yr)),
@@ -339,10 +414,14 @@ def compute_growth(match_table: pd.DataFrame, dt_yr: float, prev_year: int, curr
     f["raw_mpy"] = np.where(matched, raw_rate(d_prev, d_curr, dt_yr), np.nan)
     f["tolerance_adjusted_mpy"] = np.where(matched, tolerance_adjusted_rate(d_prev, d_curr, wt, dt_yr, settings),
                                            np.nan)
-    f["segment_percentile_mpy"], p_by_seg = segment_percentile(f.raw_mpy, cls, seg_id, seg_table, settings)
+    f["segment_percentile_mpy"], p_by_seg = segment_percentile(f.raw_mpy, cls, seg_id, seg_table, settings,
+                                                                    in_stats)
     f["new_feature_mpy"] = np.where(new, new_feature_rate(d_curr, wt, dt_yr, settings), np.nan)
     f["full_life_mpy"] = full_life_rate(d_curr, curr_year, install)
     f["default_rate_mpy"] = default_rate(n, settings)
+    f["half_life_mpy"] = half_life_rate(d_curr, curr_year, install)
+    f["joint_percentile_mpy"], _ = joint_percentile(f.raw_mpy, cls, joint_id, in_stats, settings)
+    f["shrinking_fixed_mpy"] = shrinking_fixed_rate(d_prev, d_curr, cls, settings)
     gov, method = governing_rate(f, cls, settings)
     f["governing_mpy"], f["governing_method"] = gov, pd.Series(method, dtype=object)  # object keeps None
     needs_review, reasons = join_reasons(review_flags(f, cls, gov, match_review, settings), n)
@@ -371,8 +450,8 @@ def write_growth(result: GrowthResult, out_dir: Path) -> dict[str, Path]:
 
 
 _GROWTH_TEXT = ("match_id", "match_type", "prev_feature_id", "curr_feature_id", "segment_id", "history_class",
-                "confidence", "governing_method", "review_reasons")
-_GROWTH_FLAGS = ("needs_review", "implausible", "match_needs_review")
+                "confidence", "governing_method", "review_reasons", "joint_id", "surface", "ml_origin")
+_GROWTH_FLAGS = ("needs_review", "implausible", "match_needs_review", "in_recoat", "in_stats")
 
 
 def load_growth_table(path: Path) -> pd.DataFrame:
@@ -411,6 +490,8 @@ def _parser() -> argparse.ArgumentParser:
     ap.add_argument("--pipe", type=Path, required=True, help="pipe_properties.csv (current-run log distance)")
     ap.add_argument("--segments", type=Path, help="segments CSV (start_ft, end_ft, segment_id); "
                     "required unless segment_definition is fixed_length")
+    ap.add_argument("--repairs", type=Path, help="repairs_between_runs.csv; rows inside recoat spans are "
+                    "left out of the percentile distributions")
     ap.add_argument("--truth", type=Path, help="ground_truth.csv (synthetic data only) to score against")
     ap.add_argument("--settings", type=Path, default=DEFAULT_SETTINGS, help="settings YAML")
     ap.add_argument("--out", type=Path, default=PROJECT_ROOT / "outputs", help="output directory")
@@ -425,10 +506,11 @@ def main(argv: list[str] | None = None) -> int:
         matches = load_match_table(args.matches)
         pipe = pd.read_csv(args.pipe)
         segments = pd.read_csv(args.segments) if args.segments else None
+        repairs = pd.read_csv(args.repairs) if args.repairs else None
         seg_table = segment_table(settings, segments, *_line_extent(curr))
         result = compute_growth(matches, delta_t_years(prev, curr), _run_year(prev), _run_year(curr), pipe,
                                 seg_table, settings, prev_run_id=str(prev.run_id.iloc[0]),
-                                curr_run_id=str(curr.run_id.iloc[0]))
+                                curr_run_id=str(curr.run_id.iloc[0]), repairs=repairs)
         paths = write_growth(result, args.out)
         score = None
         if args.truth:

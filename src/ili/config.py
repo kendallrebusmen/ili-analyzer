@@ -71,7 +71,8 @@ class MatchingCfg(_Strict):
     interaction_rule: InteractionRule
 
 
-GrowthMethod = Literal["raw", "tolerance_adjusted", "segment_percentile", "new_feature", "full_life", "default_rate"]
+GrowthMethod = Literal["raw", "tolerance_adjusted", "segment_percentile", "new_feature", "full_life", "default_rate",
+                    "half_life", "joint_percentile", "shrinking_fixed"]
 
 
 class GoverningRule(_Strict):

@@ -71,3 +71,58 @@ def test_default_rate_null_is_nan(settings):
 def test_default_rate_set(settings):
     out = growth.default_rate(3, _with_growth(settings, default_rate_mpy=2.0))
     assert out.tolist() == [2.0, 2.0, 2.0]
+
+
+# --- M11: half-life, joint percentile, shrinking-fixed, recoat -----------------------------------------
+
+
+def test_half_life_is_twice_full_life():
+    out = growth.half_life_rate([0.1, 0.1], 2026, [1986, 2026])
+    assert out[0] == pytest.approx(5.0) and math.isnan(out[1])
+    assert math.isnan(growth.half_life_rate([0.1], 2026, [float("nan")])[0])
+
+
+def test_joint_percentile_min_matches(settings):
+    raw = np.array([1.0, 2.0, 3.0, 4.0, 9.0])
+    cls = np.array(["matched"] * 4 + ["new"], dtype=object)
+    joint = np.array(["J1"] * 4 + ["J1"], dtype=object)
+    stats = np.ones(5, dtype=bool)
+    s = _with_growth(settings, joint_percentile=90, joint_percentile_min_matches=3)
+    rate, unfloored = growth.joint_percentile(raw, cls, joint, stats, s)
+    assert rate == pytest.approx([3.7] * 5) and unfloored["J1"] == pytest.approx(3.7)
+    s5 = _with_growth(settings, joint_percentile=90, joint_percentile_min_matches=5)
+    assert np.isnan(growth.joint_percentile(raw, cls, joint, stats, s5)[0]).all()
+    neg = _with_growth(settings, joint_percentile=0, joint_percentile_min_matches=1)
+    low = growth.joint_percentile(np.array([-5.0, -2.0]), np.array(["matched"] * 2, dtype=object),
+                                  np.array(["J", "J"], dtype=object), np.ones(2, dtype=bool), neg)[0]
+    assert low == pytest.approx([settings.growth.min_rate_mpy] * 2)
+    blank = growth.joint_percentile(raw, cls, np.array([None] * 5, dtype=object), stats, s)[0]
+    assert np.isnan(blank).all()
+
+
+def test_shrinking_fixed_only_when_depth_drops(settings):
+    cls = np.array(["matched", "matched"], dtype=object)
+    s = _with_growth(settings, shrinking_rate_mpy=6.0)
+    out = growth.shrinking_fixed_rate([0.10, 0.10], [0.08, 0.12], cls, s)
+    assert out[0] == 6.0 and math.isnan(out[1])
+    off = _with_growth(settings, shrinking_rate_mpy=None)
+    assert np.isnan(growth.shrinking_fixed_rate([0.10, 0.10], [0.08, 0.12], cls, off)).all()
+
+
+def test_in_recoat():
+    import pandas as pd
+    rep = pd.DataFrame({"start_ft": [10.0, 50.0], "end_ft": [20.0, 60.0], "repair_type": ["recoat", "sleeve"]})
+    assert growth.in_recoat([5.0, 10.0, 20.0, 55.0], rep).tolist() == [False, True, True, False]
+    assert not growth.in_recoat([15.0], None).any()
+    assert not growth.in_recoat([15.0], rep[["start_ft", "end_ft"]]).any()
+
+
+def test_segment_percentile_in_stats_excludes_rows(settings):
+    import pandas as pd
+    seg = pd.DataFrame({"segment_id": ["S"], "start_ft": [0.0], "end_ft": [10.0]})
+    raw = np.array([1.0, 2.0, 50.0])
+    cls = np.array(["matched"] * 3, dtype=object)
+    sid = np.array(["S"] * 3, dtype=object)
+    with_all, _ = growth.segment_percentile(raw, cls, sid, seg, settings)
+    kept, _ = growth.segment_percentile(raw, cls, sid, seg, settings, np.array([True, True, False]))
+    assert kept[2] == kept[0] and kept[0] < with_all[0]
