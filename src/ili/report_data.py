@@ -50,7 +50,7 @@ DIG_LIST_COLUMNS = (
     "dent_depth_pct_od",
     "governing_mpy", "governing_method",
     "p_fail", "p_safe", "mop_local", "erf", "fpr", "burst_next_psig", "safe_next_psig", "erf_next", "fpr_next",
-    "rl_yr", "rl_governing", "failure_mode",
+    "exceeds_80pct_next", "rl_yr", "rl_governing", "failure_mode",
     "triggered_rules", "due_date", "due_date_basis", "worst_case_category", "requires_review",
     "review_reasons", "action_note",
 )
@@ -344,7 +344,7 @@ def dig_list(inputs: ReportInputs) -> pd.DataFrame:
     out = out.join(_lookup(inputs.growth, keys, ["governing_mpy", "governing_method"]))
     out = out.join(_lookup(inputs.remaining_life, keys, [
         "rl_yr", "rl_governing", "failure_mode", "erf", "fpr", "burst_next_psig", "safe_next_psig", "erf_next",
-        "fpr_next"]))
+        "fpr_next", "exceeds_80pct_next"]))
     std = inputs.curr_std.drop_duplicates("feature_id").set_index("feature_id")
     located = pd.Series([_nearest_member(f, p, std.log_dist_ft)
                          for f, p in zip(out.curr_feature_id, out.curr_log_dist_ft)], index=out.index, dtype=object)

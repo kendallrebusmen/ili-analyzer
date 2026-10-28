@@ -23,7 +23,7 @@ FEATURE_COLUMNS = [
     "tau_safe_date", "rl_yr", "rl_governing", "failure_mode",
     "rl_upper_bound_yr", "rl_factor", "rl_factored_yr", "repair_by_date",
     "next_assessment_date", "next_assessment_source", "years_to_next_assessment",
-    "depth_next_in", "depth_next_pct", "burst_next_psig", "safe_next_psig", "erf_next", "fpr_next",
+    "depth_next_in", "depth_next_pct", "exceeds_80pct_next", "burst_next_psig", "safe_next_psig", "erf_next", "fpr_next",
     "dig_required_by_remaining_life",
     "needs_review", "review_reasons",
 ]
@@ -301,6 +301,27 @@ def test_strength_columns_at_tau0_reference_case(settings):
     assert (f.rl_yr, f.rl_governing) == rl_mod.remaining_life(times, settings)
 
 
+def test_next_assessment_projection_flags_80pct_and_blanks_through_wall(settings):
+    # SEG-01 is planned 2029-06-30 (3.29 yr out). Assessed 30 % + 10 % = 40 % of 0.25 in = 0.100 in.
+    # 5 mpy -> 0.116 in (46 %); 35 mpy -> 0.215 in (86 %: flagged, pressures kept); 50 mpy -> 0.265 in
+    # (through the wall: flagged, pressures blank).
+    f = _by_id(_run([_g("LO", 500.0, gov=5.0), _g("HI", 600.0, gov=35.0), _g("TW", 700.0, gov=50.0)], settings))
+    assert list(f.exceeds_80pct_next) == [False, True, True]
+    assert f.loc["HI", "depth_next_pct"] == pytest.approx(86.0, abs=0.5)
+    assert f.loc["TW", "depth_next_in"] > f.loc["TW", "wt_in"]
+    for col in ("burst_next_psig", "safe_next_psig", "erf_next", "fpr_next"):
+        assert np.isfinite(f.loc["LO", col]) and np.isfinite(f.loc["HI", col]), col
+        assert math.isnan(f.loc["TW", col]), col
+
+
+def test_next_assessment_exactly_at_the_wall_is_blank(settings, monkeypatch):
+    # depth_next_in == wt_in exactly counts as through the wall; 0.80 t exactly is flagged
+    rep = settings.model_copy(update={"strength": settings.strength.model_copy(update={"depth_basis": "reported"})})
+    f = _by_id(_run([_g("W", 500.0, d_curr=100.0, gov=0.0), _g("E", 600.0, d_curr=80.0, gov=0.0)], rep))
+    assert f.loc["W", "depth_next_in"] == f.loc["W", "wt_in"] and math.isnan(f.loc["W", "fpr_next"])
+    assert f.loc["E", "exceeds_80pct_next"] and np.isfinite(f.loc["E", "fpr_next"])
+
+
 def test_exceeds_80pct_uses_assessed_unclipped_dt(settings):
     rep = settings.model_copy(update={"strength": settings.strength.model_copy(update={"depth_basis": "reported"})})
     f = _by_id(_run([_g("A", 500.0, d_curr=79.9), _g("B", 600.0, d_curr=80.0), _g("C", 700.0, d_curr=120.0)], rep))
@@ -568,5 +589,7 @@ def test_rl_table_new_columns(synth_pipeline, tmp_path):
     f.to_csv(path, index=False, lineterminator="\n")
     back = rl_mod.load_remaining_life_table(path)
     assert [x for x in back.failure_mode] == [None if x is None else x for x in f.failure_mode]
+    assert back.exceeds_80pct_next.tolist() == f.exceeds_80pct_next.tolist()
+    assert set(back.exceeds_80pct_next) <= {True, False}
     for c in ("tau_80_date", "tau_burst_date", "tau_safe_date"):
         assert [x for x in back[c]] == list(f[c])

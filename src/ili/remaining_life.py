@@ -332,10 +332,12 @@ RL_FEATURE_COLUMNS = [
     "tau_safe_date", "rl_yr", "rl_governing", "failure_mode",
     "rl_upper_bound_yr", "rl_factor", "rl_factored_yr", "repair_by_date",
     "next_assessment_date", "next_assessment_source", "years_to_next_assessment",
-    "depth_next_in", "depth_next_pct", "burst_next_psig", "safe_next_psig", "erf_next", "fpr_next",
-    "dig_required_by_remaining_life",
+    "depth_next_in", "depth_next_pct", "exceeds_80pct_next", "burst_next_psig", "safe_next_psig", "erf_next",
+    "fpr_next", "dig_required_by_remaining_life",
     "needs_review", "review_reasons",
 ]
+# strength_at keys blanked (NaN) where the depth projected to the next assessment reaches the wall
+NEXT_PRESSURE_KEYS = ("burst_psig", "safe_psig", "erf", "fpr")
 INTERVAL_COLUMNS = [
     "segment_id", "could_affect_hca", "n_features", "n_rl_not_evaluated", "min_rl_factored_yr",
     "regulatory_max_yr", "recommended_interval_yr", "governing_match_id", "needs_review",
@@ -582,6 +584,10 @@ def compute_remaining_life(growth: pd.DataFrame, curr_run_date, pipe: pd.DataFra
       next assessment by ``next_assessment``; years to it = days / 365.25.
     - ``rl_upper_bound_yr`` (``rl_upper_bound``): RL when finite, else the smallest finite criterion
       time, NaN when there is none.
+    - ``_next`` columns: ``strength_at`` the years to the next assessment (depth projected linearly from the
+      assessed depth). ``exceeds_80pct_next`` is depth_next_in >= 0.80 wt_in (False for NaN); where
+      depth_next_in >= wt_in (through the wall) ``burst_next_psig``, ``safe_next_psig``, ``erf_next`` and
+      ``fpr_next`` are NaN, as a pressure for a through-wall pit is not meaningful.
     - ``dig_required_by_remaining_life`` = rl_factored < years to next assessment; for a NaN RL,
       rl_upper_bound x rl_factor < years to next assessment (the true RL can only be smaller, so a dig
       the bound proves is never dropped); False for a NaN RL without a bound. A NaN-RL row is flagged
@@ -654,6 +660,10 @@ def compute_remaining_life(growth: pd.DataFrame, curr_run_date, pipe: pd.DataFra
     nxt_str = strength_at(years_next, d_as, l_as, g_inyr, gl_inyr, od, wt, smys, mop_psig, settings)
     with np.errstate(invalid="ignore", divide="ignore"):
         depth_next_pct = nxt_str["depth_in"] / wt * 100.0
+        exceeds_next = np.asarray(exceeds_wall_loss_limit(nxt_str["depth_in"], wt), dtype=bool)
+        through_wall = nxt_str["depth_in"] >= wt  # False for NaN
+    for key in NEXT_PRESSURE_KEYS:  # a pressure for a pit projected through the wall is not meaningful
+        nxt_str[key] = np.where(through_wall, np.nan, nxt_str[key])
 
     m6_flags = {"rl_not_evaluated": np.isnan(rl_yr), "exceeds_80pct": exceeds,
                 "no_segment": np.array([s is None for s in seg_id], dtype=bool)}
@@ -684,7 +694,7 @@ def compute_remaining_life(growth: pd.DataFrame, curr_run_date, pipe: pd.DataFra
         "repair_by_date": obj(repair_by(run_date, x) for x in rl_factored),
         "next_assessment_date": obj(d for d, _ in nxt), "next_assessment_source": obj(s for _, s in nxt),
         "years_to_next_assessment": years_next,
-        "depth_next_in": nxt_str["depth_in"], "depth_next_pct": depth_next_pct,
+        "depth_next_in": nxt_str["depth_in"], "depth_next_pct": depth_next_pct, "exceeds_80pct_next": exceeds_next,
         "burst_next_psig": nxt_str["burst_psig"], "safe_next_psig": nxt_str["safe_psig"],
         "erf_next": nxt_str["erf"], "fpr_next": nxt_str["fpr"], "dig_required_by_remaining_life": dig,
         "needs_review": needs_review, "review_reasons": obj(reasons),
@@ -715,7 +725,8 @@ def write_remaining_life(result: RLResult, out_dir: Path) -> dict[str, Path]:
 
 _RL_TEXT = ("match_id", "curr_feature_id", "segment_id", "method", "rl_governing", "next_assessment_source",
             "review_reasons", "failure_mode")
-_RL_FLAGS = ("could_affect_hca", "exceeds_80pct", "dig_required_by_remaining_life", "needs_review")
+_RL_FLAGS = ("could_affect_hca", "exceeds_80pct", "exceeds_80pct_next", "dig_required_by_remaining_life",
+             "needs_review")
 _RL_DATES = ("repair_by_date", "next_assessment_date", "tau_80_date", "tau_burst_date", "tau_safe_date")
 
 

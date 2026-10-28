@@ -309,6 +309,14 @@ def test_methods_lists_new_formulas(report):
     assert "MOP · D / (2 · t · SMYS)" in text
 
 
+def test_methods_states_the_next_assessment_projection_rules(report):
+    _, _, html = report
+    text = _section_text(html, "methods")
+    assert "exceeds_80pct_next when depth(τ_next) ≥ 0.80·t" in text
+    assert ("burst_next_psig, safe_next_psig, erf_next and fpr_next are blank where depth(τ_next) ≥ t (projected "
+            "through the wall)") in text
+
+
 def test_missing_pct_negative_raw_is_not_available(report):
     inputs, changes, html = report
     assert re.search(r"Negative raw growth rates: [0-9.]+ % of matched features", _section_text(html, "growth"))
