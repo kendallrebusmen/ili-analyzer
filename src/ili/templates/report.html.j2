@@ -391,7 +391,7 @@ criterion is already met at τ = 0.</p>
 (missing dates: config defaults, HCA 5 years not to exceed 68 months, non-HCA 10 years)</td></tr>
 <tr><td>Reinspection interval</td><td>min over the segment's features of RL × rl_factor, capped at the regulatory maximum</td></tr>
 <tr><td>Condition dates</td><td>tau_80_date, tau_burst_date, tau_safe_date = run_date + ⌊τ·365.25⌋ days (rounded down, never a day late); blank when τ is NaN or the criterion is not met within horizon_yr</td></tr>
-<tr><td>Next-assessment projection</td><td>depth, pressures, ERF and FPR at τ_next, the years to the segment's next assessment, projected from the assessed depth (reported + tolerance under the default <code>reported_plus_tolerance</code> basis), not the reported depth;exceeds_80pct_next when depth(τ_next) ≥ 0.80·t (values kept, flagged); burst_next_psig, safe_next_psig, erf_next and fpr_next are blank where depth(τ_next) ≥ t (projected through the wall), as a pressure for a through-wall pit is not meaningful</td></tr>
+<tr><td>Next-assessment projection</td><td>depth, pressures, ERF and FPR at τ_next, the years to the segment's next assessment, projected from the assessed depth (reported + tolerance under the default <code>reported_plus_tolerance</code> basis), not the reported depth; exceeds_80pct_next when depth(τ_next) ≥ 0.80·t (values kept, flagged); burst_next_psig, safe_next_psig, erf_next and fpr_next are blank where depth(τ_next) ≥ t (projected through the wall), as a pressure for a through-wall pit is not meaningful</td></tr>
 </tbody></table></div>
 
 <p><strong>Pipe summary</strong> (spec 6.10, item 1): design pressure and operating stress.</p>
