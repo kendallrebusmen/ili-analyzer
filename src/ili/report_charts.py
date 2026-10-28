@@ -25,6 +25,8 @@ DEPTH_MARKER_MIN_PX = 4  # marker diameter at 0 % wall, and for a feature withou
 DEPTH_MARKER_MAX_PX = 16  # marker diameter at DEPTH_MARKER_FULL_PCT
 DEPTH_MARKER_FULL_PCT = 100.0  # depth (% wall) drawn at the largest marker; deeper features are clipped to it
 MINUTES_PER_HOUR = 60.0
+CLOCK_HOURS = tuple(range(13))  # tick values 0..12; 0 and 12 are both the 12 o'clock position
+CLOCK_LABELS = tuple(f"{h or 12}:00" for h in CLOCK_HOURS)
 TEMPLATE = "simple_white"
 
 DEPTH_AXIS = "Depth (% wall)"
@@ -157,7 +159,7 @@ def orientation_charts(inputs: ReportInputs) -> dict[str, go.Figure]:
                                      mode="markers", name=str(run_id),
                                      marker={"size": _depth_marker_sizes(rows.depth_pct), "color": colour,
                                              "line": MARKER_LINE, "opacity": 0.7}))
-        fig.update_yaxes(range=[12, 0], dtick=1)
+        fig.update_yaxes(range=[12, 0], tickvals=list(CLOCK_HOURS), ticktext=list(CLOCK_LABELS))
         figures[key] = fig
     return figures
 

@@ -147,7 +147,8 @@ def test_orientation_charts_one_per_category(built):  # noqa: F811
 def _tiny(**cols):
     base = {"feature_type": "metal_loss", "surface": "EXT", "ml_origin": "corrosion", "log_dist_ft": 100.0,
             "clock_min": 360.0, "depth_pct": 50.0, "elev_ft": 10.0}
-    return pd.DataFrame([{**base, **{k: v[i] for k, v in cols.items()}} for i in range(len(next(iter(cols.values()))))])
+    n = len(next(iter(cols.values())))
+    return pd.DataFrame([{**base, **{k: v[i] for k, v in cols.items()}} for i in range(n)])
 
 
 def test_clock_hours(built):  # noqa: F811
@@ -180,3 +181,13 @@ def test_elevation_marks_internal_metal_loss(built):  # noqa: F811
     ml = inputs.curr_std[(inputs.curr_std.feature_type == "metal_loss") & (inputs.curr_std.surface == "INT")
                          & inputs.curr_std.elev_ft.notna()]
     assert len(marks.x) == len(ml) > 0
+
+
+def test_orientation_axis_labels_put_12_at_top(built):  # noqa: F811
+    inputs = _load(built)
+    for fig in report_charts.orientation_charts(inputs).values():
+        axis = fig.layout.yaxis
+        assert tuple(axis.range) == (12, 0)  # reversed: the first tick is drawn at the top
+        labels = dict(zip(axis.tickvals, axis.ticktext, strict=True))
+        assert labels[0] == "12:00" and labels[12] == "12:00" and labels[6] == "6:00" and labels[1] == "1:00"
+        assert len(labels) == 13
