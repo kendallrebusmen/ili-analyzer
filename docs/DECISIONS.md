@@ -550,3 +550,35 @@ Builds the spec amendment above on synthetic data. Defaults are unchanged: with 
   overlaps, dates).
 - `app_setup_tables.py` holds the table definitions (columns, kinds, required columns, headings with units) and
   the clean, seed and write functions, tested without the app.
+
+## Real data: ROSEN tallies for Line 930 (2026-10-28)
+
+- **Approval.** The user gave the two ROSEN pipe tallies of Line 930 (2020 and 2026 runs) and asked to run the
+  analysis: the spec Section 2 approval for real data, for this line. The tallies and every output stay in
+  git-ignored folders (`data/raw/`, `outputs/`). No value from them is written into the repo; only the vendor
+  maps, which hold column names and vocabulary, are committed.
+- **Ingest options for real exports** (vendor map, all off by default, so existing maps are unchanged):
+  - `file.format: xls` (read with `xlrd`; `xlwt` is pinned for the tests only);
+  - `file.skip_rows` (a units row under the header);
+  - `clock_format: day_fraction` (an Excel time: 0.125 = 3:00; a time past 13 h is kept for validation to report,
+    as for decimal hours);
+  - `negate` (ROSEN writes "to u/s weld" as a negative distance);
+  - `fill_down` (the older layout gives joint number, length and wall only on the weld rows);
+  - `feature_id_from_row` (the older layout has no feature id: each feature is `row-<n>` of the vendor file, so it
+    can be traced back).
+- **ROSEN vocabulary choices** (`rosen_tally_xlsx.yaml`, `rosen_tally_xls.yaml`):
+  - **Clusters.** Vendor "Cluster" rows are boxes around pits that are also listed one by one, so they are read
+    as `other`, and the matcher forms its own clusters. Counting both would double the metal loss.
+  - **Origin.** "Metal Loss-Manufacturing Anomaly" is metal loss of manufacturing origin.
+  - **Surface.** "Not Applicable" / "N/A" surface is `UNK`.
+  - **Anchors.** Taps and flanges are fittings, so they serve as alignment anchors; an anchor with no partner is
+    skipped.
+  - **Other events.** Bends, supports and area markers are `other`.
+  - **Dent depth.** It is given as % OD reduction, which the schema does not hold, so it is not mapped. A dent's
+    depth rules are then not evaluable and the dent is flagged for review.
+- **First-pass reference data** is built from the current tally's weld rows (OD, wall, SMYS, MOP per joint), in
+  `data/raw/l930/reference/`. Three values are not in the tally and are placeholders for the user to confirm:
+  - **Install year:** it only decides that the pipe predates the previous run, and feeds the half-life and
+    whole-life rates.
+  - **HCA:** one segment over the whole line that could affect an HCA (the conservative choice).
+  - **Next inspection:** no planned date, so the default interval applies.

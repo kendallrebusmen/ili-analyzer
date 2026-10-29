@@ -1,0 +1,81 @@
+# Vendor map: ROSEN pipe tally, Excel (.xlsx) layout of the 2026 final report ("Pipe Tally Version 2.0").
+# Header on row 9. Clock positions are Excel times (fractions of a day). "to u/s w." is written as a negative distance.
+# Vendor "Cluster" rows are boxes drawn around pits that are also listed one by one, so they are read as "other"
+# (the matcher builds its own clusters). Dent depth is given as % OD reduction, which the schema does not hold, so it
+# is not mapped. Give the run date at ingestion (the date cell is an Excel serial number).
+
+vendor: rosen_tally_xlsx
+run_label: rosen
+
+file:
+  format: excel
+  header_row: 9
+
+run_date: null
+
+columns:
+  feature_id: "Item Number"
+  feature_type: "Event"
+  log_dist_ft: "Log. Dist [ft]"
+  us_gw_id: "J. no."
+  dist_from_us_gw_ft: "to u/s w. [ft]"
+  joint_length_ft: "J. len [ft]"
+  wt_nom_in: "t [in]"
+  depth_pct: "Metal Loss Depth [%]"
+  length_in: "Length [in]"
+  width_in: "Width [in]"
+  clock_min: "O'Clock"
+  surface: "Surface Location"
+  lat: "Latitude [DDD]"
+  lon: "Longitude [DDD]"
+  elev_ft: "Height [ft]"
+  comments: "Comment"
+
+units:
+  distance: ft
+  wall: in
+  size: in
+  dent_depth: in
+  elevation: ft
+
+clock_format: day_fraction
+negate: [dist_from_us_gw_ft]
+
+feature_types:
+  "Girth Weld": girth_weld
+  "Metal Loss-Corrosion": metal_loss
+  "Metal Loss-Manufacturing Anomaly": metal_loss
+  "Deformation Anomaly-Dent": dent
+  "Valve": valve
+  "Tee": tee
+  "Tap": fitting
+  "Flange": fitting
+  "Above Ground Marker": marker
+  "Magnet": marker
+  "Area Start Casing": casing
+  "Area End Casing": casing
+  "Cluster": other
+  "Support": other
+  "Bend": other
+  "Extra Metal": other
+  "Area Start Launch": other
+  "Area End Launch": other
+  "Area End Receiver": other
+  "Area Start Missing Data": other
+  "Area End Missing Data": other
+  "Area Start Installation": other
+  "Area End Installation": other
+  "Area Start Composite Wrap": other
+  "Area End Composite Wrap": other
+
+ml_origins:
+  "Metal Loss-Corrosion": corrosion
+  "Metal Loss-Manufacturing Anomaly": manufacturing
+
+surfaces:
+  "Internal": INT
+  "External": EXT
+  "Not Applicable": UNK
+
+true_values: ["Yes"]
+false_values: ["No"]

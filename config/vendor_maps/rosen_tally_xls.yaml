@@ -1,0 +1,81 @@
+# Vendor map: ROSEN pipe tally, older Excel (.xls) layout of the 2020 final report.
+# Header on row 11 with a units row under it. There is no feature id column, so each feature is named by its row in
+# the vendor file ("row-<n>"). Joint number, length and wall are written only on the girth-weld rows, so they are
+# carried down to the features of each joint. "to u/s w." is written as a negative distance. Clock positions are
+# Excel times, read as h:mm. Vendor "cluster" rows are read as "other" (see rosen_tally_xlsx.yaml). Give the run
+# date at ingestion.
+
+vendor: rosen_tally_xls
+run_label: rosen
+
+file:
+  format: xls
+  header_row: 11
+  skip_rows: 1
+
+run_date: null
+
+columns:
+  feature_type: "event"
+  log_dist_ft: "log dist."
+  us_gw_id: "J. no."
+  dist_from_us_gw_ft: "to u/s w."
+  joint_length_ft: "J. len"
+  wt_nom_in: "WT"
+  depth_pct: "depth"
+  length_in: "length"
+  width_in: "width"
+  clock_min: "o'clock"
+  surface: "internal"
+  lat: "Latitude"
+  lon: "Longitude"
+  elev_ft: "Height"
+  comments: "comment"
+
+units:
+  distance: ft
+  wall: in
+  size: in
+  dent_depth: in
+  elevation: ft
+
+clock_format: hhmm
+negate: [dist_from_us_gw_ft]
+fill_down: [us_gw_id, joint_length_ft, wt_nom_in]
+feature_id_from_row: true
+
+feature_types:
+  "Girth Weld": girth_weld
+  "metal loss corrosion": metal_loss
+  "metal loss manufacturing anomaly": metal_loss
+  "Valve": valve
+  "Tee": tee
+  "Tap": fitting
+  "Flange": fitting
+  "AGM": marker
+  "Magnet": marker
+  "PigSignal": marker
+  "Area Start Casing": casing
+  "Area End Casing": casing
+  "cluster": other
+  "Support": other
+  "Bend": other
+  "Area Start Launcher": other
+  "Area End Launcher": other
+  "Area End Receiver": other
+  "Area Start Installation": other
+  "Area End Installation": other
+  "Area Start Attachment": other
+  "Area End Attachment": other
+
+ml_origins:
+  "metal loss corrosion": corrosion
+  "metal loss manufacturing anomaly": manufacturing
+
+surfaces:
+  "INT": INT
+  "EXT": EXT
+  "N/A": UNK                # the manufacturing anomalies
+
+true_values: ["Yes"]
+false_values: ["No"]

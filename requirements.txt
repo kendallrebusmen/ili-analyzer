@@ -11,3 +11,5 @@ PyYAML==6.0.3
 reportlab==5.1.0
 scipy==1.18.1
 streamlit==1.66.1
+xlrd==2.0.2
+xlwt==1.3.0
