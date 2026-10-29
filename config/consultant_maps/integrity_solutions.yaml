@@ -1,0 +1,30 @@
+consultant: integrity_solutions
+anomalies:
+  sheet: Classified_Anomalies
+  header_row: 1
+  category_column: "Feature Category"
+  anomaly_category: Volumetric
+  columns:
+    feature_id: "Feature ID"
+    log_dist_ft: "Odometer (ft)"
+    joint_id: "Joint Number"
+    depth_pct: "Metal Loss Depth (%)"
+    prev_depth_pct: "Prev. Anomaly Depth (%)"
+    rate_mpy: "Corrosion Growth Rate (MPY)"
+    rate_source: "Growth Rate Source"
+    erf: "ERF"
+    rl_yr: "Remaining Life (Years)"
+    vendor_type: "Vendor Anomaly Type"
+  rate_sources:
+    "Pit to Pit Minimum": raw
+    "Fixed Growth Rate": shrinking_fixed
+    "Nth Percentile per Joint": joint_percentile
+    "Percent Life": half_life
+  box_types: ["Cluster"]
+imp_summary:
+  sheet: IM Summary
+  header_row: 1
+  columns: {imp_class: "IMP_ Classification", n_classified: "Classified Anomalies",
+            n_previously_repaired: "Previously Repaired", n_unrepaired: "Remaining Unrepaired Anomalies"}
+  classes: {"Immediate": "Immediate", "60-day": "60-day", "180-day": "180-day",
+            "YTC < 5 yrs": "YTC < 5 yrs", "None": "None"}
