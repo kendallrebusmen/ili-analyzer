@@ -19,7 +19,7 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
-from ili.classify import CATEGORY_PRIORITY, RL_INPUT_COLUMNS, classify, feature_variables
+from ili.classify import CATEGORY_PRIORITY, REMOVED_CATEGORY, RL_INPUT_COLUMNS, classify, feature_variables
 from ili.config import RepairCriteria, Settings
 from ili.reference import _require_columns, lookup
 from ili.remaining_life import MOP_WHAT, PIPE_WHAT, usable_inputs
@@ -117,6 +117,15 @@ def _rule_category(category: str) -> str:
     return "evaluate" if category == "imp_scheduled" else category
 
 
+def _moved_more_severe(prev_category: str, curr_category: str) -> bool:
+    """True when the current rule category ranks above the previous in ``CATEGORY_PRIORITY``. A ``removed``
+    feature (either side) is out of the ranking: never moved."""
+    if REMOVED_CATEGORY in (prev_category, curr_category):
+        return False
+    rank = {c: k for k, c in enumerate(CATEGORY_PRIORITY)}
+    return rank[curr_category] < rank[prev_category]
+
+
 def category_changes(match_table: pd.DataFrame, remaining_life: pd.DataFrame, classification: pd.DataFrame,
                      curr_std: pd.DataFrame, pipe: pd.DataFrame, mop: pd.DataFrame, segments: pd.DataFrame,
                      crossings: pd.DataFrame | None, settings: Settings, criteria: RepairCriteria,
@@ -140,7 +149,6 @@ def category_changes(match_table: pd.DataFrame, remaining_life: pd.DataFrame, cl
     previous = classify(prev_vars, criteria, settings, prev_run_date).table
     prev_by_id = previous.set_index("match_id")
     orig = prev_rows.set_index("match_id")
-    rank = {c: k for k, c in enumerate(CATEGORY_PRIORITY)}
     rows = []
     for c in classification.itertuples(index=False):
         if c.match_id not in prev_by_id.index:
@@ -157,7 +165,7 @@ def category_changes(match_table: pd.DataFrame, remaining_life: pd.DataFrame, cl
             "prev_rules_not_evaluable": p.rules_not_evaluable, "curr_rule_category": curr_cat,
             "curr_governing_category": c.governing_category, "curr_governing_rule": c.governing_rule,
             "curr_rules_not_evaluable": c.rules_not_evaluable,
-            "moved_more_severe": rank[curr_cat] < rank[prev_cat],
+            "moved_more_severe": _moved_more_severe(prev_cat, curr_cat),
         })
     table = pd.DataFrame(rows, columns=CHANGE_COLUMNS)
     table["moved_more_severe"] = table.moved_more_severe.astype(bool)

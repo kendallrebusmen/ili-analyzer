@@ -582,3 +582,24 @@ Builds the spec amendment above on synthetic data. Defaults are unchanged: with 
     whole-life rates.
   - **HCA:** one segment over the whole line that could affect an HCA (the conservative choice).
   - **Next inspection:** no planned date, so the default interval applies.
+
+## Features removed after the inspection (2026-10-29)
+
+- **Why.** On Line 930 the 2026 run went through a flawed validation spool (joint 940.11) whose manufactured
+  defects ROSEN reported as metal loss and a dent. The spool was removed from the pipeline after the run, so those
+  features must not be on the dig list. The user asked for them to be taken out.
+- **How: a manual flag, not a data edit.** `removed_after_run` joins `manual_immediate` and `field_crack_confirmed`
+  in the flag log (`feature_flags.csv`), so each removal records who set it, when and why (the note), and can be
+  cleared by a later row. The tally is not edited and the feature stays in every stage up to classification.
+- **Classification.** A flagged feature (any member of a cluster) governs as `removed` (rule
+  `REMOVED_AFTER_RUN`), outranking every rule: no due date, no worst case, no review reasons, action note
+  "Removed from the pipeline after the inspection". The rules are still evaluated and their results kept
+  (`triggered_rules`, `rules_not_evaluable`). `removed` is not in `CATEGORY_PRIORITY`; the summary counts it after
+  the ranked categories.
+- **Report.** Not on the dig list (not in `DIG_LIST_CATEGORIES`); not counted in "digs driven by remaining life";
+  listed in "Removed after the inspection" (HTML and PDF) with the flag id, reviewer and note. In the IMP class
+  summary a removed feature keeps the class its remaining life gives and counts as previously repaired, as the
+  consultant's IM summary does. Without a repairs table, the repaired columns then count the removals only.
+- **Category changes.** A removed feature is never "moved to a more severe category".
+- **Not a repair record.** A removal after the run is not a `repairs_between_runs.csv` row: that table describes
+  the pipe between the two runs and steers weld alignment.

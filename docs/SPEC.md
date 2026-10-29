@@ -377,6 +377,10 @@ A rule engine reads `repair_criteria.yaml`. It evaluates rules at the current co
 
 - Any other condition gets `evaluate`, per (h)(4)(iv).
 - Features flagged by remaining life get `imp_scheduled`.
+- Features flagged `removed_after_run` (a manual flag: the pipe that held them was taken out of the line after the
+  inspection, e.g. a temporary or validation spool) get `removed`, whatever their rules say. A removed feature has no
+  due date, needs no review and is not on the dig list. Its rule results stay in `classification.csv`, and the
+  report lists it with the flag's reviewer and note.
 
 **IMP class summary** (the consultant's layout). The report has a table with one row per class:
 
@@ -384,7 +388,7 @@ A rule engine reads `repair_criteria.yaml`. It evaluates rules at the current co
 - YTC < N yrs: features with no repair category whose remaining life is under `ytc_flag_years` (years to condition);
 - None: every other feature.
 
-Each row gives the number of classified anomalies, how many were previously repaired (inside any repair in `repairs_between_runs.csv`), and how many remain unrepaired. The table is a summary view only; the categories above still drive due dates.
+Each row gives the number of classified anomalies, how many were previously repaired (inside any repair in `repairs_between_runs.csv`, or removed after the inspection), and how many remain unrepaired. The table is a summary view only; the categories above still drive due dates.
 
 **Non-HCA segments:** remediation falls under 195.401(b), via 195.416(g). Provide a separate rule set in config with operator-defined criteria and timelines from the IMP (`PLACEHOLDER`).
 

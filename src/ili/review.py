@@ -29,7 +29,7 @@ import pandas as pd
 REVIEWS_FILE = "reviews.csv"
 FLAGS_FILE = "feature_flags.csv"
 DECISIONS = ("accept", "reject", "manual")
-FLAG_NAMES = ("manual_immediate", "field_crack_confirmed")
+FLAG_NAMES = ("manual_immediate", "field_crack_confirmed", "removed_after_run")
 REVIEW_COLUMNS = ["decision_id", "decision", "prev_feature_ids", "curr_feature_ids", "reviewer", "decided_utc",
                   "note"]
 FLAG_COLUMNS = ["flag_id", "curr_feature_id", "flag", "value", "reviewer", "decided_utc", "note"]

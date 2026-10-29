@@ -85,7 +85,7 @@ HEADINGS = {  # printed headings for columns that appear in several tables
 }
 CATEGORY_COLUMNS = ("governing_category", "category")
 CATEGORY_LABELS = {"immediate": "Immediate", "60_day": "60-day", "180_day": "180-day",
-                   "imp_scheduled": "IMP scheduled", "evaluate": "Evaluate"}
+                   "imp_scheduled": "IMP scheduled", "evaluate": "Evaluate", "removed": "Removed"}
 COLUMN_DECIMALS = {  # printed decimals; the CSV and Excel outputs keep full precision
     "curr_log_dist_ft": 1, "start_ft": 1, "end_ft": 1, "depth_pct_assessed": 1, "max_depth_pct": 1,
     "governing_mpy": 1, "p_fail": 0, "mop_local": 0, "erf": 2, "fpr": 2, "erf_next": 2, "rl_yr": 1,
@@ -544,6 +544,15 @@ def _dig_list(styles, ctx: dict, landscape_width: float) -> list:
     story += _table(styles, counts, landscape_width * 0.3)
     story.append(Spacer(1, 8))
     story += _dig_table(styles, _dig_rows(ctx["dig_list"], REPAIR_CATEGORIES), landscape_width)
+    removed = ctx["summary"]["removed"]
+    if removed.rows:
+        story.append(Spacer(1, 8))
+        story.append(Paragraph("Removed after the inspection", styles["h2"]))
+        story.append(Paragraph(_text(
+            f"{len(removed.rows)} feature(s) are flagged removed_after_run: the pipe that held them was taken out of "
+            "the line after the inspection. They have no repair category or due date and are not on the dig list."),
+            styles["body"]))
+        story += _table(styles, removed, landscape_width)
     story.append(NextPageTemplate("portrait"))
     return story
 

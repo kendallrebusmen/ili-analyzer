@@ -43,4 +43,5 @@ VARIABLES: dict[str, str] = {
     "dig_required_by_remaining_life": "remaining-life analysis requires an excavation within the horizon (boolean)",
     "manual_immediate": "designated evaluator flagged the anomaly as requiring immediate action (manual entry, boolean)",
     "field_crack_confirmed": "potential crack indication confirmed as a crack at excavation (field entry, boolean)",
+    "removed_after_run": "the pipe holding the anomaly was removed from the pipeline after the inspection (manual entry, boolean)",
 }
