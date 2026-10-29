@@ -141,13 +141,20 @@ def _go(page: str) -> None:
 
 def _kpi(label: str, value: str, note: str, alert: bool) -> str:
     cls = "nemi-kpi nemi-kpi--alert" if alert else "nemi-kpi"
-    return f'<div class="{cls}">{escape(label)}<strong>{escape(value)}</strong>{escape(note)}</div>'
+    return (f'<div class="{cls}"><span class="nemi-kpi-label">{escape(label)}</span><strong>{escape(value)}</strong>'
+            f'<span class="nemi-kpi-note">{escape(note)}</span></div>')
 
 
-def _count_card(label: str, n: int | None) -> str:
+def _count_card(label: str, n: int | None, note: str) -> str:
     if n is None:
         return _kpi(label, "—", "not run", False)
-    return _kpi(label, str(n), "features", n > 0)
+    return _kpi(label, str(n), note, n > 0)
+
+
+def _attention_html(item: Attention) -> str:
+    return (f'<div class="nemi-attn"><span class="nemi-attn-dot nemi-attn-dot--{item.level}"></span>'
+            f'<div><strong>{escape(item.title)}</strong>'
+            f'<span class="nemi-attn-detail">{escape(item.detail)}</span></div></div>')
 
 
 def _years(v: float | None) -> str:
@@ -165,28 +172,29 @@ def home_page() -> None:
             st.write("Choose the two inspections and run the pipeline to see the repair conditions here.")
             st.button("Start with Run setup", on_click=_go, args=("Run setup",))
         return
-    st.markdown("**Repair conditions**")
-    cards = [_count_card(label, view.counts[key]) for label, key in
-             (("Immediate", "immediate"), ("60-day", "60_day"), ("180-day", "180_day"),
-              ("Scheduled by life", "imp_scheduled"))]
+    st.markdown('<div class="nemi-section-title">Repair conditions</div>', unsafe_allow_html=True)
+    cards = [_count_card(label, view.counts[key], note) for label, key, note in
+             (("Immediate", "immediate", "repair now"), ("60-day", "60_day", "from discovery"),
+              ("180-day", "180_day", "from discovery"), ("Scheduled by life", "imp_scheduled", "IMP scheduled"))]
     factored = "not run" if view.min_rl_yr is None else f"factored {_years(view.min_rl_factored_yr)}"
     cards.append(_kpi("Shortest remaining life", _years(view.min_rl_yr), factored, False))
     for col, card in zip(st.columns(5), cards):
         col.markdown(card, unsafe_allow_html=True)
-    left, right = st.columns([3, 2])
-    with left:
-        st.markdown("**Needs your attention**")
+    left, right = st.columns([3, 2], gap="medium")
+    with left, st.container(border=True, key="home_card_attention"):
+        st.markdown('<div class="nemi-card-title">Needs your attention</div>', unsafe_allow_html=True)
         if not view.attention:
-            st.write("Nothing needs your attention.")
+            st.markdown('<div class="nemi-attn-detail">Nothing needs your attention.</div>', unsafe_allow_html=True)
         for i, item in enumerate(view.attention):
-            st.markdown(f'<div class="nemi-attn"><span class="nemi-attn-dot nemi-attn-dot--{item.level}"></span>'
-                        f'<div><strong>{escape(item.title)}</strong><br>{escape(item.detail)}</div></div>',
-                        unsafe_allow_html=True)
-            if item.target:
-                st.button(f"Go to {app_theme.nav_label_text(item.target)}", key=f"attn_{i}", on_click=_go,
-                          args=(item.target,))
-    with right:
-        st.markdown("**Run facts**")
+            with st.container(key=f"home_attn_row_{i}"):
+                text, action = st.columns([4, 1.3], vertical_alignment="center")
+                text.markdown(_attention_html(item), unsafe_allow_html=True)
+                if item.target:
+                    action.button(app_theme.nav_label_text(item.target), key=f"attn_{i}", on_click=_go,
+                                  args=(item.target,), width="stretch",
+                                  help=f"Go to {app_theme.nav_label_text(item.target)}")
+    with right, st.container(border=True, key="home_card_facts"):
+        st.markdown('<div class="nemi-card-title">Run facts</div>', unsafe_allow_html=True)
         cells = "".join(f'<div>{escape(label)}<strong class="nemi-truncate">{escape(value)}</strong></div>'
                         for label, value in view.facts)
         st.markdown(f'<div class="nemi-facts">{cells}</div>', unsafe_allow_html=True)

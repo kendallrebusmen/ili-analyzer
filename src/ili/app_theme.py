@@ -96,14 +96,26 @@ h1, h2, h3 {{ color: var(--nemi-ink); letter-spacing: 0; }}
 /* KPI tiles; the alert variant is for a repair count above 0 */
 .nemi-kpi {{ background: var(--nemi-surface); border: 1px solid var(--nemi-line); border-radius: 8px;
   padding: 14px 18px; color: var(--nemi-muted); font-size: 13px; }}
-.nemi-kpi strong {{ display: block; color: var(--nemi-ink); font-size: 30px; font-weight: 700; line-height: 1.2; }}
+.nemi-kpi strong {{ display: block; color: var(--nemi-ink); font-size: 30px; font-weight: 700; line-height: 1.2;
+  margin: 2px 0; }}
+.nemi-kpi-label, .nemi-kpi-note {{ display: block; }}
+.nemi-kpi-note {{ font-size: 12.5px; }}
 .nemi-kpi--alert {{ background: var(--nemi-danger-soft); border-color: var(--nemi-danger);
   color: var(--nemi-danger); }}
 .nemi-kpi--alert strong {{ color: var(--nemi-danger); }}
 
-/* Needs-attention list */
-.nemi-attn {{ display: flex; align-items: center; gap: 10px; padding: 9px 0; color: var(--nemi-ink);
-  border-bottom: 1px solid var(--nemi-line); font-size: 14px; }}
+/* Home section and card titles */
+.nemi-section-title {{ font-size: 13px; font-weight: 600; color: var(--nemi-muted); text-transform: uppercase;
+  letter-spacing: 0.6px; margin: 4px 0 8px; }}
+.nemi-card-title {{ font-size: 16px; font-weight: 600; color: var(--nemi-ink); margin: 0 0 4px; }}
+
+/* Needs-attention list: dot, bold title, muted detail */
+.nemi-attn {{ display: flex; align-items: center; gap: 12px; padding: 6px 0; color: var(--nemi-ink);
+  font-size: 14.5px; }}
+.nemi-attn-detail {{ display: block; color: var(--nemi-muted); font-size: 13px; font-weight: 400; }}
+[class*="st-key-home_attn_row_"] {{ border-top: 1px solid var(--nemi-line); padding-top: 6px; }}
+/* Breathing room between the repair-condition tiles and the two Home cards below them */
+.st-key-home_card_attention, .st-key-home_card_facts {{ margin-top: 24px; }}
 .nemi-attn-dot {{ flex: none; width: 9px; height: 9px; border-radius: 50%; background: var(--nemi-muted); }}
 .nemi-attn-dot--warn {{ background: var(--nemi-warning-ink); }}
 .nemi-attn-dot--info {{ background: var(--nemi-accent); }}

@@ -72,7 +72,7 @@ def test_home_page_renders_loaded(ran, tmp_path):
     assert at.radio(key="page").value == "Home"
     assert any("nemi-kpi" in m.value for m in at.markdown)
     assert any("nemi-facts" in m.value for m in at.markdown)
-    go = [b for b in at.button if b.label.startswith("Go to")]
+    go = [b for b in at.button if (b.key or "").startswith("attn_")]
     assert go
     go[0].click().run()
     assert not at.exception and at.radio(key="page").value in {"Match review queue", "Run setup",
