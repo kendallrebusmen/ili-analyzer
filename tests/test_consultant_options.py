@@ -8,6 +8,7 @@ from datetime import date
 import numpy as np
 import pandas as pd
 import pytest
+from test_growth_table import SEGS as SEGS_ANY
 from test_growth_table import _by_id, _row, _run, _with_growth
 
 from ili import growth
@@ -114,3 +115,31 @@ def test_rate_decimals_rounds_the_joint_pool(settings):
              rate_decimals=1, shrinking_rate_mpy=None)
     f = _by_id(_run(rows, s))
     assert f.loc["N1", "governing_mpy"] == pytest.approx(1.1)
+
+
+def test_age_basis_default_is_years(settings):
+    assert settings.growth.age_basis == "years"
+
+
+def test_pipe_age_by_dates(settings):
+    run_date = date(2026, 1, 19)
+    s_dates = _with_growth(settings, age_basis="dates", days_per_year=365.0)
+    assert growth.pipe_age_years(2026, np.array([1996.0]), run_date, s_dates)[0] == pytest.approx(30.0712, abs=1e-4)
+    assert growth.pipe_age_years(2026, np.array([1996.0]), run_date, settings)[0] == 30.0
+
+
+def test_half_life_uses_age_basis(settings):
+    pipe = pd.DataFrame({"start_ft": [0.0], "end_ft": [3000.0], "wt_nom_in": [0.375], "install_year": [1996]})
+    rows = [_row("N1", "new", 100.0, d_curr=13.0, wt=0.375)]
+    kw = dict(rate_decimals=1)
+    f = _by_id(growth.compute_growth(pd.DataFrame(rows), 5.0, 2021, 2026, pipe, SEGS_ANY, _pit(settings, **kw)))
+    assert f.loc["N1", "governing_mpy"] == pytest.approx(3.3)
+    s = _pit(settings, age_basis="dates", days_per_year=365.0, **kw)
+    f = _by_id(growth.compute_growth(pd.DataFrame(rows), 5.0, 2021, 2026, pipe, SEGS_ANY, s,
+                                     curr_run_date=date(2026, 1, 19)))
+    assert f.loc["N1", "governing_mpy"] == pytest.approx(3.2)
+
+
+def test_age_basis_dates_needs_run_date(settings):
+    with pytest.raises(ValueError, match="run date"):
+        _run([_row("N1", "new", 100.0, d_curr=13.0)], _with_growth(settings, age_basis="dates"))

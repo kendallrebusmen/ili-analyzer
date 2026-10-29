@@ -98,6 +98,7 @@ class GrowthCfg(_Strict):
     rate_decimals: int | None = Field(default=None, ge=0)  # round the governing rate (mpy); null: no rounding
     shrinking_applies_to: Literal["decrease", "no_increase"] = "decrease"  # no_increase: d_curr <= d_prev too
     joint_percentile_pool: Literal["raw", "assigned"] = "raw"  # assigned: matched rows' governing rates
+    age_basis: Literal["years", "dates"] = "years"  # dates: age from 1 Jan of the install year to the run date
     exclude_recoated_from_stats: bool
     length_growth: Literal["none", "proportional", "fixed_rate"]
     length_rate_ipy: float

@@ -17,6 +17,7 @@ import argparse
 import json
 import sys
 from dataclasses import dataclass
+from datetime import date
 from functools import reduce
 from pathlib import Path
 from typing import get_args
@@ -68,19 +69,37 @@ def new_feature_rate(d_curr_in, wt_in, dt_yr, settings: Settings):
     return (np.asarray(d_curr_in, dtype=float) - floor_in) * MILS_PER_IN / np.asarray(dt_yr, dtype=float)
 
 
-def full_life_rate(d_curr_in, curr_year, install_year):
-    """Rate in mpy = d_curr * 1000 / (curr_year - install_year); NaN if the age is <= 0 or unknown."""
-    age = np.asarray(curr_year, dtype=float) - np.asarray(install_year, dtype=float)
+def pipe_age_years(curr_year, install_year, curr_run_date, settings: Settings) -> np.ndarray:
+    """Pipe age in years at the current run: ``curr_year - install_year``, or with ``growth.age_basis: dates``
+    the days from 1 January of the install year to ``curr_run_date`` over ``days_per_year``. NaN where the
+    install year is unknown. ``dates`` without a run date is a ValueError."""
+    install = np.asarray(install_year, dtype=float)
+    g = settings.growth
+    if g.age_basis != "dates":
+        return np.asarray(curr_year, dtype=float) - install
+    if curr_run_date is None:
+        raise ValueError("growth.age_basis: dates needs the current run date")
+    run = pd.Timestamp(curr_run_date).normalize()
+    years = np.where(np.isnan(install), 2000, install).astype(int)  # placeholder year where unknown
+    starts = pd.to_datetime(pd.Series(years).astype(str) + "-01-01")
+    days = (run - starts).dt.days.to_numpy(float)
+    return np.where(np.isnan(install), np.nan, days / g.days_per_year)
+
+
+def full_life_rate(d_curr_in, curr_year, install_year, age=None):
+    """Rate in mpy = d_curr * 1000 / age, the age being ``curr_year - install_year`` unless ``age`` (see
+    ``pipe_age_years``) is given; NaN if the age is <= 0 or unknown."""
+    age = np.asarray(curr_year, dtype=float) - np.asarray(install_year, dtype=float) if age is None else age
     d = np.asarray(d_curr_in, dtype=float)
     valid = age > 0  # False for NaN
     safe_age = np.where(valid, age, 1.0)
     return np.where(valid, d * MILS_PER_IN / safe_age, np.nan)
 
 
-def half_life_rate(d_curr_in, curr_year, install_year):
-    """Rate in mpy = d_curr * 1000 / ((curr_year - install_year) / 2), i.e. twice the full-life rate;
-    NaN if the age is <= 0 or unknown."""
-    return 2.0 * full_life_rate(d_curr_in, curr_year, install_year)
+def half_life_rate(d_curr_in, curr_year, install_year, age=None):
+    """Rate in mpy = d_curr * 1000 / (age / 2), i.e. twice the full-life rate; NaN if the age is <= 0 or
+    unknown."""
+    return 2.0 * full_life_rate(d_curr_in, curr_year, install_year, age)
 
 
 def shrank(d_prev_in, d_curr_in, cls, settings: Settings) -> np.ndarray:
@@ -484,6 +503,7 @@ def _summary(features: pd.DataFrame, dt_yr: float, prev_year: int, curr_year: in
         "joint_percentile_pool": g.joint_percentile_pool,
         "days_per_year": float(g.days_per_year),
         "rate_decimals": g.rate_decimals,
+        "age_basis": g.age_basis,
         "counts_by_history_class": {c: int(by_class.get(c, 0)) for c in HISTORY_CLASSES},
         "counts_by_governing_method": {m: int(by_method.get(m, 0)) for m in METHODS},
         "n_needs_review": int(features.needs_review.sum()),
@@ -495,7 +515,8 @@ def _summary(features: pd.DataFrame, dt_yr: float, prev_year: int, curr_year: in
 
 def compute_growth(match_table: pd.DataFrame, dt_yr: float, prev_year: int, curr_year: int, pipe: pd.DataFrame,
                    seg_table: pd.DataFrame, settings: Settings, *, prev_run_id: str | None = None,
-                   curr_run_id: str | None = None, repairs: pd.DataFrame | None = None) -> GrowthResult:
+                   curr_run_id: str | None = None, repairs: pd.DataFrame | None = None,
+                   curr_run_date: date | None = None) -> GrowthResult:
     """Every spec 6.5 method for each current-run metal-loss row of the M4 match table, the governing rate
     by ``growth.governing`` per history class, and length growth. ``prev_year``/``curr_year`` are the runs'
     calendar years; reference positions are ``curr_log_dist_ft``. A position outside the pipe table is a
@@ -505,13 +526,16 @@ def compute_growth(match_table: pd.DataFrame, dt_yr: float, prev_year: int, curr
     ``implausible`` and ``needs_review`` (as ``match_needs_review``) are carried as columns. ``repairs``
     (``repairs_between_runs``, optional) marks rows inside ``recoat`` spans as ``in_recoat``; with
     ``exclude_recoated_from_stats`` they are ``in_stats`` False and stay out of the segment and joint
-    percentile distributions (they still get the rates)."""
+    percentile distributions (they still get the rates). ``curr_run_date`` is needed by
+    ``growth.age_basis: dates`` (``pipe_age_years``)."""
     if not dt_yr > 0:
         raise ValueError("dt_yr must be positive")
     g = settings.growth
     if g.joint_percentile_pool == "assigned" and g.governing_profile != "pit_to_pit":
         raise ValueError("growth.joint_percentile_pool: assigned needs governing_profile: pit_to_pit "
                          "(the assigned rates are the pit_to_pit rule's)")
+    if g.age_basis == "dates" and curr_run_date is None:
+        raise ValueError("growth.age_basis: dates needs the current run date")
     check_segments(seg_table)  # segment_table checks too; a table built by hand must not pool segments
     rows = growth_rows(match_table)
     n = len(rows)
@@ -547,9 +571,10 @@ def compute_growth(match_table: pd.DataFrame, dt_yr: float, prev_year: int, curr
     f["segment_percentile_mpy"], p_by_seg = segment_percentile(f.raw_mpy, cls, seg_id, seg_table, settings,
                                                                     in_stats)
     f["new_feature_mpy"] = np.where(new, new_feature_rate(d_curr, wt, dt_yr, settings), np.nan)
-    f["full_life_mpy"] = full_life_rate(d_curr, curr_year, install)
+    age = pipe_age_years(curr_year, install, curr_run_date, settings)
+    f["full_life_mpy"] = full_life_rate(d_curr, curr_year, install, age)
     f["default_rate_mpy"] = default_rate(n, settings)
-    f["half_life_mpy"] = half_life_rate(d_curr, curr_year, install)
+    f["half_life_mpy"] = half_life_rate(d_curr, curr_year, install, age)
     f["shrinking_fixed_mpy"] = shrinking_fixed_rate(d_prev, d_curr, cls, settings)
     pool = (assigned_matched_rates(f.raw_mpy, f.shrinking_fixed_mpy, d_prev, d_curr, cls, settings)
             if g.joint_percentile_pool == "assigned" else f.raw_mpy)
@@ -607,6 +632,10 @@ def _run_year(std: pd.DataFrame) -> int:
     return std.run_date.dropna().iloc[0].year
 
 
+def _run_date(std: pd.DataFrame) -> date:
+    return pd.Timestamp(std.run_date.dropna().iloc[0]).date()
+
+
 def _line_extent(curr_std: pd.DataFrame) -> tuple[float, float]:
     """First and last girth-weld log distance of the current run (ft)."""
     x = curr_std.log_dist_ft[curr_std.feature_type == FeatureType.girth_weld.value].dropna()
@@ -649,7 +678,8 @@ def main(argv: list[str] | None = None) -> int:
         result = compute_growth(matches, delta_t_years(prev, curr, settings.growth.days_per_year),
                                 _run_year(prev), _run_year(curr), pipe,
                                 seg_table, settings, prev_run_id=str(prev.run_id.iloc[0]),
-                                curr_run_id=str(curr.run_id.iloc[0]), repairs=repairs)
+                                curr_run_id=str(curr.run_id.iloc[0]), repairs=repairs,
+                                curr_run_date=_run_date(curr))
         paths = write_growth(result, args.out)
         score = None
         if args.truth:

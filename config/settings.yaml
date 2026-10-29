@@ -50,6 +50,7 @@ growth:
   rate_decimals: null               # round the governing rate to this many places (the consultant: 1)
   shrinking_applies_to: decrease    # decrease | no_increase: no_increase gives the fixed rate to a zero change too
   joint_percentile_pool: raw        # raw | assigned: the joint percentile of the rates matched rows were given
+  age_basis: years                  # years | dates (the consultant): age from 1 Jan of the install year to the run date
   exclude_recoated_from_stats: true
   length_growth: none               # none | proportional | fixed_rate
   length_rate_ipy: 0.0
