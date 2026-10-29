@@ -11,7 +11,7 @@ from types import SimpleNamespace
 import pandas as pd
 import streamlit as st
 
-from ili import app_state
+from ili import app_state, app_theme
 from ili.align_welds import DRAFT_LABEL
 from ili.app_pages_review import NEEDS_REVIEWER, SAVED_AFTER_RUN, rerun_button, write_error
 from ili.app_pages_setup import NO_DATA
@@ -56,9 +56,8 @@ def _options(table: pd.DataFrame, column: str) -> list[str]:
 
 
 def explorer_page() -> None:
-    st.title("Growth and remaining life explorer")
-    st.caption(DRAFT_LABEL)
     path = app_state.comparison_from_session()
+    app_theme.page_header("Growth and remaining life explorer", app_state.comparison_context(path))
     data = app_state.page_data(path)
     if data is None or data.growth.empty or data.remaining_life.empty or data.classification.empty:
         st.info(NO_DATA)
@@ -200,9 +199,8 @@ def _downloads(path: Path) -> None:
 
 
 def export_page() -> None:
-    st.title("Dig list and report export")
-    st.caption(DRAFT_LABEL)
     path = app_state.comparison_from_session()
+    app_theme.page_header("Dig list and report export", app_state.comparison_context(path))
     data = app_state.page_data(path)
     if data is None or data.classification.empty:
         st.info(NO_DATA)

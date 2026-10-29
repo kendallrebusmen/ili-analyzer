@@ -113,7 +113,7 @@ def test_buttons_disabled_without_reviewer(ran, tmp_path):
     labels = {b.label: b for b in at.button}
     assert labels["Accept"].disabled and labels["Reject"].disabled
     assert labels["Save manual re-pair"].disabled
-    assert "reviewer" in _all_text(at)
+    assert "Reviewer box in the sidebar" in _all_text(at)
     # the setup the pipeline recorded in the folder is found, so Rerun is enabled
     assert labels["Rerun the pipeline"].disabled is False and NO_SETUP not in _all_text(at)
     assert not (work / REVIEWS_FILE).exists()
@@ -345,5 +345,6 @@ def test_side_by_side_cells_are_readable():
     assert frame.loc["dent_depth_in"].tolist() == ["", ""]
 
 
-def test_reviewer_hint_names_the_reviewer_box_not_a_sidebar():
-    assert "sidebar" not in app_pages_review.NEEDS_REVIEWER.lower()
+def test_reviewer_hint_names_the_reviewer_box_in_the_sidebar():
+    hint = app_pages_review.NEEDS_REVIEWER
+    assert "Reviewer" in hint and "sidebar" in hint

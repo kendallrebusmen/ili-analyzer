@@ -27,7 +27,7 @@ NEARBY_COLUMNS = ["run", "feature_id", "pos_prev_ft", "clock_min", "depth_pct", 
 RUN_COLOURS = {"prev": "#1F77B4", "curr": "#E8833A"}
 SAVED = "Saved — rerun the pipeline to apply"
 SAVED_AFTER_RUN = "saved after the last run — rerun to apply"
-NEEDS_REVIEWER = "Enter your name in the reviewer box at the top of the page to enable decisions."
+NEEDS_REVIEWER = "Enter your name in the Reviewer box in the sidebar to enable decisions."
 ONE_SIDED = "One-sided rows can be accepted (confirms missing/new) but not rejected."
 MANUAL_RULES = ("Rules checked on rerun: all members in the same or adjacent weld-map row (an accept of a "
                 "row the matcher itself makes is exempt); a 1:1 pair has one feature type; a side with several "
@@ -308,9 +308,8 @@ def rerun_button(path, key: str = "review_rerun") -> None:
 
 
 def review_queue_page() -> None:
-    st.title("Match review queue")
-    st.caption(DRAFT_LABEL)
     path = app_state.comparison_from_session()
+    app_theme.page_header("Match review queue", app_state.comparison_context(path))
     data = app_state.page_data(path)
     if data is None or data.match_table.empty:
         st.info(NO_DATA)

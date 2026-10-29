@@ -1,5 +1,6 @@
 """The review app's Nemi look: clean engineering (light by default, deep-teal accent, light grey sidebar),
-cards and status pills, in a light and a dark theme. DRAFT – for review by qualified personnel.
+sidebar navigation, page header with the DRAFT badge, cards and status pills, in a light and a dark theme.
+DRAFT – for review by qualified personnel.
 
 Colours, radius and fonts that Streamlit themes natively live in ``app/.streamlit/config.toml`` (one palette
 per theme, sidebar background included; the app follows the computer's setting until the reviewer picks one in
@@ -13,10 +14,11 @@ from html import escape
 import streamlit as st
 
 from ili.align_welds import DRAFT_LABEL
+from ili.brand import PRODUCT_NAME, PRODUCT_TAGLINE, wordmark_svg
 
 # Palette (presentation only; the [theme.light] and [theme.dark] sections of the app's config.toml use the
 # same values). Light first; the DARK_ twin follows each colour. Every text/background pair is >= 4.5:1.
-PRIMARY = "#0F766E"  # the deep-teal accent: buttons, selected menu row, wordmark arc
+PRIMARY = "#0F766E"  # the deep-teal accent: buttons; light-theme selected menu row and wordmark arc
 LINK = "#0F766E"
 PAGE_BACKGROUND = "#F6F7F8"
 SURFACE = "#FFFFFF"  # cards, the action bar
@@ -30,7 +32,7 @@ WARNING_INK = "#93370D"  # attention / DRAFT: text ...
 WARNING_BG = "#FEF0C7"  # ... on this background
 SUCCESS = "#067647"
 
-DARK_PRIMARY = "#14B8A6"
+DARK_PRIMARY = "#0F766E"  # button fill (white text, AA); dark accent TEXT is DARK_LINK
 DARK_LINK = "#5EEAD4"
 DARK_PAGE_BACKGROUND = "#111518"
 DARK_SURFACE = "#1A2025"
@@ -53,7 +55,8 @@ CONFIDENCE_TONES = {"low": "danger", "medium": "warning", "high": "success"}
 # resolves to the theme on screen, including after the reviewer switches theme in the menu.
 APP_CSS = f"""
 [data-testid="stApp"] {{
-  --nemi-accent: light-dark({PRIMARY}, {DARK_PRIMARY}); --nemi-link: light-dark({LINK}, {DARK_LINK});
+  --nemi-primary: light-dark({PRIMARY}, {DARK_PRIMARY}); --nemi-accent: light-dark({PRIMARY}, {DARK_LINK});
+  --nemi-link: light-dark({LINK}, {DARK_LINK});
   --nemi-surface: light-dark({SURFACE}, {DARK_SURFACE}); --nemi-sidebar: light-dark({SIDEBAR}, {DARK_SIDEBAR});
   --nemi-ink: light-dark({INK}, {DARK_INK}); --nemi-muted: light-dark({MUTED}, {DARK_MUTED});
   --nemi-line: light-dark({LINE}, {DARK_LINE});
@@ -72,9 +75,14 @@ APP_CSS = f"""
 h1, h2, h3 {{ color: var(--nemi-ink); letter-spacing: 0; }}
 
 /* The sidebar's background comes from config.toml ([theme.light.sidebar] / [theme.dark.sidebar]) */
-.nemi-wordmark {{ display: flex; align-items: center; gap: 10px; padding: 4px 4px 14px;
-  color: var(--nemi-ink); font-size: 20px; font-weight: 700; }}
-.nemi-wordmark svg {{ flex: none; }}
+.nemi-wordmark {{ display: grid; grid-template-columns: auto 1fr; column-gap: 10px; align-items: center;
+  padding: 4px 4px 14px; color: var(--nemi-ink); }}
+.nemi-wordmark svg {{ grid-row: 1 / 3; }}
+.nemi-wordmark span:first-of-type {{ font-size: 21px; font-weight: 700; line-height: 1.1; }}
+.nemi-wordmark span:last-of-type {{ font-size: 11.5px; color: var(--nemi-muted); }}
+.nemi-caption {{ font-size: 11.5px; color: var(--nemi-muted); text-transform: uppercase; letter-spacing: 0.6px;
+  margin-top: 14px; padding: 0 4px; }}
+.nemi-folder {{ font-size: 13.5px; font-weight: 600; color: var(--nemi-ink); padding: 0 4px 8px; }}
 
 /* Page header: title block left, the DRAFT badge right */
 .nemi-header {{ display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between;
@@ -168,29 +176,43 @@ def apply_theme() -> None:
     st.markdown(f"<style>{APP_CSS}</style>", unsafe_allow_html=True)
 
 
-def _initials(reviewer: str) -> str:
-    words = [w for w in reviewer.replace(".", " ").split() if w[:1].isalpha()]
-    return "".join(w[0].upper() for w in words[:2])
+def sidebar_brand_html() -> str:
+    """The wordmark and the product tagline at the top of the sidebar."""
+    return (f'<div class="nemi-wordmark">{wordmark_svg()}<span>{escape(PRODUCT_NAME)}</span>'
+            f"<span>{escape(PRODUCT_TAGLINE)}</span></div>")
 
 
-def shell_bar_html(reviewer: str) -> str:
-    """The navy bar across the top: product, app, the DRAFT label and the reviewer's initials."""
-    initials = _initials(reviewer or "")
-    avatar = (f'<span class="ili-avatar" role="img" aria-label="Reviewer: {escape(reviewer.strip())}">'
-              f"{escape(initials)}</span>" if initials else "")
-    return ('<div class="ili-shell"><span class="ili-shell-product">Integrity Management</span>'
-            '<span class="ili-shell-app">ILI Analyzer</span><span class="ili-spacer"></span>'
-            f'<span class="ili-draft">{escape(DRAFT_LABEL)}</span>{avatar}</div>')
-
-
-def breadcrumb_html(folder, page: str) -> str:
-    """Run comparisons / <comparison folder> / <page>; the folder's full path is its tooltip."""
+def sidebar_folder_html(folder) -> str:
+    """The "Comparison" caption and the comparison folder's name (full path as the tooltip)."""
     if folder is None:
-        where = "No comparison loaded"
+        name = "No comparison loaded"
+        tip = name
     else:
-        where = f'<span title="{escape(str(folder))}">{escape(getattr(folder, "name", str(folder)))}</span>'
-    return (f'<nav class="ili-breadcrumb" aria-label="Breadcrumb">Run comparisons / {where} / '
-            f"<strong>{escape(page)}</strong></nav>")
+        name, tip = getattr(folder, "name", str(folder)), str(folder)
+    return (f'<div class="nemi-caption">Comparison</div>'
+            f'<div class="nemi-folder nemi-truncate" title="{escape(tip)}">{escape(name)}</div>')
+
+
+def page_header_html(title: str, subtitle: str | None) -> str:
+    """Title (and subtitle) left, the DRAFT badge right; every piece of text is escaped."""
+    sub = (f'<span class="nemi-subtitle nemi-truncate" title="{escape(subtitle)}">{escape(subtitle)}</span>'
+           if subtitle else "")
+    return (f'<header class="nemi-header"><div><h1>{escape(title)}</h1>{sub}</div>'
+            f'<span class="nemi-badge">{escape(DRAFT_LABEL)}</span></header>')
+
+
+def page_header(title: str, subtitle: str | None) -> None:
+    st.markdown(page_header_html(title, subtitle), unsafe_allow_html=True)
+
+
+_NAV_LABELS = {"Growth and remaining life explorer": "Growth & life", "Dig list and report export": "Dig list & export"}
+
+
+def nav_label_text(page: str, pending: int = 0) -> str:
+    """The sidebar menu label of a page; the review queue carries its pending count."""
+    if page == "Match review queue":
+        return f"Match review · {pending}" if pending > 0 else "Match review"
+    return _NAV_LABELS.get(page, page)
 
 
 def pill_html(text: str, tone: str) -> str:

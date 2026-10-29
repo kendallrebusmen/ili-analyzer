@@ -84,7 +84,7 @@ def _all_text(at):
 def test_app_starts_with_draft_label():
     at = _app().run()
     assert not at.exception
-    assert any('class="ili-shell"' in m.value and DRAFT_LABEL in m.value for m in at.markdown)
+    assert any("nemi-badge" in m.value and DRAFT_LABEL in m.value for m in at.markdown)
     assert at.text_input(key="reviewer").value == ""
 
 
@@ -102,9 +102,9 @@ def test_run_setup_runs_pipeline(synth, tmp_path):
     assert not at.error
     assert at.session_state[app_state.COMPARISON_KEY] == str(inputs.out / FOLDER)
     assert (inputs.out / FOLDER / "report.html").is_file()
-    # the page redraws after the run, so the breadcrumb names the new folder (it was drawn before the run)
-    crumbs = [m.value for m in at.markdown if 'class="ili-breadcrumb"' in m.value]
-    assert len(crumbs) == 1 and FOLDER in crumbs[0] and str(inputs.out / FOLDER) in crumbs[0]
+    # the sidebar names the new folder, with its full path as the tooltip
+    side = " ".join(m.value for m in at.sidebar.markdown)
+    assert FOLDER in side and str(inputs.out / FOLDER) in side
 
 
 def test_run_setup_shows_failing_stderr(synth, tmp_path):
@@ -261,7 +261,7 @@ def test_app_refuses_to_run_when_not_local(option, value):
         _set_options(old, "test restore")
     assert not at.exception
     assert len(at.error) == 1 and "refuses to start" in at.error[0].value and option in at.error[0].value
-    assert any('class="ili-shell"' in m.value and DRAFT_LABEL in m.value for m in at.markdown)
+    assert any("nemi-badge" in m.value and DRAFT_LABEL in m.value for m in at.markdown)
     assert DRAFT_LABEL in _all_text(at)
     assert not at.text_input and not at.radio  # no reviewer field, no page
 

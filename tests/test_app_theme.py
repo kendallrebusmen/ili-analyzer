@@ -1,14 +1,19 @@
-"""The Nemi look: theme config, shell bar, breadcrumb, status pills, and the app's layout."""
+"""The Nemi look: theme config, sidebar navigation, page header, status pills, and the app's layout."""
 
+import json
+import shutil
 import tomllib
 from pathlib import Path
 
+import pandas as pd
 import pytest
 from streamlit.testing.v1 import AppTest
 
-from ili import app_theme
+from ili import app_state, app_theme, report_data
+from ili.review import REVIEWS_FILE, append_review
 from ili.align_welds import DRAFT_LABEL
-from test_app_setup import APP, SCRIPT_CONFIG, isolated_outputs, script_config  # noqa: F401 (fixtures)
+from test_app_review import _paired
+from test_app_setup import APP, PAGES, SCRIPT_CONFIG, _app, isolated_outputs, ran, script_config  # noqa: F401 (fixtures)
 
 HOSTILE = "<script>alert(1)</script>"
 
@@ -19,7 +24,7 @@ def test_palette_matches_config():
     light, dark = theme["light"], theme["dark"]
     assert "base" not in theme  # one palette per theme; the reviewer or the computer picks which
     assert light["primaryColor"] == app_theme.PRIMARY == "#0F766E"
-    assert dark["primaryColor"] == app_theme.DARK_PRIMARY == "#14B8A6"
+    assert dark["primaryColor"] == app_theme.DARK_PRIMARY == "#0F766E"
     assert light["backgroundColor"] == app_theme.PAGE_BACKGROUND == "#F6F7F8"
     assert light["secondaryBackgroundColor"] == app_theme.SURFACE == "#FFFFFF"
     assert light["textColor"] == app_theme.INK == "#1F2A33"
@@ -55,9 +60,11 @@ for _ink, _bgs in [
                              (_T.SIDEBAR, _T.DARK_SIDEBAR))),
     ((_T.MUTED, _T.DARK_MUTED), ((_T.PAGE_BACKGROUND, _T.DARK_PAGE_BACKGROUND), (_T.SURFACE, _T.DARK_SURFACE),
                                  (_T.SIDEBAR, _T.DARK_SIDEBAR))),
-    ((_T.PRIMARY, _T.DARK_PRIMARY), ((_T.PAGE_BACKGROUND, _T.DARK_PAGE_BACKGROUND), (_T.SURFACE, _T.DARK_SURFACE),
-                                     (_T.SIDEBAR, _T.DARK_SIDEBAR))),
+    # accent text: PRIMARY in light, LINK in dark (dark PRIMARY is for button fills, see the white-on pair below)
+    ((_T.PRIMARY, _T.DARK_LINK), ((_T.PAGE_BACKGROUND, _T.DARK_PAGE_BACKGROUND), (_T.SURFACE, _T.DARK_SURFACE),
+                                  (_T.SIDEBAR, _T.DARK_SIDEBAR))),
     ((_T.LINK, _T.DARK_LINK), ((_T.SURFACE, _T.DARK_SURFACE),)),
+    (("#FFFFFF", "#FFFFFF"), ((_T.PRIMARY, _T.DARK_PRIMARY),)),  # Streamlit's primary buttons carry white text
     ((_T.WARNING_INK, _T.DARK_WARNING_INK), ((_T.WARNING_BG, _T.DARK_WARNING_BG),)),
     ((_T.DANGER, _T.DARK_DANGER), ((_T.DANGER_SOFT, _T.DARK_DANGER_SOFT), (_T.SURFACE, _T.DARK_SURFACE))),
     ((_T.SUCCESS, _T.DARK_SUCCESS), ((_T.SURFACE, _T.DARK_SURFACE),)),
@@ -105,27 +112,28 @@ def test_style_chart():
     assert list(out.data[0].y) == [3, 4]
 
 
-def test_shell_bar_carries_the_draft_label_and_escapes_the_reviewer():
-    html = app_theme.shell_bar_html(f"Ann {HOSTILE}")  # has initials, so the name reaches the avatar label
-    assert DRAFT_LABEL in html and ">A</span>" in html
-    assert "<script>" not in html and "&lt;script&gt;" in html
+def test_page_header_html_has_title_subtitle_and_one_badge():
+    html = app_theme.page_header_html(f"Match {HOSTILE}", f"Line {HOSTILE}")
+    assert 'class="nemi-header"' in html and "<h1>" in html
+    assert html.count("nemi-badge") == 1 and DRAFT_LABEL in html
+    assert "<script>" not in html and html.count("&lt;script&gt;") == 3  # title, tooltip, subtitle
+    assert "nemi-subtitle" not in app_theme.page_header_html("Run setup", None)
 
 
-@pytest.mark.parametrize("reviewer, initials", [("K. Rebusmen", "KR"), ("ada", "A"), ("  ", None), ("", None)])
-def test_shell_bar_initials(reviewer, initials):
-    html = app_theme.shell_bar_html(reviewer)
-    if initials:
-        assert f">{initials}</span>" in html
-    else:
-        assert "ili-avatar" not in html
+def test_long_names_truncate():
+    html = app_theme.page_header_html("Home", "x" * 120)
+    assert 'title="' + "x" * 120 + '"' in html and "nemi-truncate" in html and "nemi-subtitle" in html
 
 
-@pytest.mark.xfail(reason="rewritten in Task 3")
-def test_breadcrumb_escapes_folder_and_page():
-    html = app_theme.breadcrumb_html(HOSTILE, "Match review queue")
-    assert "Run comparisons" in html and "Match review queue" in html
-    assert "<script>" not in html and "&lt;script&gt;" in html
-    assert "No comparison loaded" in app_theme.breadcrumb_html(None, "Run setup")
+def test_sidebar_brand_html():
+    html = app_theme.sidebar_brand_html()
+    assert 'class="nemi-wordmark"' in html and "<svg" in html and "<span>Nemi</span>" in html
+    assert "<span>ILI run comparison</span>" in html
+
+
+def test_breadcrumb_helpers_are_gone():
+    for name in ("shell_bar_html", "breadcrumb_html", "_initials"):
+        assert not hasattr(app_theme, name)
 
 
 @pytest.mark.parametrize("tone", app_theme.PILL_TONES)
@@ -150,15 +158,54 @@ def test_css_is_local_and_self_contained():
     assert "http" not in css and "@import" not in css and "url(" not in css
 
 
-@pytest.mark.xfail(reason="rewritten in Task 3")
-def test_app_renders_the_shell_with_tabs_and_no_sidebar():
+def test_shell_sidebar():
     at = AppTest.from_file(APP, default_timeout=60).run()
     assert not at.exception
+    assert at.sidebar.radio(key="page").value == "Run setup"
+    assert at.sidebar.text_input(key="reviewer").value == ""
+    sidebar = " ".join(m.value for m in at.sidebar.markdown)
+    assert "nemi-wordmark" in sidebar
     markdown = " ".join(m.value for m in at.markdown)
-    assert 'class="ili-shell"' in markdown and DRAFT_LABEL in markdown and 'class="ili-breadcrumb"' in markdown
-    assert at.radio(key="page").value == "Run setup"  # tab navigation in the page body
-    assert at.text_input(key="reviewer").value == ""
-    assert not at.sidebar.radio and not at.sidebar.text_input
+    assert "ili-shell" not in markdown and "ili-breadcrumb" not in markdown
+
+
+@pytest.mark.parametrize("page", list(PAGES))
+def test_page_header_on_every_page(page):
+    at = AppTest.from_file(APP, default_timeout=60).run()
+    at.radio(key="page").set_value(page).run()
+    assert not at.exception
+    assert any("nemi-header" in m.value and DRAFT_LABEL in m.value for m in at.markdown)
+
+
+def _match_review_label(at):
+    return [o for o in at.sidebar.radio(key="page").options if o.startswith("Match review")][0]
+
+
+def test_nav_label_counts_pending(ran, tmp_path):
+    _, folder = ran
+    work = tmp_path / "folder"
+    shutil.copytree(folder, work)
+    at = _app(comparison_dir=str(work)).run()
+    n = len(report_data.pending_reviews(app_state.read_comparison(work).match_table))
+    assert n > 1 and _match_review_label(at) == f"Match review · {n}"
+    row = _paired(work)
+    append_review(work / REVIEWS_FILE, "accept", [row.prev_feature_id], [row.curr_feature_id], "A. Reviewer")
+    # a decision takes effect when the match stage next runs; stand in for that rerun by applying it to the table
+    table = pd.read_csv(work / "match_table.csv", dtype=str, keep_default_na=False)
+    table.loc[table.match_id == row.match_id, "review_status"] = "accepted"
+    table.to_csv(work / "match_table.csv", index=False)
+    at.run()
+    assert _match_review_label(at) == f"Match review · {n - 1}"
+    assert at.sidebar.radio(key="page").value == "Run setup"  # the label changes, not the page value
+
+
+def test_nav_label_without_pending_or_data():
+    assert app_theme.nav_label_text("Match review queue", 0) == "Match review"
+    assert app_theme.nav_label_text("Match review queue", 3) == "Match review · 3"
+    assert app_theme.nav_label_text("Growth and remaining life explorer", 3) == "Growth & life"
+    assert app_theme.nav_label_text("Dig list and report export", 0) == "Dig list & export"
+    at = AppTest.from_file(APP, default_timeout=60).run()  # no comparison at all: 0 pending, no error
+    assert not at.exception and _match_review_label(at) == "Match review"
 
 
 def test_app_menu_has_no_links_off_this_computer():
@@ -171,3 +218,14 @@ def test_object_header_escapes_title_and_facts():
                                         [("Hint", HOSTILE), ("Score", 1.11)])
     assert 'class="ili-object"' in html and "ili-pill-warning" in html and "<strong>1.11</strong>" in html
     assert "<script>" not in html and html.count("&lt;script&gt;") == 2
+
+
+def test_comparison_context(tmp_path):
+    assert app_state.comparison_context(None) is None
+    assert app_state.comparison_context(tmp_path) is None  # no pipeline_inputs.json
+    (tmp_path / "pipeline_inputs.json").write_text(json.dumps(
+        {"line_name": "Line 930", "prev_run_date": "2021-05-01", "curr_run_date": "2026-05-02"}), encoding="utf-8")
+    assert app_state.comparison_context(tmp_path) == "Line 930 · 2021-05-01 → 2026-05-02"
+    (tmp_path / "pipeline_inputs.json").write_text(json.dumps(
+        {"prev_run_date": "2021-05-01", "curr_run_date": "2026-05-02"}), encoding="utf-8")
+    assert app_state.comparison_context(tmp_path) == "2021-05-01 → 2026-05-02"

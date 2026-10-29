@@ -30,7 +30,7 @@ redColor = "#B42318"
 backgroundColor = "#EEF2F3"
 
 [theme.dark]
-primaryColor = "#14B8A6"
+primaryColor = "#0F766E"
 backgroundColor = "#111518"
 secondaryBackgroundColor = "#1A2025"
 textColor = "#E6EAED"

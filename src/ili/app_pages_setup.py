@@ -13,7 +13,7 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from ili import app_setup_tables as tables
-from ili import app_state
+from ili import app_state, app_theme
 from ili.align_welds import DRAFT_LABEL
 from ili.app_state import comparison_of
 from ili.config import DEFAULT_SETTINGS, PROJECT_ROOT
@@ -239,8 +239,7 @@ def _still_needed(typed: dict) -> list[str]:
 
 
 def run_setup_page() -> None:
-    st.title("Run setup")
-    st.caption(DRAFT_LABEL)
+    app_theme.page_header("Run setup", None)
     st.markdown("Four steps. Items marked * are needed for a run; everything else is optional.")
     defaults = _setup_defaults()
     for f in fields(PipelineInputs):
@@ -307,9 +306,8 @@ def run_setup_page() -> None:
 
 
 def weld_alignment_page() -> None:
-    st.title("Weld alignment")
-    st.caption(DRAFT_LABEL)
     path = app_state.comparison_from_session()
+    app_theme.page_header("Weld alignment", app_state.comparison_context(path))
     data = app_state.page_data(path)
     if data is None or not data.alignment_summary:
         st.info(NO_DATA)

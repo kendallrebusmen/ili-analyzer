@@ -9,7 +9,7 @@ localhost, no telemetry and headless, and the app refuses to run when the option
 
 import streamlit as st
 
-from ili import app_state, app_theme
+from ili import app_state, app_theme, report_data
 from ili.align_welds import DRAFT_LABEL
 from ili.brand import PRODUCT_TAGLINE, product_label
 from ili.app_pages_results import explorer_page, export_page
@@ -39,20 +39,35 @@ def not_local_reason() -> str | None:
 
 # The menu keeps the System / Light / Dark theme choice; its links to Streamlit's website go, so nothing points off
 # this computer.
-st.set_page_config(page_title=TITLE, layout="wide", initial_sidebar_state="collapsed",
+st.set_page_config(page_title=TITLE, layout="wide", initial_sidebar_state="expanded",
                    menu_items={"Get help": None, "Report a bug": None, "About": f"{product_label()} — {PRODUCT_TAGLINE}. {DRAFT_LABEL}"})
 app_theme.apply_theme()
-st.markdown(app_theme.shell_bar_html(st.session_state.get(app_state.REVIEWER_KEY, "")), unsafe_allow_html=True)
 if reason := not_local_reason():
+    app_theme.page_header(TITLE, None)
     st.error(f"The review app runs on this computer only, with no usage statistics, and refuses to start: "
              f"{reason}. Start it with: streamlit run app/streamlit_app.py --server.address localhost "
              f"--browser.gatherUsageStats false")
     st.caption(DRAFT_LABEL)
     st.stop()
 folder = app_state.comparison_from_session()
-crumb, reviewer = st.columns([3, 1], vertical_alignment="center")
-crumb.markdown(app_theme.breadcrumb_html(folder, st.session_state.get("page", next(iter(PAGES)))),
-               unsafe_allow_html=True)
-reviewer.text_input("Reviewer name (required before any decision)", key=app_state.REVIEWER_KEY,
-                    label_visibility="collapsed", placeholder="Reviewer name (required to decide)")
-PAGES[st.radio("Page", list(PAGES), key="page", horizontal=True, label_visibility="collapsed")]()
+
+
+def pending_count() -> int:
+    """Matches awaiting a decision in the comparison shown; 0 without data, never raises."""
+    try:
+        data = None if folder is None else app_state.load_comparison(folder)
+        return 0 if data is None or data.match_table.empty else len(report_data.pending_reviews(data.match_table))
+    except Exception:  # the navigation must not fail because a page's data cannot be read
+        return 0
+
+
+def nav_label(page: str) -> str:
+    return app_theme.nav_label_text(page, pending_count() if page == "Match review queue" else 0)
+
+
+with st.sidebar:
+    st.markdown(app_theme.sidebar_brand_html(), unsafe_allow_html=True)
+    choice = st.radio("Pages", list(PAGES), key="page", format_func=nav_label, label_visibility="collapsed")
+    st.markdown(app_theme.sidebar_folder_html(folder), unsafe_allow_html=True)
+    st.text_input("Reviewer", key=app_state.REVIEWER_KEY, placeholder="Your name (required to decide)")
+PAGES[choice]()
