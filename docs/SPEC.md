@@ -1,4 +1,4 @@
-# ILI Run-Comparison Analyzer: Build Spec
+# Nemi — ILI Run-Comparison Analyzer: Build Spec
 
 > **Status:** Draft spec for Claude Code. Every engineering parameter marked `PLACEHOLDER` must be confirmed by the integrity engineer before the tool is used on real data.
 
@@ -490,12 +490,14 @@ Write all outputs to `outputs/<prev_run>_vs_<curr_run>/`.
 | `anomaly_distribution.csv` | Depth-bin and dent-bin counts for both runs |
 | `joint_ml_counts.csv` | Per-joint metal loss counts for both runs, by surface |
 | `anomalies_of_interest.csv` | The anomalies-of-interest table |
+| `analysis_table.csv`, `classified_anomalies.xlsx` | The analysis table: one row per classified anomaly (metal loss, dents, gouges) in the consultant's "Classified_Anomalies" column names and order, with only values the pipeline computes. The workbook has the DRAFT label in row 1, the header in row 2, frozen panes after the first two columns and a filter. |
 | `run_manifest.json` | Input file hashes, config hash, code version, and timestamp |
 
 ### 6.11 Streamlit app (`app/streamlit_app.py`)
 
-Pages:
+The app is branded **Nemi**. Navigation is a left sidebar. The DRAFT label shows once per page, in the page header badge, and stays on every download. Pages:
 
+0. **Home:** an overview of the repair conditions, the items needing attention (such as pending match reviews) and the run facts, with links to the other pages.
 1. **Run setup:** select the two tallies, vendor maps, and reference files, then run the pipeline.
 2. **Weld alignment:** view the alignment and highlight changed sections.
 3. **Match review queue:**
@@ -503,7 +505,9 @@ Pages:
    - Offer Accept, Reject, and Manual re-pair actions.
    - Save decisions to `reviews.csv` and re-apply them automatically on every rerun.
 4. **Growth and remaining life explorer:** filter by segment, category, and governing method.
-5. **Dig list and report export.**
+5. **Analysis table:** the classified anomalies in the consultant's layout; filters (repair category, internal/external, growth rate source, odometer range), a selector of column groups, and a download of `classified_anomalies.xlsx`.
+6. **Dig list:** the report's dig list, and the manual flags that feed it.
+7. **Reports:** download the report files (`report.pdf`, `report.html`, `dig_list.xlsx`, `classified_anomalies.xlsx`, `run_manifest.json`).
 
 ## 7. Configuration
 

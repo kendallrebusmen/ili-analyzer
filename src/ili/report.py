@@ -37,6 +37,9 @@ from openpyxl.utils import get_column_letter
 
 from ili import __version__
 from ili.align_welds import DRAFT_LABEL
+from ili.analysis_table import (ANALYSIS_TABLE_FILE, ANALYSIS_XLSX_FILE, SHEET_NAME, build_analysis_table,
+                               write_analysis_csv)
+from ili.brand import product_label
 from ili.category_change import CHANGE_COLUMNS, CategoryChangeResult, category_changes
 from ili.classify import CATEGORY_PRIORITY, IMMEDIATE_ACTION_NOTE, REMOVED_CATEGORY, criteria_path
 from ili.config import DEFAULT_SETTINGS, PROJECT_ROOT, Settings, load_settings
@@ -199,7 +202,8 @@ def _header(inputs: ReportInputs, header: ReportHeader, generated_utc: datetime)
             "length_check": table(length_check(inputs.prev_std, inputs.curr_std, inputs.pipe))}
     return {"line_name": header.line_name or NOT_STATED, "prev_run_id": prev_id, "curr_run_id": curr_id,
             "runs": runs, "pipe": pipe, "generated_utc": generated_utc.isoformat(timespec="seconds"),
-            "generator": f"ili.report {__version__}", "prepared_for": header.prepared_for,
+            "generator": f"ili.report {__version__}", "product": product_label(),
+            "prepared_for": header.prepared_for,
             "prepared_by": header.prepared_by}
 
 
@@ -450,8 +454,10 @@ def report_context(inputs: ReportInputs, changes: CategoryChangeResult, header: 
 # --- dig list workbook, manifest, CLI -----------------------------------------------------------------
 
 OUTPUT_NAMES = ("category_changes.csv", "report.html", "report.pdf", "dig_list.xlsx", "anomaly_distribution.csv",
-                "joint_ml_counts.csv", "anomalies_of_interest.csv", "imp_class.csv", "run_manifest.json")
-DATE_COLUMNS = ("due_date",)
+                "joint_ml_counts.csv", "anomalies_of_interest.csv", "imp_class.csv", ANALYSIS_TABLE_FILE,
+                ANALYSIS_XLSX_FILE, "run_manifest.json")
+DATE_COLUMNS = ("due_date", "Due Date", "Reinspection Date", "Projected Depth Condition Date",
+                "Projected Burst Condition Date", "Projected Safe Condition Date", "Prev. Measurement Date")
 GIT_TIMEOUT_S = 10
 
 
@@ -489,6 +495,28 @@ def dig_list_workbook(dig: pd.DataFrame, settings: Settings, label: str) -> Work
             cell.fill = fill
     ws.freeze_panes = "A3"
     ws.auto_filter.ref = f"A2:{get_column_letter(max(len(columns), 1))}{max(2, 2 + len(dig))}"
+    return wb
+
+
+def analysis_workbook(analysis: pd.DataFrame, label: str) -> Workbook:
+    """The analysis table as a workbook: row 1 the label, row 2 the header, data from row 3, panes frozen under
+    the header and right of the first two columns (Feature ID, Odometer), a filter over header and data."""
+    wb = Workbook()
+    ws = wb.active
+    ws.title = SHEET_NAME
+    columns = list(analysis.columns)
+    ws.cell(1, 1, label).font = Font(bold=True)
+    for j, name in enumerate(columns, start=1):
+        ws.cell(2, j, name).font = Font(bold=True)
+        values = [len(name)] + [len(str(v)) for v in analysis.iloc[:200, j - 1] if v is not None and v == v]
+        ws.column_dimensions[get_column_letter(j)].width = min(max(values) + 2, 40)
+    for i, row in enumerate(analysis.itertuples(index=False), start=3):
+        for j, (name, value) in enumerate(zip(columns, row), start=1):
+            cell = ws.cell(i, j, _excel_value(value, name))
+            if isinstance(cell.value, str):
+                cell.data_type = "s"  # vendor text is never a formula, whatever it starts with
+    ws.freeze_panes = "C3"
+    ws.auto_filter.ref = f"A2:{get_column_letter(max(len(columns), 1))}{max(2, 2 + len(analysis))}"
     return wb
 
 
@@ -573,6 +601,8 @@ def write_report(inputs: ReportInputs, header: ReportHeader, out_dir: Path,
     joints = joint_ml_counts(inputs.weld_map, inputs.prev_std, inputs.curr_std)
     aoi = anomalies_of_interest(inputs)
     imp_rows = _imp_class_rows(inputs)
+    analysis = build_analysis_table(inputs)
+    analysis_book = analysis_workbook(analysis, _sheet_label(inputs))
     manifest = json.dumps(run_manifest(inputs, list(OUTPUT_NAMES), generated_utc), indent=2, allow_nan=False)
     paths = {name: Path(out_dir) / name for name in OUTPUT_NAMES}
     _write_all({
@@ -584,6 +614,8 @@ def write_report(inputs: ReportInputs, header: ReportHeader, out_dir: Path,
         "joint_ml_counts.csv": lambda p: joints.to_csv(p, index=False, lineterminator="\n"),
         "anomalies_of_interest.csv": lambda p: aoi.to_csv(p, index=False, lineterminator="\n"),
         "imp_class.csv": lambda p: imp_rows.to_csv(p, index=False, lineterminator="\n"),
+        ANALYSIS_TABLE_FILE: lambda p: write_analysis_csv(analysis, p),
+        ANALYSIS_XLSX_FILE: analysis_book.save,
         "run_manifest.json": lambda p: p.write_text(manifest, encoding="utf-8"),
     }, paths)
     return paths, changes

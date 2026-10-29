@@ -17,17 +17,18 @@ import streamlit as st
 
 from ili import app_state, app_theme
 from ili.align_welds import DRAFT_LABEL
+from ili.app_columns import column_config, field_label
 from ili.app_pages_setup import NO_DATA, run_and_refresh, show_results
 from ili.config import load_settings
 from ili.match import CONFIDENCES, SIDE_FIELDS
-from ili.report_charts import INK, TEMPLATE
 from ili.review import REVIEWS_FILE, append_review, effective_reviews
 
+SELECTED_OUTLINE = "#F79009"  # amber: reads on the light and the dark page
 NEARBY_COLUMNS = ["run", "feature_id", "pos_prev_ft", "clock_min", "depth_pct", "match_id", "match_type"]
 RUN_COLOURS = {"prev": "#1F77B4", "curr": "#E8833A"}
 SAVED = "Saved — rerun the pipeline to apply"
 SAVED_AFTER_RUN = "saved after the last run — rerun to apply"
-NEEDS_REVIEWER = "Enter your name in the reviewer box at the top of the page to enable decisions."
+NEEDS_REVIEWER = "Enter your name in the Reviewer box in the sidebar to enable decisions."
 ONE_SIDED = "One-sided rows can be accepted (confirms missing/new) but not rejected."
 MANUAL_RULES = ("Rules checked on rerun: all members in the same or adjacent weld-map row (an accept of a "
                 "row the matcher itself makes is exempt); a 1:1 pair has one feature type; a side with several "
@@ -118,7 +119,7 @@ def nearby_chart(nearby: pd.DataFrame, selected_ids: dict[str, list[str]]) -> go
     """Position (x) against clock (y); depth sets the marker size, one colour per run, the selected
     row's features outlined."""
     fig = go.Figure()
-    fig.update_layout(template=TEMPLATE, title="Nearby features in both runs", font={"color": INK},
+    fig.update_layout(title="Nearby features in both runs",
                       xaxis_title="Position in the previous-run frame (ft)", yaxis_title="Clock (minutes)",
                       legend_title_text="Run")
     for run, name in (("prev", "Previous run"), ("curr", "Current run")):
@@ -128,7 +129,7 @@ def nearby_chart(nearby: pd.DataFrame, selected_ids: dict[str, list[str]]) -> go
         fig.add_trace(go.Scatter(
             x=part.pos_prev_ft, y=part.clock_min, mode="markers", name=name, text=part.feature_id,
             marker={"size": (6 + depth * 0.6).clip(max=40), "color": RUN_COLOURS[run],
-                    "opacity": 0.6, "line": {"width": [3 if c else 0 for c in chosen], "color": INK}}))
+                    "opacity": 0.6, "line": {"width": [3 if c else 0 for c in chosen], "color": SELECTED_OUTLINE}}))
     return fig
 
 
@@ -151,7 +152,7 @@ def _cell(value) -> str:
 
 def _side_frame(row) -> pd.DataFrame:
     return pd.DataFrame({
-        "field": [*SIDE_FIELDS, "feature_id"],
+        "field": [field_label(f) for f in (*SIDE_FIELDS, "feature_id")],
         "previous run": [_cell(row[f"prev_{f}"]) for f in SIDE_FIELDS] + [_cell(row["prev_feature_id"])],
         "current run": [_cell(row[f"curr_{f}"]) for f in SIDE_FIELDS] + [_cell(row["curr_feature_id"])]})
 
@@ -214,25 +215,32 @@ def save_manual(path: str, stamp: int | None, prefix: str) -> None:
 
 
 def _decision_panel(path: Path, data, stamp, reviewer: str, prev_ids: list[str], curr_ids: list[str], ref_row,
-                    prefix: str, manual_prefix: str) -> None:
-    """The nearby-features chart and the Accept / Reject / Manual re-pair actions for ``prev_ids`` /
-    ``curr_ids``, each bound (callback arguments) to the folder, those ids and ``stamp``."""
+                    prefix: str, manual_prefix: str, lead=None) -> None:
+    """Two columns: the record card (what ``lead`` draws, then the Accept / Reject action bar) and the
+    nearby-features chart card; below them the Manual re-pair form. Each action is bound (callback arguments)
+    to the folder, ``prev_ids`` / ``curr_ids`` and ``stamp``."""
     nearby = nearby_features(data.match_table, ref_row, load_settings().review.nearby_window_ft)
     paired = bool(prev_ids and curr_ids)
-    with st.container(border=True, key=f"{prefix}card_chart"):
-        st.plotly_chart(nearby_chart(nearby, {"prev": prev_ids, "curr": curr_ids}), key=f"{prefix}chart")
+    left_col, right_col = st.columns([3, 2])
+    with left_col, st.container(border=True, key=f"{prefix}card_side"):
+        if lead is not None:
+            lead()
+        if not reviewer:
+            st.caption(NEEDS_REVIEWER)
+        elif not paired:
+            st.caption(ONE_SIDED)
+        with st.container(key=f"{prefix}actions"):  # the design's action bar: kept in view by app_theme's CSS
+            left, right = st.columns(2)
+            left.button("Accept", type="primary", disabled=not (reviewer and (prev_ids or curr_ids)),
+                        key=f"{prefix}accept", on_click=save_decision,
+                        args=(str(path), stamp, "accept", prev_ids, curr_ids))
+            right.button("Reject", disabled=not (reviewer and paired), key=f"{prefix}reject",
+                         on_click=save_decision, args=(str(path), stamp, "reject", prev_ids, curr_ids))
+    with right_col, st.container(border=True, key=f"{prefix}card_chart"):
+        st.markdown(app_theme.card_title("Nearby features"), unsafe_allow_html=True)
+        st.plotly_chart(app_theme.style_chart(nearby_chart(nearby, {"prev": prev_ids, "curr": curr_ids})),
+                        theme="streamlit", key=f"{prefix}chart")
         st.caption(CLUSTER_NOTE)
-    if not reviewer:
-        st.caption(NEEDS_REVIEWER)
-    elif not paired:
-        st.caption(ONE_SIDED)
-    with st.container(key=f"{prefix}actions"):  # the design's action bar: kept in view by app_theme's CSS
-        left, right = st.columns(2)
-        left.button("Accept", type="primary", disabled=not (reviewer and (prev_ids or curr_ids)),
-                    key=f"{prefix}accept", on_click=save_decision,
-                    args=(str(path), stamp, "accept", prev_ids, curr_ids))
-        right.button("Reject", disabled=not (reviewer and paired), key=f"{prefix}reject",
-                     on_click=save_decision, args=(str(path), stamp, "reject", prev_ids, curr_ids))
     with st.form(f"{prefix}manual"):
         st.subheader("Manual re-pair")
         st.caption(MANUAL_RULES)
@@ -250,21 +258,24 @@ def _queue(path: Path, data, stamp, reviewer: str) -> None:
     if queue.empty:
         st.info(NO_QUEUE)
         return
-    st.metric("Pending review", len(queue))
     keys = [row_key(p, c) for p, c in zip(queue.prev_feature_id, queue.curr_feature_id)]
     labels = dict(zip(keys, (_label(r) for r in queue.itertuples())))
     picked = st.selectbox("Queue (lowest confidence first)", keys, key="review_pick", format_func=labels.get)
-    row = queue.iloc[keys.index(picked)]
+    position = keys.index(picked)
+    row = queue.iloc[position]
     score = row["score"]
-    st.markdown(app_theme.object_header_html(
-        f"Match {row['match_id']}",
-        [app_theme.confidence_pill_html(row["confidence"]), app_theme.pill_html("Pending", "warning")],
-        [("Type", row["match_type"]), ("Score", "—" if pd.isna(score) else f"{score:.2f}"),
-         ("Hint", row["missing_hint"] or "matched")]), unsafe_allow_html=True)
-    with st.container(border=True, key="review_card_side"):
+
+    def lead() -> None:
+        st.markdown(app_theme.object_header_html(
+            f"Match {row['match_id']}",
+            [app_theme.confidence_pill_html(row["confidence"]), app_theme.pill_html("Pending", "warning")],
+            [("Type", row["match_type"]), ("Score", "—" if pd.isna(score) else f"{score:.2f}"),
+             ("Hint", row["missing_hint"] or "matched"),
+             ("Queue", f"{position + 1} of {len(queue)} pending")]), unsafe_allow_html=True)
         st.dataframe(_side_frame(row), hide_index=True)
+
     _decision_panel(path, data, stamp, reviewer, _ids(row["prev_feature_id"]), _ids(row["curr_feature_id"]), row,
-                    "review_", "")
+                    "review_", "", lead)
 
 
 def _rows_of(table: pd.DataFrame, prev_ids: list[str], curr_ids: list[str]) -> pd.DataFrame:
@@ -275,7 +286,11 @@ def _rows_of(table: pd.DataFrame, prev_ids: list[str], curr_ids: list[str]) -> p
 
 
 def _corrections(path: Path, data, stamp, reviewer: str) -> None:
-    st.subheader("Correct a decision")
+    with st.expander("Correct an earlier decision"):
+        _correction_body(path, data, stamp, reviewer)
+
+
+def _correction_body(path: Path, data, stamp, reviewer: str) -> None:
     st.caption(CORRECTION_HELP)
     decided = decisions_in_force(data)
     if decided.empty:
@@ -287,12 +302,16 @@ def _corrections(path: Path, data, stamp, reviewer: str) -> None:
         format_func=lambda d: (f"{d} {by_id[d].decision}: {by_id[d].prev_feature_ids or '(none)'} / "
                                f"{by_id[d].curr_feature_ids or '(none)'} ({by_id[d].status})"))
     d = by_id[picked]
-    st.write(f"Current decision: {d.decision} by {d.reviewer} at {d.decided_utc}. Status: {d.status}.")
     prev_ids, curr_ids = _ids(d.prev_feature_ids), _ids(d.curr_feature_ids)
     rows = _rows_of(data.match_table, prev_ids, curr_ids)
-    st.dataframe(rows[ROW_COLUMNS], hide_index=True)
+    shown = rows[ROW_COLUMNS]
+
+    def lead() -> None:
+        st.write(f"Current decision: {d.decision} by {d.reviewer} at {d.decided_utc}. Status: {d.status}.")
+        st.dataframe(shown, hide_index=True, column_config=column_config(shown))
+
     _decision_panel(path, data, stamp, reviewer, prev_ids, curr_ids, rows.iloc[0] if len(rows) else None,
-                    "fix_", "fix_")
+                    "fix_", "fix_", lead)
 
 
 def rerun_button(path, key: str = "review_rerun") -> None:
@@ -308,9 +327,8 @@ def rerun_button(path, key: str = "review_rerun") -> None:
 
 
 def review_queue_page() -> None:
-    st.title("Match review queue")
-    st.caption(DRAFT_LABEL)
     path = app_state.comparison_from_session()
+    app_theme.page_header("Match review queue", app_state.comparison_context(path))
     data = app_state.page_data(path)
     if data is None or data.match_table.empty:
         st.info(NO_DATA)
@@ -323,9 +341,11 @@ def review_queue_page() -> None:
     reviewer = st.session_state.get(app_state.REVIEWER_KEY, "").strip()
     unapplied = not_applied(data)
     if not unapplied.empty:
-        st.subheader("Decisions not applied")
-        st.caption("These log entries did not take effect on the last run; the reason says why.")
-        st.dataframe(unapplied, hide_index=True)
+        with st.container(border=True, key="card_unapplied"):
+            st.markdown(app_theme.card_title("Decisions not applied"), unsafe_allow_html=True)
+            st.markdown(app_theme.muted_html("These log entries did not take effect on the last run; the reason "
+                                             "says why."), unsafe_allow_html=True)
+            st.dataframe(unapplied, hide_index=True, column_config=column_config(unapplied))
     _queue(path, data, stamp, reviewer)
     _corrections(path, data, stamp, reviewer)
     rerun_button(path)

@@ -12,8 +12,8 @@ from ili.pipeline import STAGES, run_pipeline
 from test_pipeline import FOLDER, _inputs
 
 ROOT = Path(__file__).resolve().parents[1]
-PAGES = ["Run setup", "Weld alignment", "Match review queue", "Growth and remaining life explorer",
-         "Dig list and report export"]
+PAGES = ["Home", "Run setup", "Weld alignment", "Match review queue", "Growth and remaining life explorer",
+         "Analysis table", "Dig list", "Reports"]
 APP = str(ROOT / "app" / "streamlit_app.py")
 SCRIPT_CONFIG = ROOT / "app" / ".streamlit" / "config.toml"
 
@@ -74,7 +74,7 @@ def _app(**state):
 def _files_app():
     """The app with every pipeline-data table set to "Choose a file" (an empty field otherwise opens on typing)."""
     from ili.app_pages_setup import REFERENCE_OPTIONAL, REFERENCE_REQUIRED, USE_FILE
-    return _app(**{f"setup_{n}_mode": USE_FILE for n in (*REFERENCE_REQUIRED, *REFERENCE_OPTIONAL)})
+    return _app(page="Run setup", **{f"setup_{n}_mode": USE_FILE for n in (*REFERENCE_REQUIRED, *REFERENCE_OPTIONAL)})
 
 
 def _all_text(at):
@@ -84,7 +84,7 @@ def _all_text(at):
 def test_app_starts_with_draft_label():
     at = _app().run()
     assert not at.exception
-    assert any('class="ili-shell"' in m.value and DRAFT_LABEL in m.value for m in at.markdown)
+    assert any("nemi-badge" in m.value and DRAFT_LABEL in m.value for m in at.markdown)
     assert at.text_input(key="reviewer").value == ""
 
 
@@ -102,9 +102,9 @@ def test_run_setup_runs_pipeline(synth, tmp_path):
     assert not at.error
     assert at.session_state[app_state.COMPARISON_KEY] == str(inputs.out / FOLDER)
     assert (inputs.out / FOLDER / "report.html").is_file()
-    # the page redraws after the run, so the breadcrumb names the new folder (it was drawn before the run)
-    crumbs = [m.value for m in at.markdown if 'class="ili-breadcrumb"' in m.value]
-    assert len(crumbs) == 1 and FOLDER in crumbs[0] and str(inputs.out / FOLDER) in crumbs[0]
+    # the sidebar names the new folder, with its full path as the tooltip
+    side = " ".join(m.value for m in at.sidebar.markdown)
+    assert FOLDER in side and str(inputs.out / FOLDER) in side
 
 
 def test_run_setup_shows_failing_stderr(synth, tmp_path):
@@ -138,11 +138,11 @@ def test_every_input_has_one_place_on_the_page():
 
 def test_empty_fields_open_on_typing_and_set_ones_on_the_file(tmp_path):
     from ili.app_pages_setup import TYPE_IN, USE_FILE
-    at = _app().run()
+    at = _app(page="Run setup").run()
     assert not at.exception
     assert at.session_state["setup_pipe_mode"] == TYPE_IN
     assert at.session_state["setup_out"]  # the output folder has a default
-    at = _app(setup_pipe=str(tmp_path / "pipe.csv")).run()
+    at = _app(page="Run setup", setup_pipe=str(tmp_path / "pipe.csv")).run()
     assert at.session_state["setup_pipe_mode"] == USE_FILE
 
 
@@ -156,7 +156,7 @@ def test_typed_tables_are_saved_and_run(synth, tmp_path):
     state = {f"setup_{n}_mode": TYPE_IN for n in REFERENCE_REQUIRED}
     state |= {f"setup_{n}_seed": seed_table(n, str(getattr(inputs, n))) for n in REFERENCE_REQUIRED}
     state |= {f"setup_{n}_mode": USE_FILE for n in ("repairs", "crossings")}
-    at = _app(**state).run()
+    at = _app(page="Run setup", **state).run()
     for name in ("prev_tally", "prev_map", "curr_tally", "curr_map", "prev_run_date", "out", "repairs"):
         value = getattr(inputs, name)
         if value is not None:
@@ -173,7 +173,7 @@ def test_typed_tables_are_saved_and_run(synth, tmp_path):
 
 
 def test_typed_required_table_without_rows_is_an_error(tmp_path):
-    at = _app(setup_out=str(tmp_path / "out")).run()  # empty fields: the pipeline data opens on typing
+    at = _app(page="Run setup", setup_out=str(tmp_path / "out")).run()  # empty fields: the pipeline data opens on typing
     for name in ("prev_tally", "prev_map", "curr_tally", "curr_map"):
         at.text_input(key=f"setup_{name}").set_value(str(tmp_path / f"{name}.csv"))
     at.button[0].click().run()
@@ -185,14 +185,15 @@ def test_weld_alignment_page_shows_changed_sections(ran):
     at = _app(comparison_dir=str(folder)).run()
     at.radio(key="page").set_value("Weld alignment").run()
     assert not at.exception
-    assert [m.label for m in at.metric][-1] == "Changed sections"
+    tiles = [str(m.value) for m in at.markdown if str(m.value).startswith('<div class="nemi-kpi')]
+    assert len(tiles) == 4 and "Changed sections" in tiles[-1]
     assert len(at.dataframe) == 1 and len(at.dataframe[0].value) == 7
     assert DRAFT_LABEL in _all_text(at)
 
 
 def test_pages_without_data_show_neutral_text_and_draft():
     at = _app().run()
-    for page in PAGES[1:]:
+    for page in PAGES[2:]:
         at.radio(key="page").set_value(page).run()
         assert not at.exception
         assert [i.value for i in at.info] == ["No data yet: run the pipeline on the Run setup page."]
@@ -202,10 +203,13 @@ def test_pages_without_data_show_neutral_text_and_draft():
 def test_pages_with_data_show_tables_and_draft(ran):
     _, folder = ran
     at = _app(comparison_dir=str(folder)).run()
-    for page in PAGES[2:]:
+    for page in PAGES[3:]:
         at.radio(key="page").set_value(page).run()
         assert not at.exception and not at.info and not at.error
-        assert len(at.dataframe) >= (2 if page == PAGES[4] else 1)
+        if page == "Reports":  # the report files, each with its download button: no table
+            assert len(at.get("download_button")) >= 1
+        else:
+            assert len(at.dataframe) >= (2 if page == "Dig list" else 1)
         assert DRAFT_LABEL in _all_text(at)
 
 
@@ -261,7 +265,7 @@ def test_app_refuses_to_run_when_not_local(option, value):
         _set_options(old, "test restore")
     assert not at.exception
     assert len(at.error) == 1 and "refuses to start" in at.error[0].value and option in at.error[0].value
-    assert any('class="ili-shell"' in m.value and DRAFT_LABEL in m.value for m in at.markdown)
+    assert any("nemi-badge" in m.value and DRAFT_LABEL in m.value for m in at.markdown)
     assert DRAFT_LABEL in _all_text(at)
     assert not at.text_input and not at.radio  # no reviewer field, no page
 
@@ -275,11 +279,12 @@ def test_unreadable_log_is_an_error_on_every_page_not_a_traceback(ran, tmp_path)
     (work / REVIEWS_FILE).write_text(",".join(REVIEW_COLUMNS) + "\nR000001,approve,A,B,Pat,2026-10-27T12:00:00Z,\n",
                                      encoding="utf-8")
     at = _app(comparison_dir=str(work)).run()
-    for page in PAGES[1:]:
+    for page in [PAGES[0], *PAGES[2:]]:
         at.radio(key="page").set_value(page).run()
         assert not at.exception, page
         assert len(at.error) == 1 and "reviews.csv: line 2" in at.error[0].value, page
         assert DRAFT_LABEL in _all_text(at)
+        assert any("nemi-badge" in m.value and DRAFT_LABEL in m.value for m in at.markdown), page
 
 
 def test_rerun_setup_is_the_shown_folders(ran, tmp_path):
@@ -298,3 +303,25 @@ def test_rerun_setup_is_the_shown_folders(ran, tmp_path):
     (other / "pipeline_inputs.json").unlink()
     assert app_state.inputs_from_session(other, session) is None
     assert app_state.inputs_from_session(None, session) is inputs
+
+
+def test_step_heading_escapes_and_marks_optional():
+    from ili import app_theme
+    html = app_theme.step_heading(3, "Optional <data>", True)
+    assert 'class="nemi-step"' in html and ">3<" in html and "&lt;data&gt;" in html and "optional" in html
+    assert "optional" not in app_theme.step_heading(1, "Inspections", False)
+
+
+def test_every_page_renders_without_data():
+    at = _app().run()
+    for page in PAGES:
+        at.radio(key="page").set_value(page).run()
+        assert not at.exception, page
+
+
+def test_every_page_renders_with_data(ran):
+    _, folder = ran
+    at = _app(comparison_dir=str(folder)).run()
+    for page in PAGES:
+        at.radio(key="page").set_value(page).run()
+        assert not at.exception, page

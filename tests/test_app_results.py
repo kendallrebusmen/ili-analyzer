@@ -12,7 +12,8 @@ from ili.review import FLAGS_FILE, load_flags
 from test_app_setup import _all_text, _app, isolated_outputs, ran, script_config  # noqa: F401  (fixtures)
 
 EXPLORER = "Growth and remaining life explorer"
-EXPORT = "Dig list and report export"
+EXPORT = "Dig list"  # the dig list and the manual flags
+REPORTS = "Reports"
 
 
 def _data():
@@ -100,19 +101,26 @@ def test_flag_unchanged_writes_nothing(ran, tmp_path):
     assert not at.exception and not (work / FLAGS_FILE).exists()
 
 
-def test_export_buttons_present_after_report(ran, tmp_path):
+def test_dig_list_page_after_report(ran, tmp_path):
     _, folder = ran
-    at, work = _page(folder, tmp_path, EXPORT)
+    at, _ = _page(folder, tmp_path, EXPORT)
     assert DRAFT_LABEL in _all_text(at)
-    assert len(at.get("download_button")) == 4
     assert any(b.label == "Rerun the pipeline" for b in at.button)
-    assert not at.info and not at.error
+    assert not at.info and not at.error and not at.get("download_button")
     assert len(at.dataframe) >= 2 and len(at.dataframe[0].value) > 0  # the dig list, then the flags table
-    for name in ("report.pdf", "report.html", "dig_list.xlsx", "run_manifest.json"):
+
+
+def test_reports_page_download_buttons_after_report(ran, tmp_path):
+    _, folder = ran
+    at, work = _page(folder, tmp_path, REPORTS)
+    assert DRAFT_LABEL in _all_text(at)
+    assert len(at.get("download_button")) == 5
+    assert not at.info and not at.error
+    for name in ("report.pdf", "report.html", "dig_list.xlsx", "classified_anomalies.xlsx", "run_manifest.json"):
         assert name in _all_text(at)
     (work / "dig_list.xlsx").unlink()
     at.run()
-    assert len(at.get("download_button")) == 3
+    assert len(at.get("download_button")) == 4
 
 
 def test_flag_save_on_a_locked_log_says_close_the_file(ran, tmp_path, monkeypatch):
@@ -130,3 +138,12 @@ def test_flag_save_on_a_locked_log_says_close_the_file(ran, tmp_path, monkeypatc
     [b for b in at.button if b.label == "Save flags"][0].click().run()
     assert not at.exception
     assert [e.value for e in at.error if "feature_flags.csv could not be written" in e.value and "close it" in e.value]
+
+
+def test_dig_list_page_has_tabs_and_reports_has_none(ran, tmp_path):
+    _, folder = ran
+    at, _ = _page(folder, tmp_path, EXPORT)
+    assert [t.label for t in at.tabs] == ["Dig list", "Manual flags"]
+    assert any(b.label == "Rerun the pipeline" for b in at.button)
+    at, _ = _page(folder, tmp_path / "r", REPORTS)
+    assert not at.tabs

@@ -463,6 +463,8 @@ def variable_dicts(variables: pd.DataFrame) -> list[dict]:
 # Governing-category priority, most severe first. Every current anomaly gets at least ``evaluate``
 # ((h)(4)(iv)); a metal-loss feature M6 flags by remaining life gets ``imp_scheduled``.
 CATEGORY_PRIORITY = ("immediate", "60_day", "180_day", "imp_scheduled", "evaluate")
+CATEGORY_WORDS = {"immediate": "Immediate", "60_day": "60-day", "180_day": "180-day",
+                  "imp_scheduled": "IMP scheduled", "evaluate": "Evaluate", "removed": "Removed"}
 # Spec 6.8: immediate conditions require a temporary pressure reduction or shutdown until repaired.
 IMMEDIATE_ACTION_NOTE = "Requires temporary pressure reduction or shutdown until repaired."
 # Pseudo-rule ids for the categories no criteria-file rule decides.

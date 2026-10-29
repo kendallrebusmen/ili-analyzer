@@ -6,6 +6,7 @@ details. The output folder, settings and criteria files sit under "Advanced". Ty
 CSVs under ``<output folder>/entered/`` before the run (``app_setup_tables``)."""
 
 from dataclasses import fields
+from html import escape
 from pathlib import Path
 
 import pandas as pd
@@ -13,13 +14,14 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from ili import app_setup_tables as tables
-from ili import app_state
+from ili import app_state, app_theme
 from ili.align_welds import DRAFT_LABEL
+from ili.app_columns import column_config
 from ili.app_state import comparison_of
 from ili.config import DEFAULT_SETTINGS, PROJECT_ROOT
 from ili.pipeline import _PATH_FIELDS, _REQUIRED, STAGES, PipelineInputs, StageResult, run_pipeline
 from ili.reference import REPAIR_TYPES
-from ili.report_charts import INK, MUTED, TEMPLATE
+from ili.report_charts import MUTED
 
 DATA_DIR = PROJECT_ROOT / "data"
 VENDOR_MAP_DIR = PROJECT_ROOT / "config" / "vendor_maps"
@@ -101,7 +103,7 @@ def show_results(results: list[StageResult]) -> None:
 
 def run_and_refresh(inputs: PipelineInputs, results_key: str) -> None:
     """Run the pipeline, keep its results for the next script run and rerun the script, so every page
-    element (the breadcrumb's comparison folder included) shows the new outputs."""
+    element (the sidebar's comparison folder name included) shows the new outputs."""
     with st.spinner("Running the pipeline"):
         results = run_pipeline(inputs)
     st.session_state[results_key] = results
@@ -111,9 +113,9 @@ def run_and_refresh(inputs: PipelineInputs, results_key: str) -> None:
 def alignment_chart(weld_map: pd.DataFrame, changed: pd.DataFrame) -> go.Figure:
     """Joint length mismatch along the current-run log distance, by match type, changed sections shaded."""
     fig = go.Figure()
-    fig.update_layout(template=TEMPLATE, title="Joint length mismatch along the current run",
+    fig.update_layout(title="Joint length mismatch along the current run",
                       xaxis_title="Current-run log distance (ft)", yaxis_title="Length mismatch (ft)",
-                      font={"color": INK}, legend_title_text="Match type")
+                      legend_title_text="Match type")
     for _, sec in changed.iterrows():
         fig.add_vrect(x0=sec["curr_start_ft"], x1=sec["curr_end_ft"], fillcolor=SHADE, line_width=0,
                       layer="below")
@@ -239,8 +241,7 @@ def _still_needed(typed: dict) -> list[str]:
 
 
 def run_setup_page() -> None:
-    st.title("Run setup")
-    st.caption(DRAFT_LABEL)
+    app_theme.page_header("Run setup", None)
     st.markdown("Four steps. Items marked * are needed for a run; everything else is optional.")
     defaults = _setup_defaults()
     for f in fields(PipelineInputs):
@@ -249,8 +250,8 @@ def run_setup_page() -> None:
     files, maps = data_files(), vendor_maps()
     typed = {}
 
-    with st.container(border=True):
-        st.subheader("1  Inspections")
+    with st.container(border=True, key="card_step_1"):
+        st.markdown(app_theme.step_heading(1, "Inspections", False), unsafe_allow_html=True)
         st.caption("The two in-line inspection tallies to compare, and the vendor map that reads each one.")
         left, right = st.columns(2)
         for column, run in ((left, "prev"), (right, "curr")):
@@ -261,33 +262,42 @@ def run_setup_page() -> None:
                 st.text_input(_label(f"{run}_run_date"), key=field_key(f"{run}_run_date"),
                               placeholder="YYYY-MM-DD; leave blank when the tally carries it")
 
-    with st.container(border=True):
-        st.subheader("2  Pipeline data")
+    with st.container(border=True, key="card_step_2"):
+        st.markdown(app_theme.step_heading(2, "Pipeline data", False), unsafe_allow_html=True)
         st.caption("Choose a file, or type the values in. Distances are current-run log distance in feet.")
         for name in REFERENCE_REQUIRED:
             typed[name] = _reference_field(name, files)
 
-    with st.expander("3  Optional data: repairs, foreign crossings and dig results"):
-        for name in REFERENCE_OPTIONAL:
-            typed[name] = _reference_field(name, files)
-        st.markdown(_heading("digs"))
-        st.caption("Field measurements from digs, for the back-test (digs.csv).")
-        _file_field("digs", files, label=False)
+    with st.container(border=True, key="card_step_3"):
+        st.markdown(app_theme.step_heading(3, "Repairs, foreign crossings and dig results", True),
+                    unsafe_allow_html=True)
+        with st.expander("Optional data", expanded=False):
+            for name in REFERENCE_OPTIONAL:
+                typed[name] = _reference_field(name, files)
+            st.markdown(_heading("digs"))
+            st.caption("Field measurements from digs, for the back-test (digs.csv).")
+            _file_field("digs", files, label=False)
 
-    with st.expander("4  Report details: names and dates on the report and the PDF cover"):
-        left, right = st.columns(2)
-        for i, name in enumerate(REPORT_FIELDS):
-            (left if i % 2 == 0 else right).text_input(_label(name), key=field_key(name),
-                                                       placeholder=PLACEHOLDERS.get(name, ""))
+    with st.container(border=True, key="card_step_4"):
+        st.markdown(app_theme.step_heading(4, "Report details", True), unsafe_allow_html=True)
+        with st.expander("Names and dates on the report and the PDF cover", expanded=False):
+            left, right = st.columns(2)
+            for i, name in enumerate(REPORT_FIELDS):
+                (left if i % 2 == 0 else right).text_input(_label(name), key=field_key(name),
+                                                           placeholder=PLACEHOLDERS.get(name, ""))
 
-    with st.expander("Advanced: output folder, settings and repair criteria"):
-        for name in ADVANCED_FIELDS:
-            st.text_input(_label(name), key=field_key(name), placeholder=PLACEHOLDERS.get(name, ""))
+    with st.container(border=True, key="card_step_advanced"):
+        st.markdown('<div class="nemi-step-head"><strong>Advanced</strong></div>', unsafe_allow_html=True)
+        with st.expander("Output folder, settings and repair criteria", expanded=False):
+            for name in ADVANCED_FIELDS:
+                st.text_input(_label(name), key=field_key(name), placeholder=PLACEHOLDERS.get(name, ""))
 
     needed = _still_needed(typed)
+    left, right = st.columns([3, 1])
     if needed:
-        st.caption("Still needed: " + ", ".join(needed) + ".")
-    if st.button("Run", type="primary"):
+        left.caption("Still needed: " + ", ".join(needed) + ".")
+    run_clicked = right.button("Run", type="primary")
+    if run_clicked:
         try:
             values = _save_typed(typed, {f.name: st.session_state[field_key(f.name)] for f in fields(PipelineInputs)})
             inputs = build_inputs(values)
@@ -301,26 +311,31 @@ def run_setup_page() -> None:
         if folder is not None:
             st.session_state[app_state.COMPARISON_KEY] = str(folder)
         st.session_state["setup_results"] = results
-        st.rerun()  # the breadcrumb was drawn before the run: draw it again with the new folder
+        st.rerun()  # the sidebar folder name was drawn before the run: draw it again with the new folder
     if (results := st.session_state.pop("setup_results", None)) is not None:
         show_results(results)
 
 
 def weld_alignment_page() -> None:
-    st.title("Weld alignment")
-    st.caption(DRAFT_LABEL)
     path = app_state.comparison_from_session()
+    app_theme.page_header("Weld alignment", app_state.comparison_context(path))
     data = app_state.page_data(path)
     if data is None or not data.alignment_summary:
         st.info(NO_DATA)
         return
     s = data.alignment_summary
-    cols = st.columns(4)
-    cols[0].metric("Alignment rate", f"{s['alignment_rate']:.1%}")
-    cols[1].metric("Anchor pairs", s["n_anchor_pairs"])
-    cols[2].metric("Sections", s["n_sections"])
-    cols[3].metric("Changed sections", s["n_changed_sections"])
-    st.subheader("Changed sections")
-    st.dataframe(data.changed_sections, hide_index=True)
+    tiles = (("Alignment rate", f"{s['alignment_rate']:.1%}"), ("Anchor pairs", s["n_anchor_pairs"]),
+             ("Sections", s["n_sections"]), ("Changed sections", s["n_changed_sections"]))
+    for col, (label, value) in zip(st.columns(4), tiles):
+        col.markdown(f'<div class="nemi-kpi"><span class="nemi-kpi-label">{escape(label)}</span>'
+                     f'<strong>{escape(str(value))}</strong></div>', unsafe_allow_html=True)
     if not data.weld_map.empty:
-        st.plotly_chart(alignment_chart(data.weld_map, data.changed_sections))
+        with st.container(border=True, key="card_weld_chart"):
+            st.markdown(app_theme.card_title("Joint length mismatch along the current run"), unsafe_allow_html=True)
+            st.plotly_chart(app_theme.style_chart(alignment_chart(data.weld_map, data.changed_sections)),
+                            theme="streamlit")
+    with st.container(border=True, key="card_weld_sections"):
+        st.markdown(app_theme.card_title("Changed sections"), unsafe_allow_html=True)
+        n = len(data.changed_sections)
+        st.markdown(app_theme.muted_html(f"{n} row{'' if n == 1 else 's'}"), unsafe_allow_html=True)
+        st.dataframe(data.changed_sections, hide_index=True, column_config=column_config(data.changed_sections))

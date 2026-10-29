@@ -1,4 +1,4 @@
-# ILI Run-Comparison Analyzer
+# Nemi — ILI Run-Comparison Analyzer
 
 > **DRAFT – for review by qualified personnel.** This tool is a decision aid, not a decision-maker. Nothing it produces is approved until a qualified integrity engineer reviews it.
 
@@ -101,7 +101,8 @@ py -3.13 -m venv .venv
 # --line-name, --prev-tool and --curr-tool fill the header; --prepared-for and --prepared-by name the client and
 # the author on the PDF cover)
 # Also writes anomaly_distribution.csv (depth and dent bins), joint_ml_counts.csv (per-joint counts),
-# anomalies_of_interest.csv and imp_class.csv (each classified feature's IMP class).
+# anomalies_of_interest.csv and imp_class.csv (each classified feature's IMP class), and the analysis table
+# (analysis_table.csv and classified_anomalies.xlsx: one row per classified anomaly, the consultant's layout).
 .\.venv\Scripts\python.exe -m ili.report `
     --prev outputs\standardized\2021_vendorA.csv `
     --curr outputs\standardized\2026_vendorB.csv `
@@ -131,8 +132,10 @@ py -3.13 -m venv .venv
     --out outputs
 
 # The review app (local only: localhost, no telemetry; app/.streamlit/config.toml sets both, and the app
-# refuses to run if the options in force differ). Pages: Run setup, Weld alignment, Match review queue
-# (with "Correct a decision"), Growth and remaining life explorer, Dig list and report export.
+# refuses to run if the options in force differ). Nemi opens on a left-sidebar menu with seven pages: Home
+# (repair conditions, what needs attention, run facts), Run setup, Weld alignment, Match review (with
+# "Correct a decision"), Growth Rates (the growth and remaining life explorer), Dig List (the dig list and the
+# manual flags) and Reports (the report files to download).
 .\.venv\Scripts\python.exe -m streamlit run app/streamlit_app.py --server.address localhost --browser.gatherUsageStats false
 ```
 
@@ -175,6 +178,7 @@ call (spec Section 10, Open Questions 4 and 10). New outputs, in the comparison 
 | `remaining_life.csv` | ERF, FPR, failure mode, condition dates, values projected to the next assessment (`exceeds_80pct_next`; pressures blank once the projected depth reaches the wall) |
 | `imp_class.csv` | each classified feature's IMP class, years to condition (RL, else its bound) and whether it was previously repaired; the dig list carries `imp_class` and `previously_repaired` |
 | `report.html` | IMP class summary with the "YTC < N yrs" row (`report.ytc_flag_years`), pipe summary and length check, orientation and elevation charts, methods appendix |
+| `analysis_table.csv` / `classified_anomalies.xlsx` | the analysis table: one row per classified anomaly in the consultant's "Classified_Anomalies" columns, only values the pipeline computes (the app's Analysis Table page shows it; the workbook has the DRAFT label in row 1) |
 | `anomaly_distribution.csv` | metal-loss depth bins and dent bins (`report.depth_bins_pct_wt`, `report.dent_bins_pct_od`) |
 | `joint_ml_counts.csv` | metal-loss counts per joint, both runs, by surface |
 | `anomalies_of_interest.csv` | the anomaly groups with the shortest remaining life (RL, else its upper bound; `min_rl_is_bound`), then the deepest (`report.aoi_group_ft`, `report.aoi_count`) |

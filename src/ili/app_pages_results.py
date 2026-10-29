@@ -5,14 +5,16 @@ pipeline is rerun. Each flag shows the status the last classification run record
 a flag saved since then is marked "saved after the last run — rerun to apply" (as in the report).
 """
 
+from html import escape
 from pathlib import Path
 from types import SimpleNamespace
 
 import pandas as pd
 import streamlit as st
 
-from ili import app_state
+from ili import app_state, app_theme
 from ili.align_welds import DRAFT_LABEL
+from ili.app_columns import CATEGORY_WORDS, column_config, display_frame
 from ili.app_pages_review import NEEDS_REVIEWER, SAVED_AFTER_RUN, rerun_button, write_error
 from ili.app_pages_setup import NO_DATA
 from ili.classify import criteria_path
@@ -29,6 +31,8 @@ EXPLORER_COLUMNS = ["match_id", "match_type", "curr_feature_id", "curr_log_dist_
 EXPORTS = (("report.pdf", "application/pdf", "the PDF report, laid out for print and for the client"),
            ("report.html", "text/html", "the HTML report"),
            ("dig_list.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "the Excel dig list"),
+           ("classified_anomalies.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            "the classified anomalies table, the consultant's layout"),
            ("run_manifest.json", "application/json", "the run manifest"))
 FLAG_HELP = {"manual_immediate": "Treat as immediate (manual flag)",
              "field_crack_confirmed": "Crack confirmed in the field",
@@ -56,27 +60,36 @@ def _options(table: pd.DataFrame, column: str) -> list[str]:
 
 
 def explorer_page() -> None:
-    st.title("Growth and remaining life explorer")
-    st.caption(DRAFT_LABEL)
     path = app_state.comparison_from_session()
+    app_theme.page_header("Growth and remaining life explorer", app_state.comparison_context(path))
     data = app_state.page_data(path)
     if data is None or data.growth.empty or data.remaining_life.empty or data.classification.empty:
         st.info(NO_DATA)
         return
     everything = explorer_rows(data, [], [], [])
-    left, mid, right = st.columns(3)
-    segments = left.multiselect("Segment", _options(everything, "segment_id"), key="explorer_segments")
-    categories = mid.multiselect("Governing category", _options(everything, "governing_category"),
-                                 key="explorer_categories")
-    methods = right.multiselect("Governing growth method", _options(everything, "governing_method"),
-                                key="explorer_methods")
+    with st.container(border=True, key="card_explorer_filters"):
+        st.markdown(app_theme.card_title("Filters"), unsafe_allow_html=True)
+        left, mid, right = st.columns(3)
+        segments = left.multiselect("Segment", _options(everything, "segment_id"), key="explorer_segments")
+        categories = mid.multiselect("Repair category", _options(everything, "governing_category"),
+                                     key="explorer_categories", format_func=lambda c: CATEGORY_WORDS.get(c, c))
+        methods = right.multiselect("Growth method", _options(everything, "governing_method"),
+                                    key="explorer_methods")
     rows = explorer_rows(data, segments, categories, methods)
-    st.metric("Rows shown", len(rows))
-    st.dataframe(rows, hide_index=True)
+    shown_rows = display_frame(rows)  # readable category words; the stored values drive the filters
+    with st.container(border=True, key="card_explorer_table"):
+        st.markdown(app_theme.card_title("Growth and remaining life by feature"), unsafe_allow_html=True)
+        st.markdown(app_theme.muted_html(f"{len(rows)} row{'' if len(rows) == 1 else 's'}"), unsafe_allow_html=True)
+        st.dataframe(shown_rows, hide_index=True, column_config=column_config(shown_rows, pin=True))
     shown = SimpleNamespace(growth=data.growth[data.growth.match_id.isin(rows.match_id)],
                             remaining_life=data.remaining_life[data.remaining_life.match_id.isin(rows.match_id)])
-    st.plotly_chart(growth_vs_distance(shown))
-    st.plotly_chart(rl_distribution(shown))
+    chart_left, chart_right = st.columns(2)
+    with chart_left, st.container(border=True, key="card_explorer_growth"):
+        st.markdown(app_theme.card_title("Growth rate along the line"), unsafe_allow_html=True)
+        st.plotly_chart(app_theme.style_chart(growth_vs_distance(shown)), theme="streamlit")
+    with chart_right, st.container(border=True, key="card_explorer_life"):
+        st.markdown(app_theme.card_title("Remaining life distribution"), unsafe_allow_html=True)
+        st.plotly_chart(app_theme.style_chart(rl_distribution(shown)), theme="streamlit")
 
 
 def _members(classification: pd.DataFrame) -> list[str]:
@@ -125,26 +138,31 @@ def _save_flags(path: Path, feature: str, wanted: dict[str, bool], current: dict
 
 
 def _flag_editor(path: Path, data) -> None:
-    st.subheader("Manual flags")
-    st.caption("Flags are per current-run feature (a cluster's members are separate ids). A flag takes effect "
-               "when the pipeline is rerun.")
     if saved := st.session_state.pop("flag_saved", None):
         st.success(saved)
     reviewer = st.session_state.get(app_state.REVIEWER_KEY, "").strip()
     ids = _members(data.classification)
-    feature = st.selectbox("Current-run feature", ids, key="flag_feature")
-    current = {k[1]: v for k, v in effective_flags(data.flags).items() if k[0] == feature}
-    with st.form("flag_form"):
-        wanted = {name: st.checkbox(FLAG_HELP[name], value=current.get(name, False), key=f"flag_{name}_{feature}")
-                  for name in FLAG_NAMES}
-        note = st.text_input("Note", key="flag_note")
-        submitted = st.form_submit_button("Save flags", disabled=not reviewer)
-    if not reviewer:
-        st.caption(NEEDS_REVIEWER)
-    if submitted:
-        _save_flags(path, feature, wanted, current, note)
-    st.caption("Flags in force, with the status the last run recorded.")
-    st.dataframe(flag_table(data), hide_index=True)
+    with st.container(border=True, key="card_flag_edit"):
+        st.markdown(app_theme.card_title("Flag a feature"), unsafe_allow_html=True)
+        st.markdown(app_theme.muted_html("Flags are per current-run feature (a cluster's members are separate "
+                                         "ids). A flag takes effect when the pipeline is rerun."),
+                    unsafe_allow_html=True)
+        feature = st.selectbox("Current-run feature", ids, key="flag_feature")
+        current = {k[1]: v for k, v in effective_flags(data.flags).items() if k[0] == feature}
+        with st.form("flag_form"):
+            wanted = {name: st.checkbox(FLAG_HELP[name], value=current.get(name, False),
+                                        key=f"flag_{name}_{feature}") for name in FLAG_NAMES}
+            note = st.text_input("Note", key="flag_note")
+            submitted = st.form_submit_button("Save flags", disabled=not reviewer)
+        if not reviewer:
+            st.caption(NEEDS_REVIEWER)
+        if submitted:
+            _save_flags(path, feature, wanted, current, note)
+    flags = flag_table(data)
+    with st.container(border=True, key="card_flags_in_force"):
+        st.markdown(app_theme.card_title("Flags in force"), unsafe_allow_html=True)
+        st.markdown(app_theme.muted_html("With the status the last run recorded."), unsafe_allow_html=True)
+        st.dataframe(flags, hide_index=True, column_config=column_config(flags))
 
 
 def _absolute(p):
@@ -189,39 +207,58 @@ def _report_view(path: Path, data, setup):
 
 
 def _downloads(path: Path) -> None:
-    st.subheader("Downloads")
     present = [e for e in EXPORTS if (path / e[0]).is_file()]
-    if not present:
-        st.caption("No report files yet: rerun the pipeline to write them.")
-    for name, mime, what in present:
-        st.download_button(f"Download {name}", (path / name).read_bytes(), file_name=name, mime=mime,
-                           key=f"download_{name}")
-        st.caption(f"{name} is {what}. {DRAFT_LABEL}")
+    with st.container(border=True, key="card_downloads"):
+        st.markdown(app_theme.card_title("Report files"), unsafe_allow_html=True)
+        if not present:
+            st.caption("No report files yet: rerun the pipeline to write them.")
+        for i, (name, mime, what) in enumerate(present):
+            with st.container(key=f"download_row_{i}"):
+                text, action = st.columns([4, 1.6], vertical_alignment="center")
+                text.markdown(f'<div class="nemi-dl">{escape(name)}<span>{escape(what[:1].upper() + what[1:])}'
+                              f'</span></div>', unsafe_allow_html=True)
+                text.caption(DRAFT_LABEL)
+                action.download_button(f"Download {name}", (path / name).read_bytes(), file_name=name, mime=mime,
+                                       key=f"download_{name}", icon=":material/download:", width="stretch")
 
 
-def export_page() -> None:
-    st.title("Dig list and report export")
-    st.caption(DRAFT_LABEL)
+def dig_list_page() -> None:
+    """The dig list and the manual flags that feed it (with the rerun that applies them)."""
     path = app_state.comparison_from_session()
+    app_theme.page_header("Dig list", app_state.comparison_context(path))
     data = app_state.page_data(path)
     if data is None or data.classification.empty:
         st.info(NO_DATA)
         return
     setup = app_state.inputs_from_session(path)
-    st.subheader("Dig list")
-    if setup is None:
-        st.warning("The dig list needs the run setup, which is not available: run the pipeline on the Run setup "
-                   "page.")
-    else:
-        digs, warnings, error = _report_view(path, data, setup)
-        for text in warnings:
-            st.warning(text)
-        if error:
-            st.error(error)
+    dig_tab, flags_tab = st.tabs(["Dig list", "Manual flags"])
+    with dig_tab:
+        if setup is None:
+            st.warning("The dig list needs the run setup, which is not available: run the pipeline on the Run "
+                       "setup page.")
         else:
-            st.caption(f"{len(digs)} features on the dig list as of the last run. {DRAFT_LABEL}")
-            st.dataframe(digs, hide_index=True)
-    _flag_editor(path, data)
-    st.subheader("Rerun")
-    rerun_button(path, key="export_rerun")
+            digs, warnings, error = _report_view(path, data, setup)
+            for text in warnings:
+                st.warning(text)
+            if error:
+                st.error(error)
+            else:
+                shown_digs = display_frame(digs)
+                with st.container(border=True, key="card_dig_list"):
+                    st.markdown(app_theme.card_title("Dig list"), unsafe_allow_html=True)
+                    st.caption(f"{len(digs)} features on the dig list as of the last run. {DRAFT_LABEL}")
+                    st.dataframe(shown_digs, hide_index=True, column_config=column_config(shown_digs, pin=True))
+    with flags_tab:
+        _flag_editor(path, data)
+        rerun_button(path, key="export_rerun")
+
+
+def reports_page() -> None:
+    """The report files of the comparison, each with its download button."""
+    path = app_state.comparison_from_session()
+    app_theme.page_header("Reports", app_state.comparison_context(path))
+    data = app_state.page_data(path)
+    if data is None or data.classification.empty:
+        st.info(NO_DATA)
+        return
     _downloads(path)

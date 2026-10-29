@@ -162,3 +162,16 @@ def page_data(path: Path | None) -> ComparisonData | None:
         import streamlit as st
         st.error(f"The comparison folder {path} cannot be read: {exc}")
         st.stop()
+
+
+def comparison_context(path: Path | None) -> str | None:
+    """``<line name> · <previous run date> → <current run date>`` from the folder's ``pipeline_inputs.json``
+    (a missing line name is left out); None without a folder or file."""
+    if path is None or not (Path(path) / INPUTS_FILE).is_file():
+        return None
+    try:
+        data = json.loads((Path(path) / INPUTS_FILE).read_text(encoding="utf-8"))
+        dates = f"{data.get('prev_run_date') or '?'} → {data.get('curr_run_date') or '?'}"
+        return f"{data['line_name']} · {dates}" if data.get("line_name") else dates
+    except (ValueError, OSError, AttributeError):
+        return None

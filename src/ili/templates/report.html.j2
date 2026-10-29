@@ -19,7 +19,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>ILI run comparison {{ head.prev_run_id }} vs {{ head.curr_run_id }} (DRAFT)</title>
+<title>Nemi — ILI run comparison {{ head.prev_run_id }} vs {{ head.curr_run_id }} (DRAFT)</title>
 <style>
 :root {
   --ink: #1f2328; --muted: #5b636e; --rule: #c9ced6; --rule-light: #e4e7eb; --paper: #ffffff;
@@ -95,11 +95,11 @@ code { font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; font-siz
 
 <section id="header">
 <p class="draft">{{ label }}</p>
-<h1>ILI run comparison: {{ head.prev_run_id }} vs {{ head.curr_run_id }}</h1>
+<h1>Nemi — ILI run comparison {{ head.prev_run_id }} vs {{ head.curr_run_id }}</h1>
 <dl class="facts">
 <dt>Line</dt><dd>{{ head.line_name }}</dd>
 <dt>Status</dt><dd>{{ label }}</dd>
-<dt>Generated (UTC)</dt><dd>{{ head.generated_utc }} by {{ head.generator }}</dd>
+<dt>Generated (UTC)</dt><dd>{{ head.generated_utc }} by {{ head.product }}</dd>
 </dl>
 {{ render_table(head.runs) }}
 <h3>Pipe summary</h3>

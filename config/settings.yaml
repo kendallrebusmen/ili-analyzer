@@ -1,4 +1,4 @@
-# ILI analyzer settings. Spec section 7.1.
+# Nemi settings. Spec section 7.1.
 # Every value marked PLACEHOLDER needs integrity-engineer sign-off before use on real data.
 # Units: US customary. pct_wt = percent of nominal wall thickness; mpy = mils per year;
 # ipy = inches per year; _in = inches; _ft = feet; _min = clock minutes (720 per revolution).

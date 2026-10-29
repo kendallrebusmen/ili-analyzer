@@ -113,7 +113,7 @@ def test_buttons_disabled_without_reviewer(ran, tmp_path):
     labels = {b.label: b for b in at.button}
     assert labels["Accept"].disabled and labels["Reject"].disabled
     assert labels["Save manual re-pair"].disabled
-    assert "reviewer" in _all_text(at)
+    assert "Reviewer box in the sidebar" in _all_text(at)
     # the setup the pipeline recorded in the folder is found, so Rerun is enabled
     assert labels["Rerun the pipeline"].disabled is False and NO_SETUP not in _all_text(at)
     assert not (work / REVIEWS_FILE).exists()
@@ -200,7 +200,7 @@ def test_rerun_runs_the_pipeline(ran):
     at.radio(key="page").set_value(PAGE).run()
     [b for b in at.button if b.label == "Rerun the pipeline"][0].click().run()
     assert not at.exception and not at.error
-    assert [e.label for e in at.expander] == [f"{s}: exit 0" for s in pipeline.STAGES]
+    assert [e.label for e in at.expander if ": exit " in e.label] == [f"{s}: exit 0" for s in pipeline.STAGES]
     assert at.success
 
 
@@ -214,7 +214,7 @@ def test_rerun_busy_shows_the_busy_result(ran):
     finally:
         pipeline._RUN_LOCK.release()
     assert not at.exception
-    assert [e.label for e in at.expander] == ["pipeline: exit 1"]
+    assert [e.label for e in at.expander if ": exit " in e.label] == ["pipeline: exit 1"]
     assert at.error and pipeline.BUSY_MESSAGE in at.error[0].value
 
 
@@ -331,6 +331,7 @@ def test_selected_match_has_enterprise_header_and_action_bar(ran, tmp_path):
 
 
 def test_side_by_side_cells_are_readable():
+    from ili.app_columns import field_label
     values = {f"{s}_{f}": None for s in ("prev", "curr") for f in app_pages_review.SIDE_FIELDS}
     values.update({"prev_wt_nom_in": 0.25, "curr_wt_nom_in": 0.24999999999999997, "prev_log_dist_ft": 1279.36,
                    "curr_log_dist_ft": 1273.6581364829394, "prev_depth_pct": float("nan"), "curr_depth_pct": 28.1,
@@ -338,12 +339,34 @@ def test_side_by_side_cells_are_readable():
                    "curr_feature_id": "B-1"})
     row = pd.Series(values, dtype=object)
     frame = app_pages_review._side_frame(row).set_index("field")
-    assert frame.loc["wt_nom_in"].tolist() == ["0.25", "0.25"]
-    assert frame.loc["log_dist_ft"].tolist() == ["1279.36", "1273.658"]
-    assert frame.loc["depth_pct"].tolist() == ["", "28.1"]
-    assert frame.loc["us_gw_id"].tolist() == ["GW00320", "32"]
-    assert frame.loc["dent_depth_in"].tolist() == ["", ""]
+    assert frame.loc[field_label("wt_nom_in")].tolist() == ["0.25", "0.25"]
+    assert frame.loc[field_label("log_dist_ft")].tolist() == ["1279.36", "1273.658"]
+    assert frame.loc[field_label("depth_pct")].tolist() == ["", "28.1"]
+    assert frame.loc[field_label("us_gw_id")].tolist() == ["GW00320", "32"]
+    assert frame.loc[field_label("dent_depth_in")].tolist() == ["", ""]
 
 
-def test_reviewer_hint_names_the_reviewer_box_not_a_sidebar():
-    assert "sidebar" not in app_pages_review.NEEDS_REVIEWER.lower()
+def test_reviewer_hint_names_the_reviewer_box_in_the_sidebar():
+    hint = app_pages_review.NEEDS_REVIEWER
+    assert "Reviewer" in hint and "sidebar" in hint
+
+
+def test_review_two_columns(ran, tmp_path):
+    _, folder = ran
+    at, _ = _page(folder, tmp_path)
+    assert "review_accept" in {b.key for b in at.button}
+    assert at.get("plotly_chart")
+    assert [b for b in at.button if b.label == "Accept"]
+    assert not [m for m in at.metric if m.label == "Pending review"]
+    assert any("pending" in m.value for m in at.markdown if 'class="ili-object"' in m.value)
+    assert [e.label for e in at.expander] == ["Correct an earlier decision"]
+
+
+def test_nearby_chart_selected_outline_reads_on_light_and_dark():
+    from ili.app_pages_review import nearby_chart
+    t = pd.DataFrame({"run": ["prev", "curr"], "feature_id": ["P1", "C1"], "pos_prev_ft": [1.0, 1.0],
+                      "clock_min": [60, 60], "depth_pct": [10.0, 12.0], "match_id": ["M1", "M1"],
+                      "match_type": ["1:1", "1:1"]})
+    fig = nearby_chart(t, {"prev": ["P1"], "curr": []})
+    line = fig.data[0].marker.line
+    assert line.color == "#F79009" and line.width[0] >= 2
