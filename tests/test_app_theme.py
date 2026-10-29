@@ -300,7 +300,7 @@ def test_style_chart_height_margins_and_cleared_title():
 
 def test_header_band_css_and_no_network_in_css():
     css = app_theme.APP_CSS
-    assert ".nemi-header {" in css and "margin: 0 -2.5rem 28px" in css
+    assert ".nemi-header {" in css and "margin: -48px -2.5rem 28px" in css and "box-shadow: none" in css
     for banned in ("http", "@import", "url("):
         assert banned not in css
 

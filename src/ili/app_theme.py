@@ -69,8 +69,10 @@ APP_CSS = f"""
 }}
 [data-testid="stDecoration"] {{ display: none; }}
 /* Streamlit's header keeps only its menu (the System / Light / Dark choice) in the top-right corner */
-/* It is white, so with the page heading below it the top of the page reads as one white bar */
-[data-testid="stHeader"] {{ background: var(--nemi-surface); height: 48px; pointer-events: none; }}
+/* Transparent and borderless: the page heading below reaches up under it, so the top of the page is one white
+   bar with the menu button sitting in its top-right corner */
+[data-testid="stHeader"] {{ background: transparent; border: none; box-shadow: none; height: 48px;
+  pointer-events: none; }}
 [data-testid="stHeader"] [data-testid="stToolbar"] {{ pointer-events: auto; }}
 [data-testid="stMainMenu"] button {{ color: var(--nemi-muted); opacity: 1; }}
 [data-testid="stMainBlockContainer"] {{ max-width: none; padding: 48px 2.5rem 3rem; }}
@@ -92,7 +94,7 @@ h1, h2, h3 {{ color: var(--nemi-ink); letter-spacing: 0; }}
 /* Page heading (as in the mockup): a white bar across the top of the page, edge to edge, with the title and
    run line on the left, the DRAFT badge on the right and a hairline under it; the content sits on grey below */
 .nemi-header {{ display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between;
-  gap: 8px 16px; margin: 0 -2.5rem 28px; padding: 4px 2.5rem 20px; background: var(--nemi-surface);
+  gap: 8px 16px; margin: -48px -2.5rem 28px; padding: 52px 2.5rem 20px; background: var(--nemi-surface);
   border-bottom: 1px solid var(--nemi-line); }}
 .nemi-header h1 {{ margin: 0; padding: 0; font-size: 1.75rem; font-weight: 700; line-height: 1.25;
   color: var(--nemi-ink); }}
