@@ -280,7 +280,7 @@ def page_header(title: str, subtitle: str | None) -> None:
 
 
 _NAV_LABELS = {"Match review queue": "Match review", "Growth and remaining life explorer": "Growth Rates",
-               "Dig list": "Dig List", "Reports": "Reports"}
+               "Analysis table": "Analysis Table", "Dig list": "Dig List", "Reports": "Reports"}
 
 
 def nav_label_text(page: str) -> str:

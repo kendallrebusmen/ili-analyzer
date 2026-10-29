@@ -75,7 +75,7 @@ def test_report_cli_writes_all_outputs(built, capsys):
     _, _, _, folder = built
     assert main(_argv(built, "--line-name", "Line 7")) == 0
     capsys.readouterr()
-    assert len(OUTPUT_NAMES) == 9
+    assert len(OUTPUT_NAMES) == 11
     manifest = json.loads((folder / "run_manifest.json").read_text(encoding="utf-8"))
     for name in OUTPUT_NAMES:
         assert (folder / name).is_file()

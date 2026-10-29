@@ -31,6 +31,8 @@ EXPLORER_COLUMNS = ["match_id", "match_type", "curr_feature_id", "curr_log_dist_
 EXPORTS = (("report.pdf", "application/pdf", "the PDF report, laid out for print and for the client"),
            ("report.html", "text/html", "the HTML report"),
            ("dig_list.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "the Excel dig list"),
+           ("classified_anomalies.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            "the classified anomalies table, the consultant's layout"),
            ("run_manifest.json", "application/json", "the run manifest"))
 FLAG_HELP = {"manual_immediate": "Treat as immediate (manual flag)",
              "field_crack_confirmed": "Crack confirmed in the field",

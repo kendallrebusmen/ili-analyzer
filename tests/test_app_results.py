@@ -114,13 +114,13 @@ def test_reports_page_download_buttons_after_report(ran, tmp_path):
     _, folder = ran
     at, work = _page(folder, tmp_path, REPORTS)
     assert DRAFT_LABEL in _all_text(at)
-    assert len(at.get("download_button")) == 4
+    assert len(at.get("download_button")) == 5
     assert not at.info and not at.error
-    for name in ("report.pdf", "report.html", "dig_list.xlsx", "run_manifest.json"):
+    for name in ("report.pdf", "report.html", "dig_list.xlsx", "classified_anomalies.xlsx", "run_manifest.json"):
         assert name in _all_text(at)
     (work / "dig_list.xlsx").unlink()
     at.run()
-    assert len(at.get("download_button")) == 3
+    assert len(at.get("download_button")) == 4
 
 
 def test_flag_save_on_a_locked_log_says_close_the_file(ran, tmp_path, monkeypatch):

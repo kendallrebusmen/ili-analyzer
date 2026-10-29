@@ -705,3 +705,13 @@ Presentation only: no number, rule, output or save behaviour changes. A clickabl
 11. `rl_yr` is labelled "Remaining life, unfactored (yr)" (Home shows the factored value separately).
 
 Left as is (triaged fine): PDF Generated-by uses `product_label()` directly; version-pinned test strings; `.nemi-truncate` wraps; no direct sidebar-title test; `pending_reviews` on pre-M4 tables; non-dict `counts_by_match_type`; Go-to buttons without counts; Failure vs Burst pressure wording; Match score direction; setup double headings; hard-coded Advanced heading.
+
+## Analysis table (2026-10-29)
+
+The user asked for a large table modelled on the consultant's "Classified_Anomalies" tab. Choices approved by the user:
+
+- **Anomalies only.** One row per classification row (metal loss, dents, gouges); a cluster stays one row with its `;`-joined ids.
+- **The consultant's column names and order** (`ili.analysis_table.ANALYSIS_COLUMNS`, grouped for the app's column selector). With `strength.method: original_b31g` the two strength columns read "B31G Burst/Safe Pressure (psi)".
+- **Only computed values.** Every engineering value is read from what the stages wrote; nothing is recomputed. Formatting only: clock text and degrees, readable labels, D/S weld distance (joint length minus U/S distance), change in depth (current minus previous). Anything the inputs do not hold is blank, never 0; dents and gouges have blank growth and strength cells.
+- **Page and Excel.** The report stage writes `analysis_table.csv` and `classified_anomalies.xlsx` (DRAFT label in row 1, header row 2, panes frozen after Feature ID and Odometer, filter). The "Analysis table" page (sidebar "Analysis Table", after Growth Rates) reads the CSV; the Reports page lists the workbook.
+- **Sources noted.** Joint length, comments, latitude, longitude and elevation come from the current tally (joint length and comments of a cluster's first member, coordinates of the member nearest the row, as the dig list does); surface, metal-loss origin, cluster id, joint and U/S distance, and confidence from the match table; seam type and install year from the pipe table at the position; the evaluation pressure is the classification's `mop_local`; "Prev. Measurement Date" is the previous run's date, shown where the feature has a previous depth.

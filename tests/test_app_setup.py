@@ -13,7 +13,7 @@ from test_pipeline import FOLDER, _inputs
 
 ROOT = Path(__file__).resolve().parents[1]
 PAGES = ["Home", "Run setup", "Weld alignment", "Match review queue", "Growth and remaining life explorer",
-         "Dig list", "Reports"]
+         "Analysis table", "Dig list", "Reports"]
 APP = str(ROOT / "app" / "streamlit_app.py")
 SCRIPT_CONFIG = ROOT / "app" / ".streamlit" / "config.toml"
 

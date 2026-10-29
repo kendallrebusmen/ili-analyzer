@@ -490,6 +490,7 @@ Write all outputs to `outputs/<prev_run>_vs_<curr_run>/`.
 | `anomaly_distribution.csv` | Depth-bin and dent-bin counts for both runs |
 | `joint_ml_counts.csv` | Per-joint metal loss counts for both runs, by surface |
 | `anomalies_of_interest.csv` | The anomalies-of-interest table |
+| `analysis_table.csv`, `classified_anomalies.xlsx` | The analysis table: one row per classified anomaly (metal loss, dents, gouges) in the consultant's "Classified_Anomalies" column names and order, with only values the pipeline computes. The workbook has the DRAFT label in row 1, the header in row 2, frozen panes after the first two columns and a filter. |
 | `run_manifest.json` | Input file hashes, config hash, code version, and timestamp |
 
 ### 6.11 Streamlit app (`app/streamlit_app.py`)
@@ -504,8 +505,9 @@ The app is branded **Nemi**. Navigation is a left sidebar. The DRAFT label shows
    - Offer Accept, Reject, and Manual re-pair actions.
    - Save decisions to `reviews.csv` and re-apply them automatically on every rerun.
 4. **Growth and remaining life explorer:** filter by segment, category, and governing method.
-5. **Dig list:** the report's dig list, and the manual flags that feed it.
-6. **Reports:** download the report files (`report.pdf`, `report.html`, `dig_list.xlsx`, `run_manifest.json`).
+5. **Analysis table:** the classified anomalies in the consultant's layout; filters (repair category, internal/external, growth rate source, odometer range), a selector of column groups, and a download of `classified_anomalies.xlsx`.
+6. **Dig list:** the report's dig list, and the manual flags that feed it.
+7. **Reports:** download the report files (`report.pdf`, `report.html`, `dig_list.xlsx`, `classified_anomalies.xlsx`, `run_manifest.json`).
 
 ## 7. Configuration
 
