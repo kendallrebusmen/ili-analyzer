@@ -143,3 +143,136 @@ def read_consultant(path: Path, cmap: ConsultantMap) -> ConsultantData:
             sheet["imp_class"] = sheet.imp_class.map(m.classes)
             imp = sheet.reset_index(drop=True)
     return ConsultantData(anomalies=anomalies, imp_summary=imp, unknown_sources=unknown)
+
+
+EXPLANATIONS = ("vendor_cluster_box", "not_in_our_run", "removed_after_run", "not_in_their_set", "agree",
+                "depth_differs", "match_differs", "joint_pool_differs", "age_basis", "rl_horizon", "unexplained")
+PARITY_COLUMNS = ("feature_id", "side", "match_id", "log_dist_ft", "depth_ours", "depth_theirs", "rate_ours",
+                  "rate_theirs", "method_ours", "method_theirs", "history_ours", "erf_ours", "erf_theirs", "rl_ours",
+                  "rl_theirs", "rl_governing_ours", "category_ours", "vendor_type_theirs", "agree_depth",
+                  "agree_rate", "agree_erf", "agree_rl", "explanation")
+OURS_COLUMNS = ("feature_id", "match_id", "log_dist_ft", "depth_ours", "rate_ours", "method_ours", "history_ours",
+                "erf_ours", "rl_ours", "rl_governing_ours", "category_ours")
+_THEIRS_MATCHED_METHODS = ("raw", "shrinking_fixed")  # their methods that use the previous run depth
+
+
+def _lookup(source: pd.DataFrame, keys: pd.Series, columns: list[str]) -> pd.DataFrame:
+    """``source[columns]`` by ``match_id``, aligned to ``keys`` (NaN where a match id has no row)."""
+    by_id = source.drop_duplicates("match_id").set_index("match_id")[columns]
+    return by_id.reindex(keys.to_numpy()).set_axis(keys.index)
+
+
+def ours_by_feature(growth: pd.DataFrame, remaining_life: pd.DataFrame, classification: pd.DataFrame) -> pd.DataFrame:
+    """This program results, one row per current-run member feature id (columns ``OURS_COLUMNS``).
+
+    Classification rows with no growth row (dents) are kept with a blank rate and depth from
+    ``depth_pct_reported``. A cluster id (``"B-1;B-2"``) is split: every member carries the cluster values."""
+    g = growth.drop_duplicates("match_id")
+    base = pd.DataFrame({"match_id": g.match_id.to_numpy(), "feature_ids": g.curr_feature_id.to_numpy(),
+                         "log_dist_ft": g.curr_log_dist_ft.to_numpy(), "depth_ours": g.d_curr_pct.to_numpy(),
+                         "rate_ours": g.governing_mpy.to_numpy(), "method_ours": g.governing_method.to_numpy(),
+                         "history_ours": g.history_class.to_numpy()})
+    cls = classification.drop_duplicates("match_id")
+    extra = cls[~cls.match_id.isin(base.match_id)]
+    extra = pd.DataFrame({"match_id": extra.match_id.to_numpy(), "feature_ids": extra.curr_feature_id.to_numpy(),
+                          "depth_ours": extra.depth_pct_reported.to_numpy()})
+    base = pd.concat([base, extra], ignore_index=True)
+    keys = base.match_id
+    base = base.join(_lookup(remaining_life, keys, ["erf", "rl_yr", "rl_governing"]).rename(
+        columns={"erf": "erf_ours", "rl_yr": "rl_ours", "rl_governing": "rl_governing_ours"}))
+    base = base.join(_lookup(cls, keys, ["governing_category"]).rename(columns={"governing_category": "category_ours"}))
+    base["feature_id"] = base.feature_ids.map(lambda ids: [m.strip() for m in str(ids).split(";") if m.strip()])
+    base = base.explode("feature_id").drop(columns="feature_ids")
+    base = base[base.feature_id.notna()].reset_index(drop=True)
+    for col in OURS_COLUMNS:
+        if col not in base:
+            base[col] = float("nan")
+    return base[list(OURS_COLUMNS)]
+
+
+def _num(value) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return float("nan")
+
+
+def _agree(a: float, b: float, tol: float) -> bool | None:
+    """``|a - b| <= tol``; None if either is blank; inf equals inf only."""
+    if math.isnan(a) or math.isnan(b):
+        return None
+    if math.isinf(a) or math.isinf(b):
+        return a == b
+    return abs(a - b) <= tol
+
+
+def _text(value) -> str | None:
+    return None if _blank(value) else str(value)
+
+
+def compare(ours: pd.DataFrame, theirs: pd.DataFrame, settings, *, box_types=()) -> pd.DataFrame:
+    """Join ``ours`` (``ours_by_feature``) with ``theirs`` (``ConsultantData.anomalies``) on the feature id and
+    give every row an explanation code (``EXPLANATIONS``, first that applies). ``box_types`` are the vendor
+    anomaly types that are vendor cluster boxes (``ConsultantMap.anomalies.box_types``). Columns ``PARITY_COLUMNS``,
+    sorted by log distance then feature id."""
+    cfg = settings.parity
+    box = set(box_types)
+    o = ours.drop_duplicates("feature_id").set_index("feature_id")
+    t = theirs.drop_duplicates("feature_id").set_index("feature_id")
+    rows = []
+    for fid in list(dict.fromkeys([*t.index, *o.index])):
+        mine = o.loc[fid] if fid in o.index else None
+        theirrow = t.loc[fid] if fid in t.index else None
+        side = "both" if mine is not None and theirrow is not None else "theirs_only" if mine is None else "ours_only"
+
+        def pick(row, col):
+            return None if row is None else row[col]
+
+        r = {"feature_id": fid, "side": side, "match_id": _text(pick(mine, "match_id")),
+             "depth_ours": _num(pick(mine, "depth_ours")), "depth_theirs": _num(pick(theirrow, "depth_pct")),
+             "rate_ours": _num(pick(mine, "rate_ours")), "rate_theirs": _num(pick(theirrow, "rate_mpy")),
+             "method_ours": _text(pick(mine, "method_ours")), "method_theirs": _text(pick(theirrow, "method")),
+             "history_ours": _text(pick(mine, "history_ours")),
+             "erf_ours": _num(pick(mine, "erf_ours")), "erf_theirs": _num(pick(theirrow, "erf")),
+             "rl_ours": _num(pick(mine, "rl_ours")), "rl_theirs": _num(pick(theirrow, "rl_yr")),
+             "rl_governing_ours": _text(pick(mine, "rl_governing_ours")),
+             "category_ours": _text(pick(mine, "category_ours")),
+             "vendor_type_theirs": _text(pick(theirrow, "vendor_type"))}
+        dist = _num(pick(theirrow, "log_dist_ft"))
+        r["log_dist_ft"] = dist if not math.isnan(dist) else _num(pick(mine, "log_dist_ft"))
+        r["agree_depth"] = _agree(r["depth_ours"], r["depth_theirs"], cfg.depth_tol_pct)
+        r["agree_rate"] = _agree(r["rate_ours"], r["rate_theirs"], cfg.rate_tol_mpy)
+        r["agree_erf"] = _agree(r["erf_ours"], r["erf_theirs"], cfg.erf_tol)
+        rl_theirs = r["rl_theirs"]
+        rl_tol = cfg.rl_tol_yr if math.isnan(rl_theirs) or math.isinf(rl_theirs) \
+            else max(cfg.rl_tol_yr, cfg.rl_tol_frac * abs(rl_theirs))
+        r["agree_rl"] = _agree(r["rl_ours"], rl_theirs, rl_tol)
+        r["explanation"] = _explain(r, box)
+        rows.append(r)
+    out = pd.DataFrame(rows, columns=list(PARITY_COLUMNS)).astype(object)
+    out = out.assign(_d=out.log_dist_ft.astype(float)).sort_values(["_d", "feature_id"], na_position="last", kind="stable")
+    return out.drop(columns="_d").reset_index(drop=True)
+
+
+def _explain(r: dict, box: set) -> str:
+    side = r["side"]
+    if side == "theirs_only":
+        return "vendor_cluster_box" if r["vendor_type_theirs"] in box else "not_in_our_run"
+    if side == "ours_only":
+        return "removed_after_run" if r["category_ours"] == "removed" else "not_in_their_set"
+    agrees = (r["agree_depth"], r["agree_rate"], r["agree_erf"], r["agree_rl"])
+    if all(a is not False for a in agrees):
+        return "agree"
+    if r["agree_depth"] is False:
+        return "depth_differs"
+    if (r["history_ours"] == "matched") != (r["method_theirs"] in _THEIRS_MATCHED_METHODS):
+        return "match_differs"
+    both = (r["method_ours"], r["method_theirs"])
+    if r["agree_rate"] is False:
+        if both == ("joint_percentile", "joint_percentile"):
+            return "joint_pool_differs"
+        if both == ("half_life", "half_life"):
+            return "age_basis"
+    elif r["agree_rate"] is True and r["agree_rl"] is False and r["rl_governing_ours"] == "beyond_horizon":
+        return "rl_horizon"
+    return "unexplained"

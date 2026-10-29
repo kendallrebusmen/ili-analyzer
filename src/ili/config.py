@@ -189,6 +189,15 @@ class ReviewCfg(_Strict):
     nearby_window_ft: float = Field(gt=0)  # the review page's nearby-features window (ft)
 
 
+class ParityCfg(_Strict):
+    # M12 comparison with an outside analysis: changes no number in the analysis
+    depth_tol_pct: float = Field(default=0.05, ge=0)  # % WT
+    rate_tol_mpy: float = Field(default=0.05, ge=0)  # mpy; below the consultant's 0.1-mpy rounding step
+    erf_tol: float = Field(default=0.005, ge=0)
+    rl_tol_yr: float = Field(default=0.1, ge=0)  # years; the larger of this and rl_tol_frac x their value
+    rl_tol_frac: float = Field(default=0.01, ge=0)
+
+
 class Settings(_Strict):
     units: Literal["us_customary"]
     tool: ToolCfg
@@ -201,6 +210,7 @@ class Settings(_Strict):
     cp_overlay: CpOverlayCfg
     report: ReportCfg
     review: ReviewCfg
+    parity: ParityCfg = ParityCfg()
 
 
 class Rule(_Strict):

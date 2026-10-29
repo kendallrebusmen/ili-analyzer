@@ -99,3 +99,10 @@ report:                             # presentation only; changes no number in th
 
 review:                             # presentation only; changes no number in the analysis
   nearby_window_ft: 10              # the review page's nearby-features window (ft)
+
+parity:                             # M12 comparison with an outside analysis; changes no number in the analysis
+  depth_tol_pct: 0.05               # % WT
+  rate_tol_mpy: 0.05                # mpy; below the consultant's 0.1-mpy rounding step
+  erf_tol: 0.005
+  rl_tol_yr: 0.1                    # years; the larger of this and rl_tol_frac x their value
+  rl_tol_frac: 0.01
