@@ -628,3 +628,32 @@ Builds the spec amendment above on synthetic data. Defaults are unchanged: with 
     and our three flawed-spool anomalies come from ROSEN's v2.0 tally, which their v1.0-based work predates.
 - **Tool tolerance.** The method assesses at reported depth and grows at raw rates, so ROSEN's revised ±13% is
   recorded in the settings but applied nowhere. That is the engineering choice the user made.
+
+## M12 close-out: parity check (2026-10-29)
+
+Decisions the plan made where the spec was silent:
+
+1. **Join key.** The current-run feature id, as text (`143.0` from Excel becomes `"143"`). Our cluster rows
+   (`"B-1;B-2"`) are split, so each member id carries the cluster's values.
+2. **Consultant anomaly rows** are those whose map-named category column equals the map's `anomaly_category`
+   (`"Volumetric"` for Integrity Solutions). Fittings and other features are dropped before the join.
+3. **Agreement tolerances** live in a `parity:` settings section: depth 0.05 % WT; rate 0.05 mpy (a 0.1-mpy
+   rounding step still shows); ERF 0.005; remaining life 0.1 yr or 1 %, whichever is larger.
+4. **Explanation codes**, first that applies: `vendor_cluster_box`, `not_in_our_run`, `removed_after_run`,
+   `not_in_their_set`, `agree`, `depth_differs`, `match_differs`, `joint_pool_differs`, `age_basis`,
+   `rl_horizon`, `unexplained`. The CLI exits 0 either way but prints and records the `unexplained` count.
+5. **`age_basis: dates`** measures pipe age from 1 January of the install year to the current run date, in
+   `days_per_year` years (Line 930: 30.07 years, not 30). Default `years` is unchanged. This closes the three
+   half-life residuals recorded in the M12 entry above.
+6. **IMP class comparison** puts the consultant's IM summary beside ours, recounted from `imp_class.csv`
+   (classified, previously repaired, unrepaired per class); skipped with a note when `imp_class.csv` is absent.
+
+Controller's ruling: `ours_by_feature` takes an optional `match_table` so dents keep their position
+(`classification.csv` carries no distance).
+
+**Line 930 result** (git-ignored settings now carry `age_basis: dates`; aggregates only). 191 anomalies in either
+set: 175 in both, 4 ours only, 12 theirs only. By explanation: agree 164, vendor_cluster_box 12,
+removed_after_run 4, joint_pool_differs 8, match_differs 3, not_in_our_run 0, not_in_their_set 0, depth_differs 0,
+age_basis 0, rl_horizon 0, unexplained 0. Depth and ERF agree on all 175; rate and remaining life agree on 164
+(up from 161 before `age_basis`). The 11 that differ are the known matching differences (consultant traces four
+runs, we compare two). Nothing is left unexplained.

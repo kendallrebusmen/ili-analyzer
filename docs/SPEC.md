@@ -645,7 +645,7 @@ Complete these in order. Stop after each one for review.
 | M9 | Streamlit review UI | Review decisions persist and re-apply on rerun |
 | M10 | CP overlay | Synthetic CP data joined and plotted; ready for PCS export |
 | M11 | Consultant-practice methods and outputs | `ml_origin` ingested. `half_life`, `joint_percentile` and `shrinking_fixed` rates and the `pit_to_pit` profile computed, with tests. ERF, FPR, failure mode, condition dates and next-assessment projections in the outputs. Growth summary, IMP class summary, depth/dent bins, per-joint counts, anomalies of interest, orientation and elevation charts in the report, all from synthetic data |
-| M12 | Parity check against the consultant (real data; needs the user's explicit approval under Section 2) | The consultant's analysis of a real line rerun through the tool with the `pit_to_pit` profile and `depth_basis: reported`. Differences per anomaly listed and explained. Real data stays in gitignored folders and never enters the repo or the conversation beyond small samples |
+| M12 (done) | Parity check against the consultant (real data; needs the user's explicit approval under Section 2) | The consultant's analysis of a real line rerun through the tool with the `pit_to_pit` profile and `depth_basis: reported`. Differences per anomaly listed and explained. Real data stays in gitignored folders and never enters the repo or the conversation beyond small samples |
 
 ## 10. Open questions (answer before using real data)
 
