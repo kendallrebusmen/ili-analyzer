@@ -45,6 +45,11 @@ growth:
   shrinking_rate_mpy: null          # PLACEHOLDER - fixed rate for matched features whose depth decreased
   joint_percentile: 90              # PLACEHOLDER - the consultant's "Nth percentile per joint"
   joint_percentile_min_matches: 3   # PLACEHOLDER
+  # The consultant's practice (M12 parity); these defaults keep the program's own method.
+  days_per_year: 365.25             # growth interval = days between the runs / this (the consultant: 365)
+  rate_decimals: null               # round the governing rate to this many places (the consultant: 1)
+  shrinking_applies_to: decrease    # decrease | no_increase: no_increase gives the fixed rate to a zero change too
+  joint_percentile_pool: raw        # raw | assigned: the joint percentile of the rates matched rows were given
   exclude_recoated_from_stats: true
   length_growth: none               # none | proportional | fixed_rate
   length_rate_ipy: 0.0

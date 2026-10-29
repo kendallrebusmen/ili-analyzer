@@ -93,6 +93,11 @@ class GrowthCfg(_Strict):
     shrinking_rate_mpy: float | None = Field(ge=0)  # mpy; the constraint applies only when set
     joint_percentile: float = Field(ge=0, le=100)
     joint_percentile_min_matches: int = Field(strict=True, ge=1)
+    # M12 parity options (the consultant's practice); the defaults keep the earlier behaviour.
+    days_per_year: float = Field(default=365.25, gt=0)  # year basis of the growth interval (days / this)
+    rate_decimals: int | None = Field(default=None, ge=0)  # round the governing rate (mpy); null: no rounding
+    shrinking_applies_to: Literal["decrease", "no_increase"] = "decrease"  # no_increase: d_curr <= d_prev too
+    joint_percentile_pool: Literal["raw", "assigned"] = "raw"  # assigned: matched rows' governing rates
     exclude_recoated_from_stats: bool
     length_growth: Literal["none", "proportional", "fixed_rate"]
     length_rate_ipy: float

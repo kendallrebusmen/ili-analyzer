@@ -83,15 +83,32 @@ def half_life_rate(d_curr_in, curr_year, install_year):
     return 2.0 * full_life_rate(d_curr_in, curr_year, install_year)
 
 
-def shrinking_fixed_rate(d_prev_in, d_curr_in, cls, settings: Settings):
-    """``shrinking_rate_mpy`` where the row is ``matched`` and its depth dropped (d_curr < d_prev), else NaN;
-    NaN everywhere when the setting is null."""
+def shrank(d_prev_in, d_curr_in, cls, settings: Settings) -> np.ndarray:
+    """True where the row is ``matched`` and its depth dropped (d_curr < d_prev), or, with
+    ``growth.shrinking_applies_to: no_increase``, did not grow (d_curr <= d_prev). False for NaN."""
     d_prev, d_curr = np.asarray(d_prev_in, dtype=float), np.asarray(d_curr_in, dtype=float)
+    lower = d_curr <= d_prev if settings.growth.shrinking_applies_to == "no_increase" else d_curr < d_prev
+    return (np.asarray(cls, dtype=object) == "matched") & lower
+
+
+def shrinking_fixed_rate(d_prev_in, d_curr_in, cls, settings: Settings):
+    """``shrinking_rate_mpy`` where the row ``shrank`` (see there), else NaN; NaN everywhere when the
+    setting is null."""
     value = settings.growth.shrinking_rate_mpy
     if value is None:
-        return np.full(len(d_prev), np.nan)
-    shrank = (np.asarray(cls, dtype=object) == "matched") & (d_curr < d_prev)  # False for NaN
-    return np.where(shrank, float(value), np.nan)
+        return np.full(len(np.asarray(d_prev_in)), np.nan)
+    return np.where(shrank(d_prev_in, d_curr_in, cls, settings), float(value), np.nan)
+
+
+def round_rate(rate_mpy, settings: Settings):
+    """The rate rounded to ``growth.rate_decimals`` places, halves away from zero (as a spreadsheet's ROUND);
+    unchanged when the setting is null. NaN stays NaN."""
+    rate = np.asarray(rate_mpy, dtype=float)
+    places = settings.growth.rate_decimals
+    if places is None:
+        return rate
+    scale = 10.0 ** places
+    return np.sign(rate) * np.floor(np.abs(rate) * scale + 0.5) / scale
 
 
 def in_recoat(pos_ft, repairs: pd.DataFrame | None) -> np.ndarray:
@@ -232,7 +249,8 @@ def segment_percentile(raw_mpy, cls, segment_id, seg_table: pd.DataFrame, settin
 
 def joint_percentile(raw_mpy, cls, joint_id, in_stats, settings: Settings):
     """Per-row rate (mpy) and the unfloored percentile by joint id. The ``joint_percentile``-th percentile
-    (linear) of the raw rates of ``matched`` rows with ``in_stats`` True in the row's joint, floored at
+    (linear) of the given rates (``raw_mpy``: the raw rates, or the assigned ones for
+    ``joint_percentile_pool: assigned``) of ``matched`` rows with ``in_stats`` True in the row's joint, floored at
     ``min_rate_mpy`` for the rows. NaN when the joint has fewer than ``joint_percentile_min_matches`` such
     rows or the row has no joint (None/NaN)."""
     g = settings.growth
@@ -273,14 +291,13 @@ def _pit_to_pit_governing(rates: pd.DataFrame, cls, settings: Settings) -> tuple
     n = len(rates)
     col = lambda name: rates[f"{name}_mpy"].to_numpy(float)  # noqa: E731
     matched, new = cls == "matched", cls == "new"
-    shrank = matched & (rates.d_curr_in.to_numpy(float) < rates.d_prev_in.to_numpy(float))
-    grew = matched & ~shrank
-    raw_floored = np.fmax(col("raw"), settings.growth.min_rate_mpy)
+    lower = shrank(rates.d_prev_in, rates.d_curr_in, cls, settings)
+    grew = matched & ~lower
     use_joint = new & np.isfinite(col("joint_percentile"))
     gov = np.full(n, np.nan)
     method = np.full(n, None, dtype=object)
-    for mask, name, values in ((grew, "raw", np.where(np.isnan(col("raw")), np.nan, raw_floored)),
-                               (shrank, "shrinking_fixed", col("shrinking_fixed")),
+    for mask, name, values in ((grew, "raw", _raw_floored(col("raw"), settings)),
+                               (lower, "shrinking_fixed", col("shrinking_fixed")),
                                (use_joint, "joint_percentile", col("joint_percentile")),
                                (~matched & ~use_joint, "half_life", col("half_life"))):
         gov[mask] = values[mask]
@@ -289,14 +306,32 @@ def _pit_to_pit_governing(rates: pd.DataFrame, cls, settings: Settings) -> tuple
     return gov, method
 
 
+def _raw_floored(raw, settings: Settings) -> np.ndarray:
+    """``raw`` floored at ``min_rate_mpy``; NaN stays NaN."""
+    raw = np.asarray(raw, dtype=float)
+    return np.where(np.isnan(raw), np.nan, np.fmax(raw, settings.growth.min_rate_mpy))
+
+
+def assigned_matched_rates(raw_mpy, shrinking_mpy, d_prev_in, d_curr_in, cls, settings: Settings) -> np.ndarray:
+    """The rate the ``pit_to_pit`` rule gives each ``matched`` row (``shrinking_fixed`` where it ``shrank``,
+    else ``raw`` floored at ``min_rate_mpy``), rounded by ``round_rate``; NaN for the other rows. The pool of
+    ``joint_percentile_pool: assigned``."""
+    cls = np.asarray(cls, dtype=object)
+    lower = shrank(d_prev_in, d_curr_in, cls, settings)
+    rate = np.where(lower, np.asarray(shrinking_mpy, dtype=float), _raw_floored(raw_mpy, settings))
+    return round_rate(np.where(cls == "matched", rate, np.nan), settings)
+
+
 def governing_rate(rates: pd.DataFrame, cls, settings: Settings) -> tuple[np.ndarray, np.ndarray]:
     """Per row, the governing rate (mpy) and the method that supplied it, by ``growth.governing_profile``:
     ``conservative`` maxes over the methods ``growth.governing`` lists for the row's class; ``pit_to_pit``
-    follows the fixed spec 6.5 logic. A NaN rate has method None."""
+    follows the fixed spec 6.5 logic. A NaN rate has method None. The rate is rounded by ``round_rate``."""
     cls = np.asarray(cls, dtype=object)
     if settings.growth.governing_profile == "pit_to_pit":
-        return _pit_to_pit_governing(rates, cls, settings)
-    return _list_governing(rates, cls, settings)
+        gov, method = _pit_to_pit_governing(rates, cls, settings)
+    else:
+        gov, method = _list_governing(rates, cls, settings)
+    return round_rate(gov, settings), method
 
 
 def review_flags(rates: pd.DataFrame, cls, governing_mpy, match_review, settings: Settings) -> dict[str, np.ndarray]:
@@ -445,6 +480,10 @@ def _summary(features: pd.DataFrame, dt_yr: float, prev_year: int, curr_year: in
         "joint_percentile": float(g.joint_percentile),
         "joint_percentile_min_matches": int(g.joint_percentile_min_matches),
         "shrinking_rate_mpy": None if g.shrinking_rate_mpy is None else float(g.shrinking_rate_mpy),
+        "shrinking_applies_to": g.shrinking_applies_to,
+        "joint_percentile_pool": g.joint_percentile_pool,
+        "days_per_year": float(g.days_per_year),
+        "rate_decimals": g.rate_decimals,
         "counts_by_history_class": {c: int(by_class.get(c, 0)) for c in HISTORY_CLASSES},
         "counts_by_governing_method": {m: int(by_method.get(m, 0)) for m in METHODS},
         "n_needs_review": int(features.needs_review.sum()),
@@ -470,6 +509,9 @@ def compute_growth(match_table: pd.DataFrame, dt_yr: float, prev_year: int, curr
     if not dt_yr > 0:
         raise ValueError("dt_yr must be positive")
     g = settings.growth
+    if g.joint_percentile_pool == "assigned" and g.governing_profile != "pit_to_pit":
+        raise ValueError("growth.joint_percentile_pool: assigned needs governing_profile: pit_to_pit "
+                         "(the assigned rates are the pit_to_pit rule's)")
     check_segments(seg_table)  # segment_table checks too; a table built by hand must not pool segments
     rows = growth_rows(match_table)
     n = len(rows)
@@ -508,8 +550,10 @@ def compute_growth(match_table: pd.DataFrame, dt_yr: float, prev_year: int, curr
     f["full_life_mpy"] = full_life_rate(d_curr, curr_year, install)
     f["default_rate_mpy"] = default_rate(n, settings)
     f["half_life_mpy"] = half_life_rate(d_curr, curr_year, install)
-    f["joint_percentile_mpy"], _ = joint_percentile(f.raw_mpy, cls, joint_id, in_stats, settings)
     f["shrinking_fixed_mpy"] = shrinking_fixed_rate(d_prev, d_curr, cls, settings)
+    pool = (assigned_matched_rates(f.raw_mpy, f.shrinking_fixed_mpy, d_prev, d_curr, cls, settings)
+            if g.joint_percentile_pool == "assigned" else f.raw_mpy)
+    f["joint_percentile_mpy"], _ = joint_percentile(pool, cls, joint_id, in_stats, settings)
     gov, method = governing_rate(f, cls, settings)
     f["governing_mpy"], f["governing_method"] = gov, pd.Series(method, dtype=object)  # object keeps None
     needs_review, reasons = join_reasons(review_flags(f, cls, gov, match_review, settings), n)
@@ -602,7 +646,8 @@ def main(argv: list[str] | None = None) -> int:
         segments = pd.read_csv(args.segments) if args.segments else None
         repairs = load_repairs(args.repairs) if args.repairs else None
         seg_table = segment_table(settings, segments, *_line_extent(curr))
-        result = compute_growth(matches, delta_t_years(prev, curr), _run_year(prev), _run_year(curr), pipe,
+        result = compute_growth(matches, delta_t_years(prev, curr, settings.growth.days_per_year),
+                                _run_year(prev), _run_year(curr), pipe,
                                 seg_table, settings, prev_run_id=str(prev.run_id.iloc[0]),
                                 curr_run_id=str(curr.run_id.iloc[0]), repairs=repairs)
         paths = write_growth(result, args.out)

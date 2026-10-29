@@ -76,7 +76,8 @@ RECORDED_SETTINGS = (
         "general_corrosion_min_dim_in", "widespread_circ_min_width_frac", "due_days", "discovery_max_days")),
     ("growth", "governing_profile", "growth.governing_profile"),
     *(("growth", key, f"growth.{key}") for key in (
-        "exclude_recoated_from_stats", "joint_percentile", "joint_percentile_min_matches", "shrinking_rate_mpy")),
+        "exclude_recoated_from_stats", "joint_percentile", "joint_percentile_min_matches", "shrinking_rate_mpy",
+        "shrinking_applies_to", "joint_percentile_pool", "days_per_year", "rate_decimals")),
     ("classification", "depth_basis", "strength.depth_basis"),
     ("classification", "depth_tolerance_pct_wt", "tool.depth_tolerance_pct_wt"),
 )
