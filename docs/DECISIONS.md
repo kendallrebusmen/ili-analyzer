@@ -657,3 +657,16 @@ removed_after_run 4, joint_pool_differs 8, match_differs 3, not_in_our_run 0, no
 age_basis 0, rl_horizon 0, unexplained 0. Depth and ERF agree on all 175; rate and remaining life agree on 164
 (up from 161 before `age_basis`). The 11 that differ are the known matching differences (consultant traces four
 runs, we compare two). Nothing is left unexplained.
+
+### Final-review fixes
+
+1. `_explain`: an ERF disagreement (or ERF/depth blank on one side) is `unexplained`, never a growth or matching code.
+2. `read_consultant` refuses anomaly rows with a blank feature id (names the sheet, count and sheet rows).
+3. An unknown consultant source label no longer yields `match_differs`; the CLI prints `unknown_sources`.
+4. The IMP "YTC < N yrs" label is taken from `imp_class.csv`, falling back to the settings-built label.
+5. `parity_summary.json` carries a `method_ours` object (growth and remaining-life method settings of our side).
+6. `header_row` in both map models must be at least 1.
+7. `main` also catches `BadZipFile` and `YAMLError`; a stale `parity_imp_class.csv` is deleted when the IMP comparison is skipped.
+8. README: defaults of `--map` and `--settings`; dents can show as `not_in_their_set`.
+
+Left as is (triaged fine): IMP class mismatch counts not summarised in the JSON; no byte-identical-defaults test beyond the default-value test; per-id loop speed; blank-only ERF/flag test gaps.
