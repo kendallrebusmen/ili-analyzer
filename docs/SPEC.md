@@ -504,7 +504,8 @@ The app is branded **Nemi**. Navigation is a left sidebar. The DRAFT label shows
    - Offer Accept, Reject, and Manual re-pair actions.
    - Save decisions to `reviews.csv` and re-apply them automatically on every rerun.
 4. **Growth and remaining life explorer:** filter by segment, category, and governing method.
-5. **Dig list and report export.**
+5. **Dig list:** the report's dig list, and the manual flags that feed it.
+6. **Reports:** download the report files (`report.pdf`, `report.html`, `dig_list.xlsx`, `run_manifest.json`).
 
 ## 7. Configuration
 

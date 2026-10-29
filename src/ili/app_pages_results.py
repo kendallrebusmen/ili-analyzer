@@ -220,15 +220,16 @@ def _downloads(path: Path) -> None:
                                        key=f"download_{name}", icon=":material/download:", width="stretch")
 
 
-def export_page() -> None:
+def dig_list_page() -> None:
+    """The dig list and the manual flags that feed it (with the rerun that applies them)."""
     path = app_state.comparison_from_session()
-    app_theme.page_header("Dig list and report export", app_state.comparison_context(path))
+    app_theme.page_header("Dig list", app_state.comparison_context(path))
     data = app_state.page_data(path)
     if data is None or data.classification.empty:
         st.info(NO_DATA)
         return
     setup = app_state.inputs_from_session(path)
-    dig_tab, flags_tab, downloads_tab = st.tabs(["Dig list", "Manual flags", "Downloads"])
+    dig_tab, flags_tab = st.tabs(["Dig list", "Manual flags"])
     with dig_tab:
         if setup is None:
             st.warning("The dig list needs the run setup, which is not available: run the pipeline on the Run "
@@ -248,5 +249,14 @@ def export_page() -> None:
     with flags_tab:
         _flag_editor(path, data)
         rerun_button(path, key="export_rerun")
-    with downloads_tab:
-        _downloads(path)
+
+
+def reports_page() -> None:
+    """The report files of the comparison, each with its download button."""
+    path = app_state.comparison_from_session()
+    app_theme.page_header("Reports", app_state.comparison_context(path))
+    data = app_state.page_data(path)
+    if data is None or data.classification.empty:
+        st.info(NO_DATA)
+        return
+    _downloads(path)

@@ -76,7 +76,7 @@ def test_home_page_renders_loaded(ran, tmp_path):
     assert go
     go[0].click().run()
     assert not at.exception and at.radio(key="page").value in {"Match review queue", "Run setup",
-                                                              "Dig list and report export"}
+                                                              "Dig list"}
 
 
 @pytest.mark.parametrize("n, title", [(1, "1 match waiting for review"), (2, "2 matches waiting for review")])

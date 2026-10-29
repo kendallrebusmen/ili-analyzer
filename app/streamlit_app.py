@@ -13,7 +13,7 @@ from ili import app_state, app_theme, report_data
 from ili.align_welds import DRAFT_LABEL
 from ili.brand import PRODUCT_TAGLINE, product_label
 from ili.app_pages_home import home_page
-from ili.app_pages_results import explorer_page, export_page
+from ili.app_pages_results import dig_list_page, explorer_page, reports_page
 from ili.app_pages_review import review_queue_page
 from ili.app_pages_setup import run_setup_page, weld_alignment_page
 
@@ -25,7 +25,8 @@ PAGES = {
     "Weld alignment": weld_alignment_page,
     "Match review queue": review_queue_page,
     "Growth and remaining life explorer": explorer_page,
-    "Dig list and report export": export_page,
+    "Dig list": dig_list_page,
+    "Reports": reports_page,
 }
 
 
@@ -64,7 +65,7 @@ def pending_count() -> int:
 
 
 def nav_label(page: str) -> str:
-    return app_theme.nav_menu_label(page)
+    return app_theme.nav_label_text(page)
 
 
 with st.sidebar:

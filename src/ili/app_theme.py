@@ -69,10 +69,11 @@ APP_CSS = f"""
 }}
 [data-testid="stDecoration"] {{ display: none; }}
 /* Streamlit's header keeps only its menu (the System / Light / Dark choice) in the top-right corner */
-[data-testid="stHeader"] {{ background: transparent; height: 48px; pointer-events: none; }}
+/* It is white, so with the page heading below it the top of the page reads as one white bar */
+[data-testid="stHeader"] {{ background: var(--nemi-surface); height: 48px; pointer-events: none; }}
 [data-testid="stHeader"] [data-testid="stToolbar"] {{ pointer-events: auto; }}
 [data-testid="stMainMenu"] button {{ color: var(--nemi-muted); opacity: 1; }}
-[data-testid="stMainBlockContainer"] {{ max-width: 1320px; padding-top: 1.5rem; }}
+[data-testid="stMainBlockContainer"] {{ max-width: none; padding: 48px 2.5rem 3rem; }}
 h1, h2, h3 {{ color: var(--nemi-ink); letter-spacing: 0; }}
 
 /* The sidebar's background comes from config.toml ([theme.light.sidebar] / [theme.dark.sidebar]) */
@@ -88,11 +89,14 @@ h1, h2, h3 {{ color: var(--nemi-ink); letter-spacing: 0; }}
 .nemi-sidebar-foot {{ border-top: 1px solid var(--nemi-line); margin-top: 20px; padding-top: 4px; }}
 
 /* Page header: title block left, the DRAFT badge right */
-.nemi-header {{ display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between;
-  gap: 8px 16px; padding-bottom: 14px; margin-bottom: 20px; border-bottom: 1px solid var(--nemi-line); }}
-.nemi-header h1 {{ margin: 0; padding: 0; font-size: 1.5rem; font-weight: 700; line-height: 1.25;
+/* Page heading (as in the mockup): a white bar across the top of the page, edge to edge, with the title and
+   run line on the left, the DRAFT badge on the right and a hairline under it; the content sits on grey below */
+.nemi-header {{ display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between;
+  gap: 8px 16px; margin: 0 -2.5rem 28px; padding: 4px 2.5rem 20px; background: var(--nemi-surface);
+  border-bottom: 1px solid var(--nemi-line); }}
+.nemi-header h1 {{ margin: 0; padding: 0; font-size: 1.75rem; font-weight: 700; line-height: 1.25;
   color: var(--nemi-ink); }}
-.nemi-subtitle {{ color: var(--nemi-muted); font-size: 14px; margin-top: 2px; }}
+.nemi-subtitle {{ display: block; color: var(--nemi-muted); font-size: 14px; margin-top: 2px; }}
 .nemi-badge {{ display: inline-block; background: var(--nemi-warning-bg); color: var(--nemi-warning-ink);
   font-size: 12px; font-weight: 600; padding: 4px 12px; border-radius: 999px; white-space: nowrap; }}
 
@@ -110,7 +114,8 @@ h1, h2, h3 {{ color: var(--nemi-ink); letter-spacing: 0; }}
 /* Home section and card titles */
 .nemi-section-title {{ font-size: 13px; font-weight: 600; color: var(--nemi-muted); text-transform: uppercase;
   letter-spacing: 0.6px; margin: 4px 0 8px; }}
-.nemi-card-title {{ font-size: 16px; font-weight: 600; color: var(--nemi-ink); margin: 0 0 4px; }}
+.nemi-card-title {{ font-size: 19px; font-weight: 600; color: var(--nemi-ink); margin: 0 0 4px;
+  padding-bottom: 12px; border-bottom: 1px solid var(--nemi-line); }}
 .nemi-muted {{ color: var(--nemi-muted); font-size: 13px; margin-bottom: 8px; }}
 .nemi-dl {{ display: flex; flex-direction: column; justify-content: center; gap: 2px; font-size: 14.5px;
   color: var(--nemi-ink); }}
@@ -120,9 +125,16 @@ h1, h2, h3 {{ color: var(--nemi-ink); letter-spacing: 0; }}
 .nemi-attn {{ display: flex; align-items: center; gap: 12px; padding: 6px 0; color: var(--nemi-ink);
   font-size: 14.5px; }}
 .nemi-attn-detail {{ display: block; color: var(--nemi-muted); font-size: 13px; font-weight: 400; }}
-[class*="st-key-home_attn_row_"] {{ border-top: 1px solid var(--nemi-line); padding-top: 6px; }}
-/* Breathing room between the repair-condition tiles and the two Home cards below them */
-.st-key-home_card_attention, .st-key-home_card_facts {{ margin-top: 24px; }}
+[class*="st-key-home_attn_row_"] {{ padding: 6px 0; }}
+[class*="st-key-home_attn_row_"] + [class*="st-key-home_attn_row_"] {{ border-top: 1px solid var(--nemi-line); }}
+/* Breathing room between the repair-condition tiles and the two Home blocks below them; the two blocks are the
+   same height side by side */
+.st-key-home_card_attention, .st-key-home_card_facts {{ margin-top: 24px; height: calc(100% - 24px); }}
+[data-testid="stColumn"]:has(> div > .st-key-home_card_attention),
+[data-testid="stColumn"]:has(> div > .st-key-home_card_facts) {{ align-self: stretch; }}
+[data-testid="stColumn"]:has(.st-key-home_card_attention) > div,
+[data-testid="stColumn"]:has(.st-key-home_card_facts) > div {{ height: 100%; }}
+.nemi-facts {{ margin-top: 12px; row-gap: 14px; }}
 /* Consecutive keyed cards on the other pages: the same vertical rhythm */
 [class*="st-key-"][class*="card_"] + [class*="st-key-"][class*="card_"] {{ margin-top: 20px; }}
 [data-testid="stMain"] [data-testid="stExpander"] {{ margin-top: 20px; }}
@@ -181,7 +193,7 @@ h1, h2, h3 {{ color: var(--nemi-ink); letter-spacing: 0; }}
 
 /* Cards: bordered containers keyed "<prefix>card_<name>" are the white cards of the design */
 [class*="st-key-"][class*="card_"] {{ background: var(--nemi-surface); border: 1px solid var(--nemi-line);
-  border-radius: 8px; }}
+  border-radius: 10px; padding: 22px 26px; box-shadow: 0 1px 2px rgba(16, 24, 40, 0.05); }}
 
 /* Reject is the destructive action: red outline, never filled */
 .st-key-review_reject button, .st-key-fix_reject button {{ background: var(--nemi-surface);
@@ -265,25 +277,14 @@ def page_header(title: str, subtitle: str | None) -> None:
     st.markdown(page_header_html(title, subtitle), unsafe_allow_html=True)
 
 
-_NAV_LABELS = {"Match review queue": "Match review", "Growth and remaining life explorer": "Growth & life", "Dig list and report export": "Dig list & export"}
+_NAV_LABELS = {"Match review queue": "Match review", "Growth and remaining life explorer": "Growth Rates",
+               "Dig list": "Dig List", "Reports": "Reports"}
 
 
 def nav_label_text(page: str) -> str:
     """The sidebar menu label of a page. Static on purpose: Streamlit round-trips the formatted label, so a label
     that changed between runs (a live count) would no longer match the browser's held value and reset the page."""
     return _NAV_LABELS.get(page, page)
-
-
-_NAV_ICONS = {"Home": "home", "Run setup": "play_circle", "Weld alignment": "straighten",
-              "Match review queue": "compare_arrows", "Growth and remaining life explorer": "trending_up",
-              "Dig list and report export": "assignment"}
-
-
-def nav_menu_label(page: str) -> str:
-    """The radio's row label: a Material icon (bundled with Streamlit, local) then the plain text. Static, like
-    ``nav_label_text``."""
-    icon = _NAV_ICONS.get(page)
-    return f":material/{icon}: {nav_label_text(page)}" if icon else nav_label_text(page)
 
 
 def sidebar_pending_html(pending: int) -> str:

@@ -683,8 +683,9 @@ Presentation only: no number, rule, output or save behaviour changes. A clickabl
 - **Pending count.** The sidebar's "N matches waiting for review" line (under the menu, not in a label; see Final-review fixes) and Home's pending item come from the match table, like the review page's own queue, so they drop after a pipeline rerun (unchanged M9 behaviour).
 - **New modules.** `brand.py`, `app_pages_home.py` (`home_view` is pure; `home_page` draws it), `app_columns.py` (`column_config`, `field_label`); `app_theme` gains `page_header`, `style_chart` and `step_heading`.
 - **Refinement pass.** Presentation only; keys, pages and saved data unchanged.
-  - Sidebar rows carry Material icons (`nav_menu_label`; `nav_label_text` stays plain text and the labels stay static). The comparison name and reviewer sit in a bottom block under a hairline.
-  - The header is a slim band (1.5rem title, muted subtitle, DRAFT badge right, hairline, 20px below).
+  - The comparison name and reviewer sit in a bottom block of the sidebar under a hairline.
+  - The page heading is a white bar across the top of the page, edge to edge (title, muted run line, DRAFT badge right, hairline under it), as in the approved mockup; Home's two blocks are padded white cards with a divider under each title.
+  - At the user's request (2026-10-29): the sidebar menu has no icons; "Growth & life" is labelled "Growth Rates"; "Dig list and report export" is split into two pages, **Dig list** (the dig list and the manual flags with Rerun, since flags feed the dig list; menu label "Dig List") and **Reports** (the report files to download). Home's jump targets point at Dig list.
   - Tables show readable repair categories ("60-day", "IMP scheduled") through `app_columns.display_frame`, a copy; stored values and explorer filter options are unchanged (the multiselect only formats them). Match / Feature columns are pinned on the explorer and dig list; id columns are narrow.
   - Every table, chart and form is in a titled card (`section_title`, `card_title`, `muted_html` in `app_theme`); weld alignment uses KPI tiles; downloads are one row per file with the DRAFT caption kept; consecutive cards get 20px spacing.
   - `style_chart` sets height 360 and compact margins and clears the figure title (the card title replaces it).

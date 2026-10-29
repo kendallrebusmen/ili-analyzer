@@ -77,7 +77,7 @@ def _attention(data) -> list[Attention]:
     n = 0 if fs.empty or "applied_status" not in fs.columns else int((fs.applied_status == "not_applied").sum())
     if n:
         items.append(Attention("warn", f"{_plural(n, 'flag', 'flags')} not applied", "The last run could not use them.",
-                               "Dig list and report export"))
+                               "Dig list"))
     if data.classification_summary.get("discovery_warning"):
         items.append(Attention("warn", "Discovery date not entered", str(data.classification_summary["discovery_warning"]),
                                "Run setup"))
@@ -87,7 +87,7 @@ def _attention(data) -> list[Attention]:
         n = sum(isinstance(c, str) and "could_be_more_severe" in c.split(REASON_SEP) for c in cls.review_reasons)
         if n:
             items.append(Attention("info", f"{_plural(n, 'anomaly', 'anomalies')} could be more severe",
-                                   "Their worst case falls in a more urgent category.", "Dig list and report export"))
+                                   "Their worst case falls in a more urgent category.", "Dig list"))
     missing = [name for name, frame in (("match", data.match_table), ("growth", data.growth),
                                         ("remaining life", data.remaining_life), ("classify", data.classification))
                if frame.empty]

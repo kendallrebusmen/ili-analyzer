@@ -13,7 +13,7 @@ from test_pipeline import FOLDER, _inputs
 
 ROOT = Path(__file__).resolve().parents[1]
 PAGES = ["Home", "Run setup", "Weld alignment", "Match review queue", "Growth and remaining life explorer",
-         "Dig list and report export"]
+         "Dig list", "Reports"]
 APP = str(ROOT / "app" / "streamlit_app.py")
 SCRIPT_CONFIG = ROOT / "app" / ".streamlit" / "config.toml"
 
@@ -206,7 +206,10 @@ def test_pages_with_data_show_tables_and_draft(ran):
     for page in PAGES[3:]:
         at.radio(key="page").set_value(page).run()
         assert not at.exception and not at.info and not at.error
-        assert len(at.dataframe) >= (2 if page == PAGES[5] else 1)
+        if page == "Reports":  # the report files, each with its download button: no table
+            assert len(at.get("download_button")) >= 1
+        else:
+            assert len(at.dataframe) >= (2 if page == "Dig list" else 1)
         assert DRAFT_LABEL in _all_text(at)
 
 
