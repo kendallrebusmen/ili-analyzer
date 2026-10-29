@@ -678,7 +678,23 @@ Presentation only: no number, rule, output or save behaviour changes. A clickabl
 - **Choices (user, 2026-10-29).** Audience: the team plus outsiders (managers, consultants, regulators). Pain points: looked dated and plain, hard to navigate, cramped and wordy. Look: a clean engineering tool, light by default, deep teal accent. Navigation: a left sidebar with a Home overview first. Home shows repair conditions, what needs attention and run facts. The brand **Nemi** appears on everything users see (app, PDF and HTML reports, README and docs), with a simple inline-SVG wordmark (a pipe cross-section ring with a teal arc and a centre dot). One DRAFT badge per app page, in the header; DRAFT stays on every download and in every report marking. Reports changed name only this round (no layout change).
 - **Palette** (light / dark), held in `src/ili/app_theme.py` and `app/.streamlit/config.toml`: primary #0F766E / #0F766E; link #0F766E / #5EEAD4; page #F6F7F8 / #111518; surface #FFFFFF / #1A2025; sidebar #EEF2F3 / #151A1E; ink #1F2A33 / #E6EAED; muted #56636E / #A3AEB7; line #D8DEE2 / #33404A; danger #B42318 / #FF8A80; danger-soft #FFF6F5 / #3A1F1D; warning text #93370D / #FEC84B on #FEF0C7 / #3D2E12; success #067647 / #47CD89. Tests hold every text and background pair to WCAG AA (4.5:1). Ruling during the build: the dark primary is #0F766E, the same as light, because Streamlit draws primary buttons with white text and white on #14B8A6 fails AA; dark-mode accent text uses the link colour #5EEAD4.
 - **Names that stay.** The Python package `ili`, the `python -m ili.*` commands and the JSON `generator` strings keep their names: they are machine provenance and are pinned by tests.
-- **Retired.** The "Enterprise Suite" look (2026-10-27 entry above) and its radio-as-tabs CSS, which depended on Streamlit's DOM internals. The sidebar menu CSS uses only the stable `stSidebar` and `stRadio` test ids and degrades to a plain radio.
+- **Retired.** The "Enterprise Suite" look (2026-10-27 entry above) and its radio-as-tabs CSS, which depended on Streamlit's DOM internals. The sidebar menu CSS uses the `stSidebar` and `stRadio` test ids plus one DOM detail (`label > div:first-child` hides the radio dot) and `label:has(input:checked)`; if Streamlit changes that markup it degrades to a plain radio. A `forced-colors` rule keeps the selected row and the status dots visible in high-contrast mode.
 - **Sidebar background.** Set through Streamlit 1.66's per-theme sidebar options, `[theme.light.sidebar]` and `[theme.dark.sidebar]` `backgroundColor`, in `config.toml`; no CSS fallback is needed.
-- **Pending count.** The sidebar's "Match review · N" and Home's pending item come from the match table, like the review page's own queue, so they drop after a pipeline rerun (unchanged M9 behaviour).
+- **Pending count.** The sidebar's "N matches waiting for review" line (under the menu, not in a label; see Final-review fixes) and Home's pending item come from the match table, like the review page's own queue, so they drop after a pipeline rerun (unchanged M9 behaviour).
 - **New modules.** `brand.py`, `app_pages_home.py` (`home_view` is pure; `home_page` draws it), `app_columns.py` (`column_config`, `field_label`); `app_theme` gains `page_header`, `style_chart` and `step_heading`.
+
+### Final-review fixes (2026-10-29)
+
+1. Sidebar menu labels are static ("Match review"); the pending count is shown as a line under the menu, because Streamlit round-trips the formatted label and a changing count reset the page to Home after every rerun.
+2. Home draws its header (and the DRAFT badge) before loading data, so an unreadable log still shows them.
+3. The review page's selected-feature marker outline is amber, readable on the light and dark page.
+4. The "Decisions not applied" `decision_id` column is labelled "Decision ID".
+5. Chart grid is a mid grey and the dark-ink colorway entry is replaced by a mid-tone, so both read in dark mode.
+6. The PDF running header truncates the left text with an ellipsis so it never overlaps the run ids.
+7. DECISIONS wording on the menu CSS corrected; a `forced-colors` rule keeps the selected row and the dots visible.
+8. Counted Home attention titles use singular/plural ("1 match waiting for review").
+9. Explorer filters are labelled "Repair category" and "Growth method" (widget keys unchanged).
+10. Two stale "breadcrumb" comments in `app_pages_setup.py` reworded.
+11. `rl_yr` is labelled "Remaining life, unfactored (yr)" (Home shows the factored value separately).
+
+Left as is (triaged fine): PDF Generated-by uses `product_label()` directly; version-pinned test strings; `.nemi-truncate` wraps; no direct sidebar-title test; `pending_reviews` on pre-M4 tables; non-dict `counts_by_match_type`; Go-to buttons without counts; Failure vs Burst pressure wording; Match score direction; setup double headings; hard-coded Advanced heading.
