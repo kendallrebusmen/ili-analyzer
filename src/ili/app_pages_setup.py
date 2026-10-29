@@ -15,6 +15,7 @@ import streamlit as st
 from ili import app_setup_tables as tables
 from ili import app_state, app_theme
 from ili.align_welds import DRAFT_LABEL
+from ili.app_columns import column_config
 from ili.app_state import comparison_of
 from ili.config import DEFAULT_SETTINGS, PROJECT_ROOT
 from ili.pipeline import _PATH_FIELDS, _REQUIRED, STAGES, PipelineInputs, StageResult, run_pipeline
@@ -319,6 +320,6 @@ def weld_alignment_page() -> None:
     cols[2].metric("Sections", s["n_sections"])
     cols[3].metric("Changed sections", s["n_changed_sections"])
     st.subheader("Changed sections")
-    st.dataframe(data.changed_sections, hide_index=True)
+    st.dataframe(data.changed_sections, hide_index=True, column_config=column_config(data.changed_sections))
     if not data.weld_map.empty:
         st.plotly_chart(alignment_chart(data.weld_map, data.changed_sections))

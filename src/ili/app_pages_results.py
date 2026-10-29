@@ -13,6 +13,7 @@ import streamlit as st
 
 from ili import app_state, app_theme
 from ili.align_welds import DRAFT_LABEL
+from ili.app_columns import column_config
 from ili.app_pages_review import NEEDS_REVIEWER, SAVED_AFTER_RUN, rerun_button, write_error
 from ili.app_pages_setup import NO_DATA
 from ili.classify import criteria_path
@@ -71,7 +72,7 @@ def explorer_page() -> None:
                                 key="explorer_methods")
     rows = explorer_rows(data, segments, categories, methods)
     st.metric("Rows shown", len(rows))
-    st.dataframe(rows, hide_index=True)
+    st.dataframe(rows, hide_index=True, column_config=column_config(rows))
     shown = SimpleNamespace(growth=data.growth[data.growth.match_id.isin(rows.match_id)],
                             remaining_life=data.remaining_life[data.remaining_life.match_id.isin(rows.match_id)])
     st.plotly_chart(growth_vs_distance(shown))
@@ -143,7 +144,8 @@ def _flag_editor(path: Path, data) -> None:
     if submitted:
         _save_flags(path, feature, wanted, current, note)
     st.caption("Flags in force, with the status the last run recorded.")
-    st.dataframe(flag_table(data), hide_index=True)
+    flags = flag_table(data)
+    st.dataframe(flags, hide_index=True, column_config=column_config(flags))
 
 
 def _absolute(p):
@@ -218,7 +220,7 @@ def export_page() -> None:
             st.error(error)
         else:
             st.caption(f"{len(digs)} features on the dig list as of the last run. {DRAFT_LABEL}")
-            st.dataframe(digs, hide_index=True)
+            st.dataframe(digs, hide_index=True, column_config=column_config(digs))
     _flag_editor(path, data)
     st.subheader("Rerun")
     rerun_button(path, key="export_rerun")

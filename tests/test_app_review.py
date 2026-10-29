@@ -331,6 +331,7 @@ def test_selected_match_has_enterprise_header_and_action_bar(ran, tmp_path):
 
 
 def test_side_by_side_cells_are_readable():
+    from ili.app_columns import field_label
     values = {f"{s}_{f}": None for s in ("prev", "curr") for f in app_pages_review.SIDE_FIELDS}
     values.update({"prev_wt_nom_in": 0.25, "curr_wt_nom_in": 0.24999999999999997, "prev_log_dist_ft": 1279.36,
                    "curr_log_dist_ft": 1273.6581364829394, "prev_depth_pct": float("nan"), "curr_depth_pct": 28.1,
@@ -338,11 +339,11 @@ def test_side_by_side_cells_are_readable():
                    "curr_feature_id": "B-1"})
     row = pd.Series(values, dtype=object)
     frame = app_pages_review._side_frame(row).set_index("field")
-    assert frame.loc["wt_nom_in"].tolist() == ["0.25", "0.25"]
-    assert frame.loc["log_dist_ft"].tolist() == ["1279.36", "1273.658"]
-    assert frame.loc["depth_pct"].tolist() == ["", "28.1"]
-    assert frame.loc["us_gw_id"].tolist() == ["GW00320", "32"]
-    assert frame.loc["dent_depth_in"].tolist() == ["", ""]
+    assert frame.loc[field_label("wt_nom_in")].tolist() == ["0.25", "0.25"]
+    assert frame.loc[field_label("log_dist_ft")].tolist() == ["1279.36", "1273.658"]
+    assert frame.loc[field_label("depth_pct")].tolist() == ["", "28.1"]
+    assert frame.loc[field_label("us_gw_id")].tolist() == ["GW00320", "32"]
+    assert frame.loc[field_label("dent_depth_in")].tolist() == ["", ""]
 
 
 def test_reviewer_hint_names_the_reviewer_box_in_the_sidebar():

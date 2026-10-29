@@ -17,6 +17,7 @@ import streamlit as st
 
 from ili import app_state, app_theme
 from ili.align_welds import DRAFT_LABEL
+from ili.app_columns import column_config, field_label
 from ili.app_pages_setup import NO_DATA, run_and_refresh, show_results
 from ili.config import load_settings
 from ili.match import CONFIDENCES, SIDE_FIELDS
@@ -151,7 +152,7 @@ def _cell(value) -> str:
 
 def _side_frame(row) -> pd.DataFrame:
     return pd.DataFrame({
-        "field": [*SIDE_FIELDS, "feature_id"],
+        "field": [field_label(f) for f in (*SIDE_FIELDS, "feature_id")],
         "previous run": [_cell(row[f"prev_{f}"]) for f in SIDE_FIELDS] + [_cell(row["prev_feature_id"])],
         "current run": [_cell(row[f"curr_{f}"]) for f in SIDE_FIELDS] + [_cell(row["curr_feature_id"])]})
 
@@ -290,7 +291,8 @@ def _corrections(path: Path, data, stamp, reviewer: str) -> None:
     st.write(f"Current decision: {d.decision} by {d.reviewer} at {d.decided_utc}. Status: {d.status}.")
     prev_ids, curr_ids = _ids(d.prev_feature_ids), _ids(d.curr_feature_ids)
     rows = _rows_of(data.match_table, prev_ids, curr_ids)
-    st.dataframe(rows[ROW_COLUMNS], hide_index=True)
+    shown = rows[ROW_COLUMNS]
+    st.dataframe(shown, hide_index=True, column_config=column_config(shown))
     _decision_panel(path, data, stamp, reviewer, prev_ids, curr_ids, rows.iloc[0] if len(rows) else None,
                     "fix_", "fix_")
 
@@ -324,7 +326,7 @@ def review_queue_page() -> None:
     if not unapplied.empty:
         st.subheader("Decisions not applied")
         st.caption("These log entries did not take effect on the last run; the reason says why.")
-        st.dataframe(unapplied, hide_index=True)
+        st.dataframe(unapplied, hide_index=True, column_config=column_config(unapplied))
     _queue(path, data, stamp, reviewer)
     _corrections(path, data, stamp, reviewer)
     rerun_button(path)
