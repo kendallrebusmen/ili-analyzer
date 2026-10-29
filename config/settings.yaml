@@ -50,6 +50,7 @@ growth:
   rate_decimals: null               # round the governing rate to this many places (the consultant: 1)
   shrinking_applies_to: decrease    # decrease | no_increase: no_increase gives the fixed rate to a zero change too
   joint_percentile_pool: raw        # raw | assigned: the joint percentile of the rates matched rows were given
+  age_basis: years                  # years | dates (the consultant): age from 1 Jan of the install year to the run date
   exclude_recoated_from_stats: true
   length_growth: none               # none | proportional | fixed_rate
   length_rate_ipy: 0.0
@@ -98,3 +99,10 @@ report:                             # presentation only; changes no number in th
 
 review:                             # presentation only; changes no number in the analysis
   nearby_window_ft: 10              # the review page's nearby-features window (ft)
+
+parity:                             # M12 comparison with an outside analysis; changes no number in the analysis
+  depth_tol_pct: 0.05               # % WT
+  rate_tol_mpy: 0.05                # mpy; below the consultant's 0.1-mpy rounding step
+  erf_tol: 0.005
+  rl_tol_yr: 0.1                    # years; the larger of this and rl_tol_frac x their value
+  rl_tol_frac: 0.01

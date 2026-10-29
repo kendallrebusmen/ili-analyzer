@@ -209,12 +209,13 @@ Compute and store every method below for every feature where it applies. A confi
 - New features: `joint_percentile` when it is available, otherwise `half_life`.
 - Features with no usable history: `half_life`.
 
-Four options reproduce the consultant's arithmetic exactly (M12). Their defaults keep the behaviour above:
+Five options reproduce the consultant's arithmetic exactly (M12). Their defaults keep the behaviour above:
 
 - `days_per_year` (365.25): the growth interval is the days between the run dates divided by this. The consultant uses 365.
 - `rate_decimals` (null): the governing rate is rounded to this many places, halves away from zero. The consultant uses 1.
 - `shrinking_applies_to` (`decrease`): `no_increase` also gives `shrinking_fixed` to a matched feature whose depth did not change.
 - `joint_percentile_pool` (`raw`): `assigned` takes the joint percentile over the rates the matched features were given (`shrinking_fixed` included, rounded), not their raw rates. It needs `pit_to_pit`.
+- `age_basis` (`years`): `dates` takes the pipe age for `full_life` and `half_life` as the days from 1 January of the install year to the current run date, divided by `days_per_year`, not as the difference of calendar years. The consultant uses `dates`.
 
 The two profiles can differ a lot. `pit_to_pit` takes raw rates with no allowance for tool tolerance. Paired with `depth_basis: reported` (Section 6.6), it gives longer remaining lives than `conservative`. Which profile governs is an engineering decision (Open Question 4). The report always states the profile in force and the method that governed each feature.
 
@@ -549,6 +550,7 @@ growth:
   rate_decimals: null               # the consultant: 1
   shrinking_applies_to: decrease    # decrease | no_increase (the consultant)
   joint_percentile_pool: raw        # raw | assigned (the consultant)
+  age_basis: years                  # years | dates (the consultant)
   exclude_recoated_from_stats: true
   length_growth: none               # none | proportional | fixed_rate
   length_rate_ipy: 0.0
@@ -643,7 +645,7 @@ Complete these in order. Stop after each one for review.
 | M9 | Streamlit review UI | Review decisions persist and re-apply on rerun |
 | M10 | CP overlay | Synthetic CP data joined and plotted; ready for PCS export |
 | M11 | Consultant-practice methods and outputs | `ml_origin` ingested. `half_life`, `joint_percentile` and `shrinking_fixed` rates and the `pit_to_pit` profile computed, with tests. ERF, FPR, failure mode, condition dates and next-assessment projections in the outputs. Growth summary, IMP class summary, depth/dent bins, per-joint counts, anomalies of interest, orientation and elevation charts in the report, all from synthetic data |
-| M12 | Parity check against the consultant (real data; needs the user's explicit approval under Section 2) | The consultant's analysis of a real line rerun through the tool with the `pit_to_pit` profile and `depth_basis: reported`. Differences per anomaly listed and explained. Real data stays in gitignored folders and never enters the repo or the conversation beyond small samples |
+| M12 (done) | Parity check against the consultant (real data; needs the user's explicit approval under Section 2) | The consultant's analysis of a real line rerun through the tool with the `pit_to_pit` profile and `depth_basis: reported`. Differences per anomaly listed and explained. Real data stays in gitignored folders and never enters the repo or the conversation beyond small samples |
 
 ## 10. Open questions (answer before using real data)
 

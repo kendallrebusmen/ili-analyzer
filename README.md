@@ -25,6 +25,7 @@ Compares two in-line inspection (ILI) runs on the same 49 CFR Part 195 hazardous
 | M9 Streamlit review UI | done (awaiting review) |
 | M10 | not started |
 | M11 Consultant-practice methods and outputs (synthetic data) | done (awaiting review) |
+| M12 Parity check against the consultant (Line 930) | done (awaiting review) |
 
 ## Setup
 
@@ -226,3 +227,34 @@ are git-ignored.
 | `synth_manifest.json` | Parameters, seed, run dates, drift, and CSV hashes |
 
 Synthetic data is gitignored; regenerate it from the seed.
+
+## Parity check
+
+Compares a finished comparison run with the consultant's workbook, anomaly by anomaly (milestone M12). Reads only; it changes nothing in the run.
+
+```powershell
+.\.venv\Scripts\python.exe -m ili.parity `
+    --comparison outputs\<prev>_vs_<curr> --consultant <consultant_workbook>.xlsx
+```
+
+`--map` defaults to the Integrity Solutions map and `--settings` to `config/settings.yaml`. Our side includes dents, while the Integrity Solutions map keeps only "Volumetric" consultant rows, so a dent on a line can show as `not_in_their_set`.
+
+Outputs, under `<comparison folder>/parity/`:
+
+- `parity_by_anomaly.csv`: one row per anomaly in either set, both sides' depth, rate, ERF and remaining life, the agreement flags and one explanation code.
+- `parity_summary.json`: counts by explanation, by side and per-quantity agreement counts, and the tolerances used.
+- `parity_imp_class.csv`: the consultant's IM summary beside ours, per class (classified, previously repaired, unrepaired). Skipped with a note when `imp_class.csv` is absent.
+
+Explanation codes, first that applies:
+
+- `vendor_cluster_box`: theirs only, and the vendor type is one of the map's `box_types`.
+- `not_in_our_run`: any other row only the consultant has.
+- `removed_after_run`: ours only, and classified `removed`.
+- `not_in_their_set`: any other row only we have.
+- `agree`: depth, rate, ERF and remaining life all agree within the `parity:` tolerances.
+- `depth_differs`: the depths disagree.
+- `match_differs`: one side matched the anomaly to the previous run and the other did not.
+- `joint_pool_differs`: both used the joint percentile and the rates disagree.
+- `age_basis`: both used the half-life rate and the rates disagree.
+- `rl_horizon`: the rates agree, the remaining lives disagree and ours is `beyond_horizon`.
+- `unexplained`: none of the above. The command still exits 0 but prints the count; investigate every one.

@@ -98,6 +98,7 @@ class GrowthCfg(_Strict):
     rate_decimals: int | None = Field(default=None, ge=0)  # round the governing rate (mpy); null: no rounding
     shrinking_applies_to: Literal["decrease", "no_increase"] = "decrease"  # no_increase: d_curr <= d_prev too
     joint_percentile_pool: Literal["raw", "assigned"] = "raw"  # assigned: matched rows' governing rates
+    age_basis: Literal["years", "dates"] = "years"  # dates: age from 1 Jan of the install year to the run date
     exclude_recoated_from_stats: bool
     length_growth: Literal["none", "proportional", "fixed_rate"]
     length_rate_ipy: float
@@ -188,6 +189,15 @@ class ReviewCfg(_Strict):
     nearby_window_ft: float = Field(gt=0)  # the review page's nearby-features window (ft)
 
 
+class ParityCfg(_Strict):
+    # M12 comparison with an outside analysis: changes no number in the analysis
+    depth_tol_pct: float = Field(default=0.05, ge=0)  # % WT
+    rate_tol_mpy: float = Field(default=0.05, ge=0)  # mpy; below the consultant's 0.1-mpy rounding step
+    erf_tol: float = Field(default=0.005, ge=0)
+    rl_tol_yr: float = Field(default=0.1, ge=0)  # years; the larger of this and rl_tol_frac x their value
+    rl_tol_frac: float = Field(default=0.01, ge=0)
+
+
 class Settings(_Strict):
     units: Literal["us_customary"]
     tool: ToolCfg
@@ -200,6 +210,7 @@ class Settings(_Strict):
     cp_overlay: CpOverlayCfg
     report: ReportCfg
     review: ReviewCfg
+    parity: ParityCfg = ParityCfg()
 
 
 class Rule(_Strict):
