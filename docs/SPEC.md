@@ -209,6 +209,13 @@ Compute and store every method below for every feature where it applies. A confi
 - New features: `joint_percentile` when it is available, otherwise `half_life`.
 - Features with no usable history: `half_life`.
 
+Four options reproduce the consultant's arithmetic exactly (M12). Their defaults keep the behaviour above:
+
+- `days_per_year` (365.25): the growth interval is the days between the run dates divided by this. The consultant uses 365.
+- `rate_decimals` (null): the governing rate is rounded to this many places, halves away from zero. The consultant uses 1.
+- `shrinking_applies_to` (`decrease`): `no_increase` also gives `shrinking_fixed` to a matched feature whose depth did not change.
+- `joint_percentile_pool` (`raw`): `assigned` takes the joint percentile over the rates the matched features were given (`shrinking_fixed` included, rounded), not their raw rates. It needs `pit_to_pit`.
+
 The two profiles can differ a lot. `pit_to_pit` takes raw rates with no allowance for tool tolerance. Paired with `depth_basis: reported` (Section 6.6), it gives longer remaining lives than `conservative`. Which profile governs is an engineering decision (Open Question 4). The report always states the profile in force and the method that governed each feature.
 
 Record which method governed each feature.
@@ -538,6 +545,10 @@ growth:
   shrinking_rate_mpy: null          # PLACEHOLDER - fixed rate for matched features whose depth decreased
   joint_percentile: 90              # PLACEHOLDER - the consultant's "Nth percentile per joint"
   joint_percentile_min_matches: 3   # PLACEHOLDER
+  days_per_year: 365.25             # the consultant: 365
+  rate_decimals: null               # the consultant: 1
+  shrinking_applies_to: decrease    # decrease | no_increase (the consultant)
+  joint_percentile_pool: raw        # raw | assigned (the consultant)
   exclude_recoated_from_stats: true
   length_growth: none               # none | proportional | fixed_rate
   length_rate_ipy: 0.0

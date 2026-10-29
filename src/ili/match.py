@@ -53,11 +53,14 @@ def _run_date(std: pd.DataFrame):
     return dates[0]
 
 
-def delta_t_years(prev_std: pd.DataFrame, curr_std: pd.DataFrame) -> float:
+def delta_t_years(prev_std: pd.DataFrame, curr_std: pd.DataFrame, days_per_year: float = DAYS_PER_YEAR) -> float:
+    """Years between the runs' dates: days / ``days_per_year`` (``growth.days_per_year`` for growth)."""
+    if not days_per_year > 0:
+        raise ValueError(f"days_per_year must be positive, got {days_per_year}")
     days = (_run_date(curr_std) - _run_date(prev_std)).days
     if days <= 0:
         raise ValueError("the current run must be later than the previous run")
-    return days / DAYS_PER_YEAR
+    return days / days_per_year
 
 
 class PositionMap:

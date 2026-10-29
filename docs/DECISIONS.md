@@ -603,3 +603,28 @@ Builds the spec amendment above on synthetic data. Defaults are unchanged: with 
 - **Category changes.** A removed feature is never "moved to a more severe category".
 - **Not a repair record.** A removal after the run is not a `repairs_between_runs.csv` row: that table describes
   the pipe between the two runs and steers weld alignment.
+
+## M12: the consultant's method, reproduced (2026-10-29)
+
+- **Decision.** The user chose the consultant's (Integrity Solutions) method for Line 930, analysed from the ROSEN
+  reports only. The program default stays `conservative` (spec 6.5); the Line 930 settings file, which is
+  git-ignored, selects the consultant's method.
+- **Inferred from the consultant's Rev 0 workbook** (per-anomaly, read-only):
+  - pit-to-pit rates use days / 365 and are rounded to 0.1 mpy (100 of 100 reproduced);
+  - a matched anomaly whose depth did not change gets the fixed 6 mpy, like one whose depth dropped;
+  - "Nth percentile per joint" is the 95th (PERCENTILE.INC) of the rates the joint's matched anomalies were given,
+    the fixed rate included, from one match up (42 of 43 reproduced);
+  - no minimum rate; remaining life uncapped (`horizon_yr: 500` in the Line 930 file); depth assessed as reported.
+- **New growth options**, defaults unchanged: `days_per_year`, `rate_decimals`, `shrinking_applies_to`,
+  `joint_percentile_pool`. They are recorded in the growth summary and checked by the report like the other
+  recorded settings. `joint_percentile_pool: assigned` with the `conservative` profile is an error.
+- **Parity on Line 930** (175 anomalies in both sets): depth, ERF and the repair categories agree on all 175;
+  growth rate and remaining life agree on 161. The rest:
+  - matching: the consultant traces anomalies through four runs (2012/2017/2020/2026); three they matched are new
+    in our two-run comparison, which also moves the joint pools of eight others (mostly by 0.1 mpy);
+  - half-life age: they use 30.07 years (dates / 365), we use 30 (calendar years), so our half-life rate is up
+    to 0.1 mpy higher on three anomalies. Not changed: the difference is small and on the safe side.
+  - Set differences: their 12 vendor "Cluster" boxes are read as `other` here (spec choice, see the ROSEN entry),
+    and our three flawed-spool anomalies come from ROSEN's v2.0 tally, which their v1.0-based work predates.
+- **Tool tolerance.** The method assesses at reported depth and grows at raw rates, so ROSEN's revised ±13% is
+  recorded in the settings but applied nowhere. That is the engineering choice the user made.
