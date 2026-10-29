@@ -162,11 +162,13 @@ def _lookup(source: pd.DataFrame, keys: pd.Series, columns: list[str]) -> pd.Dat
     return by_id.reindex(keys.to_numpy()).set_axis(keys.index)
 
 
-def ours_by_feature(growth: pd.DataFrame, remaining_life: pd.DataFrame, classification: pd.DataFrame) -> pd.DataFrame:
+def ours_by_feature(growth: pd.DataFrame, remaining_life: pd.DataFrame, classification: pd.DataFrame,
+                    match_table: pd.DataFrame | None = None) -> pd.DataFrame:
     """This program results, one row per current-run member feature id (columns ``OURS_COLUMNS``).
 
     Classification rows with no growth row (dents) are kept with a blank rate and depth from
-    ``depth_pct_reported``. A cluster id (``"B-1;B-2"``) is split: every member carries the cluster values."""
+    ``depth_pct_reported``; their position (classification has none) comes from ``match_table.curr_log_dist_ft``
+    by ``match_id`` when the match table is given. A cluster id (``"B-1;B-2"``) is split: every member carries the cluster values."""
     g = growth.drop_duplicates("match_id")
     base = pd.DataFrame({"match_id": g.match_id.to_numpy(), "feature_ids": g.curr_feature_id.to_numpy(),
                          "log_dist_ft": g.curr_log_dist_ft.to_numpy(), "depth_ours": g.d_curr_pct.to_numpy(),
@@ -178,6 +180,9 @@ def ours_by_feature(growth: pd.DataFrame, remaining_life: pd.DataFrame, classifi
                           "depth_ours": extra.depth_pct_reported.to_numpy()})
     base = pd.concat([base, extra], ignore_index=True)
     keys = base.match_id
+    if match_table is not None:
+        pos = _lookup(match_table, keys, ["curr_log_dist_ft"]).curr_log_dist_ft
+        base["log_dist_ft"] = base["log_dist_ft"].where(base["log_dist_ft"].notna(), pos) if "log_dist_ft" in base else pos
     base = base.join(_lookup(remaining_life, keys, ["erf", "rl_yr", "rl_governing"]).rename(
         columns={"erf": "erf_ours", "rl_yr": "rl_ours", "rl_governing": "rl_governing_ours"}))
     base = base.join(_lookup(cls, keys, ["governing_category"]).rename(columns={"governing_category": "category_ours"}))
@@ -260,8 +265,10 @@ def _explain(r: dict, box: set) -> str:
         return "vendor_cluster_box" if r["vendor_type_theirs"] in box else "not_in_our_run"
     if side == "ours_only":
         return "removed_after_run" if r["category_ours"] == "removed" else "not_in_their_set"
-    agrees = (r["agree_depth"], r["agree_rate"], r["agree_erf"], r["agree_rl"])
-    if all(a is not False for a in agrees):
+    # a None flag counts as agreement only when BOTH sides are blank for that quantity
+    pairs = (("depth_ours", "depth_theirs", "agree_depth"), ("rate_ours", "rate_theirs", "agree_rate"),
+             ("erf_ours", "erf_theirs", "agree_erf"), ("rl_ours", "rl_theirs", "agree_rl"))
+    if all(r[f] is True or (r[f] is None and math.isnan(r[a]) and math.isnan(r[b])) for a, b, f in pairs):
         return "agree"
     if r["agree_depth"] is False:
         return "depth_differs"

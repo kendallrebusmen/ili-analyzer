@@ -125,3 +125,29 @@ def test_cluster_members_share_values():
 def test_settings_parity_defaults():
     p = SETTINGS.parity
     assert (p.depth_tol_pct, p.rate_tol_mpy, p.erf_tol, p.rl_tol_yr, p.rl_tol_frac) == (0.05, 0.05, 0.005, 0.1, 0.01)
+
+
+def test_one_sided_blank_is_not_agree():
+    out = _cmp([_o("1", erf=0.6), _o("2", rate=NAN, method=None, rl=NAN, rlg=None, history=None)],
+               [_t("1", erf=NAN), _t("2")]).set_index("feature_id")
+    assert out.loc["1", "agree_erf"] is None and out.loc["1", "explanation"] != "agree"
+    assert out.loc["1", "explanation"] == "unexplained"
+    assert out.loc["2", "agree_rate"] is None and out.loc["2", "explanation"] != "agree"
+
+
+def test_ours_only_dent_keeps_position():
+    growth = pd.DataFrame({"match_id": ["m1"], "curr_feature_id": ["A"], "curr_log_dist_ft": [10.0],
+                           "d_curr_pct": [30.0], "governing_mpy": [4.0], "governing_method": ["raw"],
+                           "history_class": ["matched"]})
+    rl = pd.DataFrame({"match_id": ["m1", "m2"], "erf": [0.9, 0.5], "rl_yr": [12.0, NAN], "rl_governing": ["x", None]})
+    cls = pd.DataFrame({"match_id": ["m1", "m2"], "curr_feature_id": ["A", "D"],
+                        "governing_category": ["monitor", "monitor"], "depth_pct_reported": [30.0, 7.0]})
+    mt = pd.DataFrame({"match_id": ["m1", "m2"], "curr_log_dist_ft": [10.0, 77.5]})
+    out = ours_by_feature(growth, rl, cls, mt).set_index("feature_id")
+    assert out.loc["D", "log_dist_ft"] == 77.5 and out.loc["A", "log_dist_ft"] == 10.0
+    assert _cmp_from(out.reset_index()).loc[0, "log_dist_ft"] == 77.5
+
+
+def _cmp_from(ours):
+    d = ours[ours.feature_id == "D"]
+    return compare(d, pd.DataFrame(columns=THEIRS_COLS), SETTINGS)
