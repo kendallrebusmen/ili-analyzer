@@ -114,3 +114,50 @@ def test_report_stage_writes_the_table_and_workbook(inputs, built, tmp_path):  #
 def test_missing_file_raises(tmp_path):
     with pytest.raises(FileNotFoundError):
         load_analysis_table(tmp_path / ANALYSIS_TABLE_FILE)
+
+
+def test_report_stage_does_not_import_streamlit():
+    import subprocess
+    import sys
+    done = subprocess.run([sys.executable, "-c", "import ili.report, sys; print('streamlit' in sys.modules)"],
+                          capture_output=True, text=True, check=True)
+    assert done.stdout.strip() == "False"
+
+
+def test_csv_text_cells_are_formula_safe_and_round_trip(inputs, tmp_path):
+    from ili.analysis_table import write_analysis_csv
+    t = build_analysis_table(inputs).head(3).copy()
+    t["Vendor Comment"] = ['=HYPERLINK("http://x","y")', "-3 dB note", "plain"]
+    t.loc[:, "Change in Anomaly Depth (%)"] = -2.5
+    path = tmp_path / ANALYSIS_TABLE_FILE
+    write_analysis_csv(t, path)
+    raw = path.read_text(encoding="utf-8")
+    assert "'=HYPERLINK" in raw and "'-3 dB note" in raw and ",-2.5," in raw  # numbers are never quoted
+    back = load_analysis_table(path)
+    assert list(back["Vendor Comment"]) == ['=HYPERLINK("http://x","y")', "-3 dB note", "plain"]
+    assert (back["Change in Anomaly Depth (%)"] == -2.5).all()
+
+
+def test_depth_tolerance_follows_the_depth_basis(inputs):
+    def table_for(basis):
+        settings = inputs.settings.model_copy(update={
+            "strength": inputs.settings.strength.model_copy(update={"depth_basis": basis})})
+        t = build_analysis_table(dataclasses.replace(inputs, settings=settings))
+        return t[t["Feature Category"] == "Metal loss"]
+    reported = table_for("reported")
+    assert (reported["Depth Tolerance (%)"] == 0).all()
+    plus = table_for("reported_plus_tolerance")
+    assert (plus["Depth Tolerance (%)"] == inputs.settings.tool.depth_tolerance_pct_wt).all()
+
+
+def test_cluster_row_is_one_row_with_joined_ids_and_nearest_member_coordinates(inputs, table):
+    clusters = table[table["Feature ID"].astype(str).str.contains(";")]
+    if clusters.empty:
+        pytest.skip("no cluster in the synthetic classification")
+    std = inputs.curr_std.drop_duplicates("feature_id").set_index("feature_id")
+    row = clusters.iloc[0]
+    members = row["Feature ID"].split(";")
+    assert (table["Feature ID"] == row["Feature ID"]).sum() == 1
+    near = min(members, key=lambda m: abs(std.log_dist_ft[m] - row["Odometer (ft)"]))
+    assert row["Latitude"] == pytest.approx(std.lat[near])
+    assert row["Longitude"] == pytest.approx(std.lon[near])

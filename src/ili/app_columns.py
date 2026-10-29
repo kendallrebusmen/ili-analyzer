@@ -11,6 +11,8 @@ from __future__ import annotations
 import pandas as pd
 import streamlit as st
 
+from ili.classify import CATEGORY_WORDS  # noqa: F401  (re-exported; Streamlit-free home in classify)
+
 # column -> (label, number format; None = not numeric)
 LABELS: dict[str, tuple[str, str | None]] = {
     # Identity and location
@@ -68,8 +70,6 @@ LABELS: dict[str, tuple[str, str | None]] = {
 }
 
 
-CATEGORY_WORDS = {"immediate": "Immediate", "60_day": "60-day", "180_day": "180-day",
-                  "imp_scheduled": "IMP scheduled", "evaluate": "Evaluate", "removed": "Removed"}
 CATEGORY_COLUMNS = ("governing_category", "worst_case_category")
 PINNED = ("match_id", "curr_feature_id")  # the identifying columns kept in view on wide tables
 ID_COLUMNS = ("match_id", "prev_feature_id", "curr_feature_id", "segment_id", "section_id", "decision_id",

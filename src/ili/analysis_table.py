@@ -16,7 +16,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from ili.app_columns import CATEGORY_WORDS
+from ili.classify import CATEGORY_WORDS
 from ili.reference import _nearest_row
 from ili.report_data import ReportInputs, _lookup, _nearest_member
 from ili.report_tables import _clock_text, imp_class_rows
@@ -87,7 +87,8 @@ def _numbers(series) -> np.ndarray:
 
 
 def _pipe_text(pipe: pd.DataFrame, pos: np.ndarray, column: str, tol_ft: float) -> pd.Series:
-    """``column`` of the pipe table at each position (``reference.lookup``'s row rule); blank when the table
+    """``column`` of the pipe table at each position (``reference.lookup``'s row rule, which only returns
+    numbers, so this text column uses its row finder ``_nearest_row``); blank when the table
     has no such column, the position is unknown or is farther than ``tol_ft`` from every row."""
     if column not in pipe.columns or pipe.empty:
         return pd.Series([None] * len(pos), dtype=object)
@@ -111,7 +112,7 @@ def build_analysis_table(inputs: ReportInputs) -> pd.DataFrame:
     mt = _lookup(inputs.match_table, keys, [
         "curr_log_dist_ft", "curr_us_gw_id", "curr_dist_from_us_gw_ft", "curr_surface", "curr_ml_origin",
         "curr_vendor_cluster_id", "confidence"])
-    g = _lookup(inputs.growth, keys, ["governing_mpy", "governing_method", "d_prev_pct", "d_curr_in"])
+    g = _lookup(inputs.growth, keys, ["governing_mpy", "governing_method", "d_prev_pct", "d_curr_in", "install_year"])
     rl = _lookup(inputs.remaining_life, keys, [
         "smys_psi", "erf", "fpr", "burst_psig", "safe_psig", "erf_next", "fpr_next", "burst_next_psig",
         "safe_next_psig", "depth_next_pct", "next_assessment_date", "tau_80_date", "tau_burst_date",
@@ -136,7 +137,6 @@ def build_analysis_table(inputs: ReportInputs) -> pd.DataFrame:
     tol_ft = settings.alignment.anchor_tol_ft
     prev_date = inputs.prev_std.run_date.dropna()
     prev_date = "" if prev_date.empty else pd.Timestamp(prev_date.iloc[0]).date().isoformat()
-    install = _numbers(_pipe_text(inputs.pipe, pos, "install_year", tol_ft))
     methods = g.governing_method.astype(object).map(
         lambda m: None if pd.isna(m) else
         f"{_ordinal(settings.growth.joint_percentile)} percentile per joint" if m == "joint_percentile"
@@ -170,7 +170,7 @@ def build_analysis_table(inputs: ReportInputs) -> pd.DataFrame:
         "Length Tolerance (in)": np.where(metal, settings.tool.length_tolerance_in, np.nan),
         "Wall Thickness (in)": _numbers(cls.wt_in), "Pipe Diameter (in)": _numbers(cls.od_in),
         "SMYS (psi)": _numbers(rl.smys_psi), "Seam Type": _pipe_text(inputs.pipe, pos, "seam_type", tol_ft),
-        "Pipe Install Date": install, "Evaluation Pressure (psi)": _numbers(cls.mop_local),
+        "Pipe Install Date": _numbers(g.install_year), "Evaluation Pressure (psi)": _numbers(cls.mop_local),
         BURST: _numbers(rl.burst_psig), SAFE: _numbers(rl.safe_psig), "ERF": _numbers(rl.erf),
         "FPR": _numbers(rl.fpr),
         "Projected Reinspection ERF": _numbers(rl.erf_next), "Projected Reinspection FPR": _numbers(rl.fpr_next),
@@ -205,4 +205,24 @@ def load_analysis_table(path: Path) -> pd.DataFrame:
     if not path.is_file():
         raise FileNotFoundError(path)
     header = pd.read_csv(path, nrows=0).columns
-    return pd.read_csv(path, dtype={c: str for c in _TEXT_COLUMNS if c in header})
+    out = pd.read_csv(path, dtype={c: str for c in _TEXT_COLUMNS if c in header})
+    for column in out.columns:
+        if out[column].dtype == object or pd.api.types.is_string_dtype(out[column].dtype):
+            out[column] = out[column].map(
+                lambda v: v[1:] if isinstance(v, str) and v.startswith("'") and v[1:].startswith(FORMULA_STARTS)
+                else v)
+    return out
+
+
+FORMULA_STARTS = ("=", "+", "-", "@", "\t", "\r")
+
+
+def write_analysis_csv(table: pd.DataFrame, path: Path) -> None:
+    """Write ``analysis_table.csv`` (LF). Text cells that start with a formula character are prefixed with a
+    single quote so Excel never runs them; numbers are untouched (``load_analysis_table`` undoes it)."""
+    out = table.copy()
+    for column in out.columns:
+        if out[column].dtype == object or pd.api.types.is_string_dtype(out[column].dtype):
+            out[column] = out[column].map(
+                lambda v: "'" + v if isinstance(v, str) and v.startswith(FORMULA_STARTS) else v)
+    out.to_csv(path, index=False, lineterminator="\n")

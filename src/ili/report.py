@@ -37,7 +37,8 @@ from openpyxl.utils import get_column_letter
 
 from ili import __version__
 from ili.align_welds import DRAFT_LABEL
-from ili.analysis_table import (ANALYSIS_TABLE_FILE, ANALYSIS_XLSX_FILE, SHEET_NAME, build_analysis_table)
+from ili.analysis_table import (ANALYSIS_TABLE_FILE, ANALYSIS_XLSX_FILE, SHEET_NAME, build_analysis_table,
+                               write_analysis_csv)
 from ili.brand import product_label
 from ili.category_change import CHANGE_COLUMNS, CategoryChangeResult, category_changes
 from ili.classify import CATEGORY_PRIORITY, IMMEDIATE_ACTION_NOTE, REMOVED_CATEGORY, criteria_path
@@ -456,7 +457,7 @@ OUTPUT_NAMES = ("category_changes.csv", "report.html", "report.pdf", "dig_list.x
                 "joint_ml_counts.csv", "anomalies_of_interest.csv", "imp_class.csv", ANALYSIS_TABLE_FILE,
                 ANALYSIS_XLSX_FILE, "run_manifest.json")
 DATE_COLUMNS = ("due_date", "Due Date", "Reinspection Date", "Projected Depth Condition Date",
-                "Projected Burst Condition Date", "Projected Safe Condition Date")
+                "Projected Burst Condition Date", "Projected Safe Condition Date", "Prev. Measurement Date")
 GIT_TIMEOUT_S = 10
 
 
@@ -613,7 +614,7 @@ def write_report(inputs: ReportInputs, header: ReportHeader, out_dir: Path,
         "joint_ml_counts.csv": lambda p: joints.to_csv(p, index=False, lineterminator="\n"),
         "anomalies_of_interest.csv": lambda p: aoi.to_csv(p, index=False, lineterminator="\n"),
         "imp_class.csv": lambda p: imp_rows.to_csv(p, index=False, lineterminator="\n"),
-        ANALYSIS_TABLE_FILE: lambda p: analysis.to_csv(p, index=False, lineterminator="\n"),
+        ANALYSIS_TABLE_FILE: lambda p: write_analysis_csv(analysis, p),
         ANALYSIS_XLSX_FILE: analysis_book.save,
         "run_manifest.json": lambda p: p.write_text(manifest, encoding="utf-8"),
     }, paths)

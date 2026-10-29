@@ -25,6 +25,8 @@ def number_format(name: str) -> str:
     n = name.lower()
     if n in ("latitude", "longitude"):
         return "%.6f"
+    if n in ("wall thickness (in)", "metal loss depth (in)", "dent depth (in)"):
+        return "%.3f"
     if "erf" in n or "fpr" in n:
         return "%.3f"
     if "(years)" in n:
