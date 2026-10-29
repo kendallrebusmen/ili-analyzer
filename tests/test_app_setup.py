@@ -298,3 +298,25 @@ def test_rerun_setup_is_the_shown_folders(ran, tmp_path):
     (other / "pipeline_inputs.json").unlink()
     assert app_state.inputs_from_session(other, session) is None
     assert app_state.inputs_from_session(None, session) is inputs
+
+
+def test_step_heading_escapes_and_marks_optional():
+    from ili import app_theme
+    html = app_theme.step_heading(3, "Optional <data>", True)
+    assert 'class="nemi-step"' in html and ">3<" in html and "&lt;data&gt;" in html and "optional" in html
+    assert "optional" not in app_theme.step_heading(1, "Inspections", False)
+
+
+def test_every_page_renders_without_data():
+    at = _app().run()
+    for page in PAGES:
+        at.radio(key="page").set_value(page).run()
+        assert not at.exception, page
+
+
+def test_every_page_renders_with_data(ran):
+    _, folder = ran
+    at = _app(comparison_dir=str(folder)).run()
+    for page in PAGES:
+        at.radio(key="page").set_value(page).run()
+        assert not at.exception, page

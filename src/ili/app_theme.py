@@ -114,6 +114,8 @@ h1, h2, h3 {{ color: var(--nemi-ink); letter-spacing: 0; }}
 .nemi-step {{ display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px;
   border-radius: 50%; background: var(--nemi-accent); color: var(--nemi-surface); font-size: 13px;
   font-weight: 700; margin-right: 8px; }}
+.nemi-step-head {{ display: flex; align-items: center; margin-bottom: 4px; font-size: 16px; }}
+.nemi-step-head .nemi-caption {{ margin-left: 8px; }}
 .nemi-truncate {{ overflow-wrap: anywhere; }}
 
 .ili-pill {{ display: inline-block; font-size: 12px; font-weight: 700; padding: 2px 10px; border-radius: 12px;
@@ -213,6 +215,12 @@ def nav_label_text(page: str, pending: int = 0) -> str:
     if page == "Match review queue":
         return f"Match review · {pending}" if pending > 0 else "Match review"
     return _NAV_LABELS.get(page, page)
+
+
+def step_heading(n: int, title: str, optional: bool) -> str:
+    """A numbered step heading (round badge, title, "optional" tag) as HTML; the text is escaped."""
+    tag = ' <span class="nemi-caption">optional</span>' if optional else ""
+    return f'<div class="nemi-step-head"><span class="nemi-step">{int(n)}</span><strong>{escape(title)}</strong>{tag}</div>'
 
 
 def pill_html(text: str, tone: str) -> str:

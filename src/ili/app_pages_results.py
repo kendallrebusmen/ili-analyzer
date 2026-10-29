@@ -71,12 +71,13 @@ def explorer_page() -> None:
     methods = right.multiselect("Governing growth method", _options(everything, "governing_method"),
                                 key="explorer_methods")
     rows = explorer_rows(data, segments, categories, methods)
-    st.metric("Rows shown", len(rows))
+    st.caption(f"Rows shown: {len(rows)}")
     st.dataframe(rows, hide_index=True, column_config=column_config(rows))
     shown = SimpleNamespace(growth=data.growth[data.growth.match_id.isin(rows.match_id)],
                             remaining_life=data.remaining_life[data.remaining_life.match_id.isin(rows.match_id)])
-    st.plotly_chart(growth_vs_distance(shown))
-    st.plotly_chart(rl_distribution(shown))
+    chart_left, chart_right = st.columns(2)
+    chart_left.plotly_chart(app_theme.style_chart(growth_vs_distance(shown)), theme="streamlit")
+    chart_right.plotly_chart(app_theme.style_chart(rl_distribution(shown)), theme="streamlit")
 
 
 def _members(classification: pd.DataFrame) -> list[str]:
@@ -125,7 +126,6 @@ def _save_flags(path: Path, feature: str, wanted: dict[str, bool], current: dict
 
 
 def _flag_editor(path: Path, data) -> None:
-    st.subheader("Manual flags")
     st.caption("Flags are per current-run feature (a cluster's members are separate ids). A flag takes effect "
                "when the pipeline is rerun.")
     if saved := st.session_state.pop("flag_saved", None):
@@ -190,7 +190,6 @@ def _report_view(path: Path, data, setup):
 
 
 def _downloads(path: Path) -> None:
-    st.subheader("Downloads")
     present = [e for e in EXPORTS if (path / e[0]).is_file()]
     if not present:
         st.caption("No report files yet: rerun the pipeline to write them.")
@@ -208,20 +207,22 @@ def export_page() -> None:
         st.info(NO_DATA)
         return
     setup = app_state.inputs_from_session(path)
-    st.subheader("Dig list")
-    if setup is None:
-        st.warning("The dig list needs the run setup, which is not available: run the pipeline on the Run setup "
-                   "page.")
-    else:
-        digs, warnings, error = _report_view(path, data, setup)
-        for text in warnings:
-            st.warning(text)
-        if error:
-            st.error(error)
+    dig_tab, flags_tab, downloads_tab = st.tabs(["Dig list", "Manual flags", "Downloads"])
+    with dig_tab:
+        if setup is None:
+            st.warning("The dig list needs the run setup, which is not available: run the pipeline on the Run "
+                       "setup page.")
         else:
-            st.caption(f"{len(digs)} features on the dig list as of the last run. {DRAFT_LABEL}")
-            st.dataframe(digs, hide_index=True, column_config=column_config(digs))
-    _flag_editor(path, data)
-    st.subheader("Rerun")
-    rerun_button(path, key="export_rerun")
-    _downloads(path)
+            digs, warnings, error = _report_view(path, data, setup)
+            for text in warnings:
+                st.warning(text)
+            if error:
+                st.error(error)
+            else:
+                st.caption(f"{len(digs)} features on the dig list as of the last run. {DRAFT_LABEL}")
+                st.dataframe(digs, hide_index=True, column_config=column_config(digs))
+    with flags_tab:
+        _flag_editor(path, data)
+        rerun_button(path, key="export_rerun")
+    with downloads_tab:
+        _downloads(path)

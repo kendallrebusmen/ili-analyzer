@@ -130,3 +130,10 @@ def test_flag_save_on_a_locked_log_says_close_the_file(ran, tmp_path, monkeypatc
     [b for b in at.button if b.label == "Save flags"][0].click().run()
     assert not at.exception
     assert [e.value for e in at.error if "feature_flags.csv could not be written" in e.value and "close it" in e.value]
+
+
+def test_export_has_tabs(ran, tmp_path):
+    _, folder = ran
+    at, _ = _page(folder, tmp_path, EXPORT)
+    assert [t.label for t in at.tabs] == ["Dig list", "Manual flags", "Downloads"]
+    assert any(b.label == "Rerun the pipeline" for b in at.button)

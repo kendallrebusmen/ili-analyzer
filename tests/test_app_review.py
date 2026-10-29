@@ -200,7 +200,7 @@ def test_rerun_runs_the_pipeline(ran):
     at.radio(key="page").set_value(PAGE).run()
     [b for b in at.button if b.label == "Rerun the pipeline"][0].click().run()
     assert not at.exception and not at.error
-    assert [e.label for e in at.expander] == [f"{s}: exit 0" for s in pipeline.STAGES]
+    assert [e.label for e in at.expander if ": exit " in e.label] == [f"{s}: exit 0" for s in pipeline.STAGES]
     assert at.success
 
 
@@ -214,7 +214,7 @@ def test_rerun_busy_shows_the_busy_result(ran):
     finally:
         pipeline._RUN_LOCK.release()
     assert not at.exception
-    assert [e.label for e in at.expander] == ["pipeline: exit 1"]
+    assert [e.label for e in at.expander if ": exit " in e.label] == ["pipeline: exit 1"]
     assert at.error and pipeline.BUSY_MESSAGE in at.error[0].value
 
 
@@ -349,3 +349,14 @@ def test_side_by_side_cells_are_readable():
 def test_reviewer_hint_names_the_reviewer_box_in_the_sidebar():
     hint = app_pages_review.NEEDS_REVIEWER
     assert "Reviewer" in hint and "sidebar" in hint
+
+
+def test_review_two_columns(ran, tmp_path):
+    _, folder = ran
+    at, _ = _page(folder, tmp_path)
+    assert "review_accept" in {b.key for b in at.button}
+    assert at.get("plotly_chart")
+    assert [b for b in at.button if b.label == "Accept"]
+    assert not [m for m in at.metric if m.label == "Pending review"]
+    assert any("pending" in m.value for m in at.markdown if 'class="ili-object"' in m.value)
+    assert [e.label for e in at.expander] == ["Correct an earlier decision"]
