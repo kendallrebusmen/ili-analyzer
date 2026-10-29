@@ -1,4 +1,4 @@
-# ILI Run-Comparison Analyzer: Build Spec
+# Nemi — ILI Run-Comparison Analyzer: Build Spec
 
 > **Status:** Draft spec for Claude Code. Every engineering parameter marked `PLACEHOLDER` must be confirmed by the integrity engineer before the tool is used on real data.
 

@@ -117,6 +117,12 @@ def test_css_string_refuses_unsafe_label():
             _css_string(bad)
 
 
+def test_nemi_brand(report):
+    html = report[2]
+    assert re.search(r"<title>Nemi — ILI run comparison", html)
+    assert "Nemi 0.1.0" in html
+
+
 def test_header(report):
     inputs, _, html = report
     text = _section_text(html, "header")

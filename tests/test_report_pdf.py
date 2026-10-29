@@ -45,6 +45,12 @@ def test_every_page_carries_the_draft_label_and_a_number(pdf):
             assert f"Page {n} of {len(pages)}" in text, f"page {n}"
 
 
+def test_cover_carries_the_nemi_brand(pdf):
+    _, pages = pdf
+    assert "NEMI · INTEGRITY ASSESSMENT REPORT" in pages[0] and "Nemi 0.1.0" in pages[0]
+    assert all("DRAFT" in p for p in pages)
+
+
 def test_sections_in_order_and_in_the_contents(pdf):
     _, pages = pdf
     text = " ".join(pages)

@@ -35,8 +35,9 @@ from reportlab.platypus import (BaseDocTemplate, CondPageBreak, Frame, Image, Ke
                                 PageBreak, PageTemplate, Paragraph, Spacer, Table, TableStyle)
 from reportlab.platypus.tableofcontents import TableOfContents
 
-from ili import __version__, report_pdf_charts
+from ili import report_pdf_charts
 from ili.align_welds import DRAFT_LABEL
+from ili.brand import product_label
 from ili.report_charts import CATEGORY_COLOURS
 from ili.report_data import ReportInputs, backtest
 
@@ -256,7 +257,7 @@ def _cover_decorator(head: dict):
         canv.rect(0, height - band - 6, width, 6, stroke=0, fill=1)
         canv.setFillColor(colors.white)
         canv.setFont(FONT, 10)
-        canv.drawString(MARGIN, height - 1.05 * inch, "INTEGRITY ASSESSMENT REPORT")
+        canv.drawString(MARGIN, height - 1.05 * inch, "NEMI · INTEGRITY ASSESSMENT REPORT")
         canv.setFont(BOLD, 26)
         canv.drawString(MARGIN, height - 1.65 * inch, TITLE)
         canv.setFont(FONT, 13)
@@ -434,7 +435,7 @@ def _cover(styles, ctx: dict, generated_utc: datetime, width: float) -> list:
         Spacer(1, 0.3 * inch),
         _callout(styles, _text(disclaimer), WARN_FILL, WARN_RULE, width),
         Spacer(1, 0.15 * inch),
-        Paragraph(_text(f"Generated {head['generated_utc']} by {head['generator']}."), styles["small"]),
+        Paragraph(_text(f"Generated {head['generated_utc']} by {product_label()}."), styles["small"]),
     ]
 
 
@@ -691,10 +692,10 @@ def build_pdf(context: dict, inputs: ReportInputs, generated_utc: datetime) -> b
     doc = _Doc(buffer, pagesize=PAGE, leftMargin=MARGIN, rightMargin=MARGIN, topMargin=MARGIN,
                bottomMargin=MARGIN, title=f"{TITLE}: {head['line_name']}", author=head.get("prepared_by") or "",
                subject=f"{head['prev_run_id']} vs {head['curr_run_id']} ({DRAFT_LABEL})",
-               creator=f"ili.report {__version__}")
+               creator=product_label())
     frame_w = width - 2 * MARGIN
     land_w, land_h = landscape(PAGE)
-    running_title = f"{TITLE}  ·  {head['line_name']}"
+    running_title = f"Nemi — {TITLE}  ·  {head['line_name']}"
     running_right = f"{head['prev_run_id']} vs {head['curr_run_id']}"
     page = _page_decorator(running_title, running_right)
     doc.addPageTemplates([

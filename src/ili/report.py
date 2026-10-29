@@ -37,6 +37,7 @@ from openpyxl.utils import get_column_letter
 
 from ili import __version__
 from ili.align_welds import DRAFT_LABEL
+from ili.brand import product_label
 from ili.category_change import CHANGE_COLUMNS, CategoryChangeResult, category_changes
 from ili.classify import CATEGORY_PRIORITY, IMMEDIATE_ACTION_NOTE, REMOVED_CATEGORY, criteria_path
 from ili.config import DEFAULT_SETTINGS, PROJECT_ROOT, Settings, load_settings
@@ -199,7 +200,8 @@ def _header(inputs: ReportInputs, header: ReportHeader, generated_utc: datetime)
             "length_check": table(length_check(inputs.prev_std, inputs.curr_std, inputs.pipe))}
     return {"line_name": header.line_name or NOT_STATED, "prev_run_id": prev_id, "curr_run_id": curr_id,
             "runs": runs, "pipe": pipe, "generated_utc": generated_utc.isoformat(timespec="seconds"),
-            "generator": f"ili.report {__version__}", "prepared_for": header.prepared_for,
+            "generator": f"ili.report {__version__}", "product": product_label(),
+            "prepared_for": header.prepared_for,
             "prepared_by": header.prepared_by}
 
 

@@ -1,4 +1,4 @@
-"""ILI run-comparison review app. DRAFT output only.
+"""Nemi: ILI run-comparison review app. DRAFT output only.
 
     streamlit run app/streamlit_app.py --server.address localhost --browser.gatherUsageStats false
 
@@ -11,11 +11,12 @@ import streamlit as st
 
 from ili import app_state, app_theme
 from ili.align_welds import DRAFT_LABEL
+from ili.brand import PRODUCT_TAGLINE, product_label
 from ili.app_pages_results import explorer_page, export_page
 from ili.app_pages_review import review_queue_page
 from ili.app_pages_setup import run_setup_page, weld_alignment_page
 
-TITLE = "ILI Analyzer — DRAFT"
+TITLE = "Nemi"
 LOCAL_ADDRESSES = ("localhost", "127.0.0.1")
 PAGES = {
     "Run setup": run_setup_page,
@@ -39,7 +40,7 @@ def not_local_reason() -> str | None:
 # The menu keeps the System / Light / Dark theme choice; its links to Streamlit's website go, so nothing points off
 # this computer.
 st.set_page_config(page_title=TITLE, layout="wide", initial_sidebar_state="collapsed",
-                   menu_items={"Get help": None, "Report a bug": None, "About": f"{TITLE}. {DRAFT_LABEL}"})
+                   menu_items={"Get help": None, "Report a bug": None, "About": f"{product_label()} — {PRODUCT_TAGLINE}. {DRAFT_LABEL}"})
 app_theme.apply_theme()
 st.markdown(app_theme.shell_bar_html(st.session_state.get(app_state.REVIEWER_KEY, "")), unsafe_allow_html=True)
 if reason := not_local_reason():
