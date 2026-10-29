@@ -172,7 +172,7 @@ def home_page() -> None:
             st.write("Choose the two inspections and run the pipeline to see the repair conditions here.")
             st.button("Start with Run setup", on_click=_go, args=("Run setup",))
         return
-    st.markdown('<div class="nemi-section-title">Repair conditions</div>', unsafe_allow_html=True)
+    st.markdown(app_theme.section_title("Repair conditions"), unsafe_allow_html=True)
     cards = [_count_card(label, view.counts[key], note) for label, key, note in
              (("Immediate", "immediate", "repair now"), ("60-day", "60_day", "from discovery"),
               ("180-day", "180_day", "from discovery"), ("Scheduled by life", "imp_scheduled", "IMP scheduled"))]
@@ -182,7 +182,7 @@ def home_page() -> None:
         col.markdown(card, unsafe_allow_html=True)
     left, right = st.columns([3, 2], gap="medium")
     with left, st.container(border=True, key="home_card_attention"):
-        st.markdown('<div class="nemi-card-title">Needs your attention</div>', unsafe_allow_html=True)
+        st.markdown(app_theme.card_title("Needs your attention"), unsafe_allow_html=True)
         if not view.attention:
             st.markdown('<div class="nemi-attn-detail">Nothing needs your attention.</div>', unsafe_allow_html=True)
         for i, item in enumerate(view.attention):
@@ -194,7 +194,7 @@ def home_page() -> None:
                                   args=(item.target,), width="stretch",
                                   help=f"Go to {app_theme.nav_label_text(item.target)}")
     with right, st.container(border=True, key="home_card_facts"):
-        st.markdown('<div class="nemi-card-title">Run facts</div>', unsafe_allow_html=True)
+        st.markdown(app_theme.card_title("Run facts"), unsafe_allow_html=True)
         cells = "".join(f'<div>{escape(label)}<strong class="nemi-truncate">{escape(value)}</strong></div>'
                         for label, value in view.facts)
         st.markdown(f'<div class="nemi-facts">{cells}</div>', unsafe_allow_html=True)

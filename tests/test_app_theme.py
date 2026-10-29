@@ -185,7 +185,7 @@ def test_page_header_on_every_page(page):
 
 
 def _match_review_label(at):
-    return [o for o in at.sidebar.radio(key="page").options if o.startswith("Match review")][0]
+    return [o for o in at.sidebar.radio(key="page").options if "Match review" in o][0]
 
 
 def _pending_lines(at):
@@ -208,7 +208,7 @@ def test_menu_labels_are_static_and_the_count_sits_under_the_menu(ran, tmp_path)
     at = _app(comparison_dir=str(work)).run()
     n = len(report_data.pending_reviews(app_state.read_comparison(work).match_table))
     labels = list(at.sidebar.radio(key="page").options)
-    assert n > 1 and _match_review_label(at) == "Match review"
+    assert n > 1 and _match_review_label(at) == app_theme.nav_menu_label("Match review queue")
     assert _pending_lines(at) == [f'<div class="nemi-pending">{n} matches waiting for review</div>']
     _decide_first(work)
     at.run()
@@ -272,3 +272,42 @@ def test_comparison_context(tmp_path):
     (tmp_path / "pipeline_inputs.json").write_text(json.dumps(
         {"prev_run_date": "2021-05-01", "curr_run_date": "2026-05-02"}), encoding="utf-8")
     assert app_state.comparison_context(tmp_path) == "2021-05-01 → 2026-05-02"
+
+
+def test_nav_menu_label_is_static_has_an_icon_and_keeps_the_text():
+    for page in PAGES:
+        label = app_theme.nav_menu_label(page)
+        assert label.startswith(":material/") and label.endswith(app_theme.nav_label_text(page))
+        assert app_theme.nav_menu_label(page) == label  # static: no counts
+        assert not any(ch.isdigit() for ch in label)
+    assert app_theme.nav_label_text("Home") == "Home"
+
+
+def test_section_and_card_titles_escape():
+    for html in (app_theme.section_title(HOSTILE), app_theme.card_title(HOSTILE)):
+        assert "<script>" not in html and "&lt;script&gt;" in html
+    assert 'class="nemi-section-title"' in app_theme.section_title("x")
+    assert 'class="nemi-card-title"' in app_theme.card_title("x")
+
+
+def test_style_chart_height_margins_and_cleared_title():
+    import plotly.graph_objects as go
+    fig = app_theme.style_chart(go.Figure(go.Scatter(x=[1], y=[2]), layout=go.Layout(title="Own title")))
+    assert fig.layout.height == app_theme.CHART_HEIGHT == 360
+    assert fig.layout.title.text is None
+    assert fig.layout.margin.l == fig.layout.margin.r == 8 and fig.layout.margin.t == 8
+
+
+def test_slim_header_css_and_no_network_in_css():
+    css = app_theme.APP_CSS
+    assert "border-bottom: 1px solid var(--nemi-line)" in css
+    for banned in ("http", "@import", "url("):
+        assert banned not in css
+
+
+def test_every_page_renders_with_the_draft_badge_without_data():
+    at = _app().run()
+    for page in PAGES:
+        at.radio(key="page").set_value(page).run()
+        assert not at.exception
+        assert any(DRAFT_LABEL in str(m.value) and "nemi-badge" in str(m.value) for m in at.markdown), page

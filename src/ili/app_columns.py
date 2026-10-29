@@ -68,24 +68,46 @@ LABELS: dict[str, tuple[str, str | None]] = {
 }
 
 
+CATEGORY_WORDS = {"immediate": "Immediate", "60_day": "60-day", "180_day": "180-day",
+                  "imp_scheduled": "IMP scheduled", "evaluate": "Evaluate", "removed": "Removed"}
+CATEGORY_COLUMNS = ("governing_category", "worst_case_category")
+PINNED = ("match_id", "curr_feature_id")  # the identifying columns kept in view on wide tables
+ID_COLUMNS = ("match_id", "prev_feature_id", "curr_feature_id", "segment_id", "section_id", "decision_id",
+              "flag_id", "feature_id")
+
+
+def display_frame(df: pd.DataFrame) -> pd.DataFrame:
+    """A copy of ``df`` with the repair categories in readable words (unknown values kept); the stored
+    frame is never changed."""
+    out = df.copy()
+    for column in CATEGORY_COLUMNS:
+        if column in out.columns:
+            out[column] = out[column].map(lambda v: CATEGORY_WORDS.get(v, v))
+    return out
+
+
 def field_label(name: str) -> str:
     """The plain-word label of a column or field name; unknown names read as words."""
     return LABELS.get(name, (name.replace("_", " "), None))[0]
 
 
-def column_config(df: pd.DataFrame) -> dict[str, st.column_config.Column]:
+def column_config(df: pd.DataFrame, pin: bool = False) -> dict[str, st.column_config.Column]:
     """One entry per column of ``df`` that has a label: numbers get a number format, true/false columns a
-    checkbox, the rest a text column. Other columns get no entry (Streamlit shows the raw name)."""
+    checkbox, the rest a text column; id columns are narrow, and with ``pin`` the identifying columns stay in
+    view while a wide table scrolls. Other columns get no entry (Streamlit shows the raw name)."""
     config: dict[str, st.column_config.Column] = {}
     for name in df.columns:
         if name not in LABELS:
             continue
         label, fmt = LABELS[name]
         dtype = df[name].dtype
+        extra = {"pinned": True} if pin and name in PINNED else {}
+        if name in ID_COLUMNS:
+            extra["width"] = "small"
         if pd.api.types.is_bool_dtype(dtype):
-            config[name] = st.column_config.CheckboxColumn(label)
+            config[name] = st.column_config.CheckboxColumn(label, **extra)
         elif fmt is not None and pd.api.types.is_numeric_dtype(dtype):
-            config[name] = st.column_config.NumberColumn(label, format=fmt)
+            config[name] = st.column_config.NumberColumn(label, format=fmt, **extra)
         else:
-            config[name] = st.column_config.TextColumn(label)
+            config[name] = st.column_config.TextColumn(label, **extra)
     return config

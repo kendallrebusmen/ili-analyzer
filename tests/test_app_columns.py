@@ -56,3 +56,24 @@ def test_decisions_not_applied_columns_have_distinct_labels():
     cols = ["decision_id", "decision", "applied_status", "reason", "prev_feature_ids", "curr_feature_ids", "decided_utc"]
     labels = [LABELS[c][0] for c in cols if c in LABELS]
     assert len(labels) == len(set(labels)) and LABELS["decision_id"][0] == "Decision ID"
+
+
+def test_display_frame_maps_categories_on_a_copy():
+    from ili.app_columns import CATEGORY_WORDS, display_frame
+    stored = pd.DataFrame({"governing_category": ["immediate", "60_day", "180_day", "imp_scheduled", "evaluate",
+                                                  "removed", "odd", None],
+                           "worst_case_category": ["60_day"] * 8, "x": range(8)})
+    shown = display_frame(stored)
+    assert list(shown.governing_category[:6]) == ["Immediate", "60-day", "180-day", "IMP scheduled", "Evaluate",
+                                                  "Removed"]
+    assert shown.governing_category[6] == "odd" and pd.isna(shown.governing_category[7])
+    assert set(shown.worst_case_category) == {"60-day"}
+    assert stored.governing_category[1] == "60_day"  # the stored frame is untouched
+    assert CATEGORY_WORDS["imp_scheduled"] == "IMP scheduled"
+    assert display_frame(pd.DataFrame({"a": [1]})).equals(pd.DataFrame({"a": [1]}))
+
+
+def test_identifying_columns_are_pinned_and_ids_small():
+    cfg = column_config(pd.DataFrame({"match_id": ["a"], "curr_feature_id": ["b"], "segment_id": ["c"]}), pin=True)
+    assert cfg["match_id"]["pinned"] is True and cfg["match_id"]["width"] == "small"
+    assert cfg["segment_id"].get("pinned") is not True

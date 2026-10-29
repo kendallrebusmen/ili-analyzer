@@ -237,6 +237,7 @@ def _decision_panel(path: Path, data, stamp, reviewer: str, prev_ids: list[str],
             right.button("Reject", disabled=not (reviewer and paired), key=f"{prefix}reject",
                          on_click=save_decision, args=(str(path), stamp, "reject", prev_ids, curr_ids))
     with right_col, st.container(border=True, key=f"{prefix}card_chart"):
+        st.markdown(app_theme.card_title("Nearby features"), unsafe_allow_html=True)
         st.plotly_chart(app_theme.style_chart(nearby_chart(nearby, {"prev": prev_ids, "curr": curr_ids})),
                         theme="streamlit", key=f"{prefix}chart")
         st.caption(CLUSTER_NOTE)
@@ -340,9 +341,11 @@ def review_queue_page() -> None:
     reviewer = st.session_state.get(app_state.REVIEWER_KEY, "").strip()
     unapplied = not_applied(data)
     if not unapplied.empty:
-        st.subheader("Decisions not applied")
-        st.caption("These log entries did not take effect on the last run; the reason says why.")
-        st.dataframe(unapplied, hide_index=True, column_config=column_config(unapplied))
+        with st.container(border=True, key="card_unapplied"):
+            st.markdown(app_theme.card_title("Decisions not applied"), unsafe_allow_html=True)
+            st.markdown(app_theme.muted_html("These log entries did not take effect on the last run; the reason "
+                                             "says why."), unsafe_allow_html=True)
+            st.dataframe(unapplied, hide_index=True, column_config=column_config(unapplied))
     _queue(path, data, stamp, reviewer)
     _corrections(path, data, stamp, reviewer)
     rerun_button(path)

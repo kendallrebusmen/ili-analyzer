@@ -185,7 +185,8 @@ def test_weld_alignment_page_shows_changed_sections(ran):
     at = _app(comparison_dir=str(folder)).run()
     at.radio(key="page").set_value("Weld alignment").run()
     assert not at.exception
-    assert [m.label for m in at.metric][-1] == "Changed sections"
+    tiles = [str(m.value) for m in at.markdown if str(m.value).startswith('<div class="nemi-kpi')]
+    assert len(tiles) == 4 and "Changed sections" in tiles[-1]
     assert len(at.dataframe) == 1 and len(at.dataframe[0].value) == 7
     assert DRAFT_LABEL in _all_text(at)
 

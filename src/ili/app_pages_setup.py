@@ -6,6 +6,7 @@ details. The output folder, settings and criteria files sit under "Advanced". Ty
 CSVs under ``<output folder>/entered/`` before the run (``app_setup_tables``)."""
 
 from dataclasses import fields
+from html import escape
 from pathlib import Path
 
 import pandas as pd
@@ -323,12 +324,17 @@ def weld_alignment_page() -> None:
         st.info(NO_DATA)
         return
     s = data.alignment_summary
-    cols = st.columns(4)
-    cols[0].metric("Alignment rate", f"{s['alignment_rate']:.1%}")
-    cols[1].metric("Anchor pairs", s["n_anchor_pairs"])
-    cols[2].metric("Sections", s["n_sections"])
-    cols[3].metric("Changed sections", s["n_changed_sections"])
-    st.subheader("Changed sections")
-    st.dataframe(data.changed_sections, hide_index=True, column_config=column_config(data.changed_sections))
+    tiles = (("Alignment rate", f"{s['alignment_rate']:.1%}"), ("Anchor pairs", s["n_anchor_pairs"]),
+             ("Sections", s["n_sections"]), ("Changed sections", s["n_changed_sections"]))
+    for col, (label, value) in zip(st.columns(4), tiles):
+        col.markdown(f'<div class="nemi-kpi"><span class="nemi-kpi-label">{escape(label)}</span>'
+                     f'<strong>{escape(str(value))}</strong></div>', unsafe_allow_html=True)
     if not data.weld_map.empty:
-        st.plotly_chart(app_theme.style_chart(alignment_chart(data.weld_map, data.changed_sections)), theme="streamlit")
+        with st.container(border=True, key="card_weld_chart"):
+            st.markdown(app_theme.card_title("Joint length mismatch along the current run"), unsafe_allow_html=True)
+            st.plotly_chart(app_theme.style_chart(alignment_chart(data.weld_map, data.changed_sections)),
+                            theme="streamlit")
+    with st.container(border=True, key="card_weld_sections"):
+        st.markdown(app_theme.card_title("Changed sections"), unsafe_allow_html=True)
+        st.markdown(app_theme.muted_html(f"{len(data.changed_sections)} rows"), unsafe_allow_html=True)
+        st.dataframe(data.changed_sections, hide_index=True, column_config=column_config(data.changed_sections))

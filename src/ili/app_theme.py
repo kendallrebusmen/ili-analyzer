@@ -84,11 +84,14 @@ h1, h2, h3 {{ color: var(--nemi-ink); letter-spacing: 0; }}
 .nemi-caption {{ font-size: 11.5px; color: var(--nemi-muted); text-transform: uppercase; letter-spacing: 0.6px;
   margin-top: 14px; padding: 0 4px; }}
 .nemi-folder {{ font-size: 13.5px; font-weight: 600; color: var(--nemi-ink); padding: 0 4px 8px; }}
+/* Bottom block of the sidebar (comparison name, reviewer): a hairline and some space above it */
+.nemi-sidebar-foot {{ border-top: 1px solid var(--nemi-line); margin-top: 20px; padding-top: 4px; }}
 
 /* Page header: title block left, the DRAFT badge right */
 .nemi-header {{ display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between;
-  gap: 8px 16px; margin-bottom: 16px; }}
-.nemi-header h1 {{ margin: 0; font-size: 1.75rem; font-weight: 700; color: var(--nemi-ink); }}
+  gap: 8px 16px; padding-bottom: 14px; margin-bottom: 20px; border-bottom: 1px solid var(--nemi-line); }}
+.nemi-header h1 {{ margin: 0; padding: 0; font-size: 1.5rem; font-weight: 700; line-height: 1.25;
+  color: var(--nemi-ink); }}
 .nemi-subtitle {{ color: var(--nemi-muted); font-size: 14px; margin-top: 2px; }}
 .nemi-badge {{ display: inline-block; background: var(--nemi-warning-bg); color: var(--nemi-warning-ink);
   font-size: 12px; font-weight: 600; padding: 4px 12px; border-radius: 999px; white-space: nowrap; }}
@@ -108,6 +111,10 @@ h1, h2, h3 {{ color: var(--nemi-ink); letter-spacing: 0; }}
 .nemi-section-title {{ font-size: 13px; font-weight: 600; color: var(--nemi-muted); text-transform: uppercase;
   letter-spacing: 0.6px; margin: 4px 0 8px; }}
 .nemi-card-title {{ font-size: 16px; font-weight: 600; color: var(--nemi-ink); margin: 0 0 4px; }}
+.nemi-muted {{ color: var(--nemi-muted); font-size: 13px; margin-bottom: 8px; }}
+.nemi-dl {{ display: flex; flex-direction: column; justify-content: center; gap: 2px; font-size: 14.5px;
+  color: var(--nemi-ink); }}
+.nemi-dl span {{ color: var(--nemi-muted); font-size: 13px; }}
 
 /* Needs-attention list: dot, bold title, muted detail */
 .nemi-attn {{ display: flex; align-items: center; gap: 12px; padding: 6px 0; color: var(--nemi-ink);
@@ -116,6 +123,9 @@ h1, h2, h3 {{ color: var(--nemi-ink); letter-spacing: 0; }}
 [class*="st-key-home_attn_row_"] {{ border-top: 1px solid var(--nemi-line); padding-top: 6px; }}
 /* Breathing room between the repair-condition tiles and the two Home cards below them */
 .st-key-home_card_attention, .st-key-home_card_facts {{ margin-top: 24px; }}
+/* Consecutive keyed cards on the other pages: the same vertical rhythm */
+[class*="st-key-"][class*="card_"] + [class*="st-key-"][class*="card_"] {{ margin-top: 20px; }}
+[data-testid="stExpander"], [data-testid="stForm"] {{ margin-top: 20px; }}
 .nemi-attn-dot {{ flex: none; width: 9px; height: 9px; border-radius: 50%; background: var(--nemi-muted); }}
 .nemi-attn-dot--warn {{ background: var(--nemi-warning-ink); }}
 .nemi-attn-dot--info {{ background: var(--nemi-accent); }}
@@ -150,11 +160,11 @@ h1, h2, h3 {{ color: var(--nemi-ink); letter-spacing: 0; }}
 
 /* Sidebar page menu: the "page" radio drawn as menu rows. Presentation only: it relies on Streamlit's stable
    stSidebar / stRadio test ids and degrades to a plain radio if Streamlit renames them. */
-[data-testid="stSidebar"] [data-testid="stRadio"] [role="radiogroup"] {{ gap: 2px; }}
+[data-testid="stSidebar"] [data-testid="stRadio"] [role="radiogroup"] {{ gap: 4px; }}
 [data-testid="stSidebar"] [data-testid="stRadio"] label {{ width: 100%; padding: 9px 12px; margin: 0;
   border-radius: 6px; border: 1px solid transparent; color: var(--nemi-ink); cursor: pointer; }}
 [data-testid="stSidebar"] [data-testid="stRadio"] label > div:first-child {{ display: none; }}
-[data-testid="stSidebar"] [data-testid="stRadio"] label p {{ color: inherit; font-size: 14px; }}
+[data-testid="stSidebar"] [data-testid="stRadio"] label p {{ color: inherit; font-size: 14px; display: flex; align-items: center; gap: 8px; }}
 [data-testid="stSidebar"] [data-testid="stRadio"] label:hover {{ background: var(--nemi-surface); }}
 [data-testid="stSidebar"] [data-testid="stRadio"] label:has(input:checked) {{ background: var(--nemi-surface);
   border-color: var(--nemi-line); color: var(--nemi-accent); font-weight: 600; }}
@@ -185,13 +195,19 @@ h1, h2, h3 {{ color: var(--nemi-ink); letter-spacing: 0; }}
 """
 
 
+CHART_HEIGHT = 360
+
+
 def style_chart(fig):
-    """Restyle a Plotly figure in place to the Nemi look (transparent, theme-following) and return it."""
+    """Restyle a Plotly figure in place to the Nemi look (transparent, theme-following, one height and compact
+    margins so side-by-side charts line up) and return it. The title lives in the card title, so the figure's
+    own is cleared."""
     fig.update_layout(template=None, paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-                      colorway=CHART_COLORWAY)
+                      colorway=CHART_COLORWAY, height=CHART_HEIGHT, title_text=None,
+                      margin={"l": 8, "r": 8, "t": 8, "b": 8})
     fig.layout.font.color = None
-    fig.update_xaxes(gridcolor=CHART_GRID)
-    fig.update_yaxes(gridcolor=CHART_GRID)
+    fig.update_xaxes(gridcolor=CHART_GRID, automargin=True)
+    fig.update_yaxes(gridcolor=CHART_GRID, automargin=True)
     return fig
 
 
@@ -204,6 +220,26 @@ def sidebar_brand_html() -> str:
     """The wordmark and the product tagline at the top of the sidebar."""
     return (f'<div class="nemi-wordmark">{wordmark_svg()}<span>{escape(PRODUCT_NAME)}</span>'
             f"<span>{escape(PRODUCT_TAGLINE)}</span></div>")
+
+
+def sidebar_foot_html() -> str:
+    """Opens the sidebar's bottom block (a hairline with space above); the comparison name follows it."""
+    return '<div class="nemi-sidebar-foot"></div>'
+
+
+def section_title(text: str) -> str:
+    """The small uppercase muted section heading, as HTML (escaped)."""
+    return f'<div class="nemi-section-title">{escape(text)}</div>'
+
+
+def card_title(text: str) -> str:
+    """A card's 16px/600 title, as HTML (escaped)."""
+    return f'<div class="nemi-card-title">{escape(text)}</div>'
+
+
+def muted_html(text: str) -> str:
+    """A muted 13px detail line under a card title, as HTML (escaped)."""
+    return f'<div class="nemi-muted">{escape(text)}</div>'
 
 
 def sidebar_folder_html(folder) -> str:
@@ -236,6 +272,18 @@ def nav_label_text(page: str) -> str:
     """The sidebar menu label of a page. Static on purpose: Streamlit round-trips the formatted label, so a label
     that changed between runs (a live count) would no longer match the browser's held value and reset the page."""
     return _NAV_LABELS.get(page, page)
+
+
+_NAV_ICONS = {"Home": "home", "Run setup": "play_circle", "Weld alignment": "straighten",
+              "Match review queue": "compare_arrows", "Growth and remaining life explorer": "trending_up",
+              "Dig list and report export": "assignment"}
+
+
+def nav_menu_label(page: str) -> str:
+    """The radio's row label: a Material icon (bundled with Streamlit, local) then the plain text. Static, like
+    ``nav_label_text``."""
+    icon = _NAV_ICONS.get(page)
+    return f":material/{icon}: {nav_label_text(page)}" if icon else nav_label_text(page)
 
 
 def sidebar_pending_html(pending: int) -> str:
