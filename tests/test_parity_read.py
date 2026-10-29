@@ -95,3 +95,23 @@ def test_map_rejects_unknown_method(tmp_path):
     p.write_text(yaml.safe_dump(raw), encoding="utf-8")
     with pytest.raises(ValueError):
         load_consultant_map(p)
+
+
+def test_blank_feature_ids_refused(tmp_path):
+    rows = [_row(1), _row(None), _row(3), _row(None)]
+    with pytest.raises(ValueError, match=r"Classified_Anomalies.*2 anomaly row.*blank feature id.*rows 3, 5"):
+        read_consultant(_workbook(tmp_path, rows, imp_rows=[]), CMAP)
+
+
+def test_header_row_must_be_positive(tmp_path):
+    raw = yaml.safe_load(MAP_PATH.read_text(encoding="utf-8"))
+    raw["anomalies"]["header_row"] = 0
+    p = tmp_path / "m.yaml"
+    p.write_text(yaml.safe_dump(raw), encoding="utf-8")
+    with pytest.raises(Exception, match="header_row"):
+        load_consultant_map(p)
+    raw["anomalies"]["header_row"] = 1
+    raw["imp_summary"]["header_row"] = 0
+    p.write_text(yaml.safe_dump(raw), encoding="utf-8")
+    with pytest.raises(Exception, match="header_row"):
+        load_consultant_map(p)

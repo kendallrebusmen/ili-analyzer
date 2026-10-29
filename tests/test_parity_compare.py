@@ -151,3 +151,24 @@ def test_ours_only_dent_keeps_position():
 def _cmp_from(ours):
     d = ours[ours.feature_id == "D"]
     return compare(d, pd.DataFrame(columns=THEIRS_COLS), SETTINGS)
+
+
+def test_erf_disagreement_is_never_a_growth_code():
+    cases = [
+        ([_o("1", erf=0.6, history="new", rate=5.0)], [_t("1", erf=0.9, method="raw")]),             # + match diff
+        ([_o("2", erf=0.6, method="joint_percentile", rate=5.0)], [_t("2", erf=0.9, method="joint_percentile")]),
+        ([_o("3", erf=NAN, history="new", rate=5.0)], [_t("3", erf=0.9, method="raw")]),             # blank one side
+        ([_o("4", erf=0.9, history="new", rate=5.0)], [_t("4", erf=None, method="raw")]),
+    ]
+    for ours, theirs in cases:
+        assert _cmp(ours, theirs).explanation.tolist() == ["unexplained"]
+
+
+def test_one_sided_blank_depth_is_unexplained():
+    out = _cmp([_o("1", depth=NAN, history="new", rate=5.0)], [_t("1", method="raw")])
+    assert out.explanation.tolist() == ["unexplained"]
+
+
+def test_unknown_their_source_is_not_match_differs():
+    out = _cmp([_o("1", history="new", rate=5.0)], [_t("1", method=None)])
+    assert out.explanation.tolist() == ["unexplained"]

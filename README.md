@@ -237,6 +237,8 @@ Compares a finished comparison run with the consultant's workbook, anomaly by an
     --comparison outputs\<prev>_vs_<curr> --consultant <consultant_workbook>.xlsx
 ```
 
+`--map` defaults to the Integrity Solutions map and `--settings` to `config/settings.yaml`. Our side includes dents, while the Integrity Solutions map keeps only "Volumetric" consultant rows, so a dent on a line can show as `not_in_their_set`.
+
 Outputs, under `<comparison folder>/parity/`:
 
 - `parity_by_anomaly.csv`: one row per anomaly in either set, both sides' depth, rate, ERF and remaining life, the agreement flags and one explanation code.

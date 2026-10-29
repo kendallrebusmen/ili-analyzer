@@ -112,6 +112,12 @@ def test_cli_end_to_end(reported, tmp_path, capsys):
     assert s["label"] in cap.out and s["label"].startswith("DRAFT")
     assert s["imp_class_compared"] is True and set(ex) == set(parity.EXPLANATIONS)
     assert "unexplained" in cap.out
+    g = json.loads((folder / "growth_summary.json").read_text(encoding="utf-8"))
+    rls = json.loads((folder / "remaining_life_summary.json").read_text(encoding="utf-8"))
+    expect = {k: g.get(k) for k in ("governing_profile", "age_basis", "days_per_year", "rate_decimals",
+                                    "shrinking_applies_to", "joint_percentile_pool")}
+    expect["depth_basis"] = rls.get("depth_basis")
+    assert s["method_ours"] == expect and s["method_ours"]["governing_profile"] is not None
 
 
 def test_cli_missing_growth_exits_2(reported, tmp_path, capsys):
@@ -126,6 +132,11 @@ def test_cli_without_imp_class_skips_that_table(reported, tmp_path, capsys):
     folder = _copy(reported, tmp_path)
     wb, _ = _workbook(folder, tmp_path / "c.xlsx")
     (folder / "imp_class.csv").unlink()
+    code, cap = _run(folder, wb, capsys)
+    assert code == 0, cap.err
+    assert not (folder / "parity" / "parity_imp_class.csv").exists()
+    # a stale file from an earlier run is removed
+    (folder / "parity" / "parity_imp_class.csv").write_text("stale", encoding="utf-8")
     code, cap = _run(folder, wb, capsys)
     assert code == 0, cap.err
     assert not (folder / "parity" / "parity_imp_class.csv").exists()
@@ -152,3 +163,14 @@ def test_imp_class_comparison_counts_none_class():
     assert (none.n_classified_ours, none.n_previously_repaired_ours, none.n_unrepaired_ours) == (2, 1, 1)
     assert none.n_classified_theirs == 3
     assert t[t.imp_class == "60-day"].iloc[0].n_classified_theirs is None
+
+
+def test_imp_class_comparison_uses_the_label_in_the_file():
+    ours = pd.DataFrame({"imp_class": ["Immediate", "YTC < 3 yrs", "YTC < 3 yrs"],
+                         "previously_repaired": ["False", "False", "False"]})
+    theirs = pd.DataFrame({"imp_class": ["YTC < 3 yrs"], "n_classified": [2], "n_previously_repaired": [0],
+                           "n_unrepaired": [2]}, dtype=object)
+    t = imp_class_comparison(ours, theirs, 5)  # settings say 5, the run used 3
+    row = t[t.imp_class == "YTC < 3 yrs"].iloc[0]
+    assert row.n_classified_ours == 2 and row.n_classified_theirs == 2
+    assert "YTC < 5 yrs" not in set(t.imp_class)

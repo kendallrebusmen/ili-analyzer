@@ -15,13 +15,14 @@ import hashlib
 import json
 import math
 import sys
+import zipfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
 import pandas as pd
 import yaml
-from pydantic import field_validator
+from pydantic import Field, field_validator
 
 from ili import __version__
 from ili.align_welds import DRAFT_LABEL
@@ -39,7 +40,7 @@ _IMP_FIELDS = ("imp_class", "n_classified", "n_previously_repaired", "n_unrepair
 
 class AnomalySheet(_Strict):
     sheet: str
-    header_row: int = 1  # 1-based
+    header_row: int = Field(default=1, ge=1)  # 1-based
     category_column: str
     anomaly_category: str
     columns: dict[str, str]
@@ -66,7 +67,7 @@ class AnomalySheet(_Strict):
 
 class ImpSheet(_Strict):
     sheet: str
-    header_row: int = 1
+    header_row: int = Field(default=1, ge=1)
     columns: dict[str, str]
     classes: dict[str, str]
 
@@ -129,6 +130,11 @@ def read_consultant(path: Path, cmap: ConsultantMap) -> ConsultantData:
         raw = raw[raw[a.category_column].astype(str).str.strip() == a.anomaly_category]
         out = pd.DataFrame({f: raw[a.columns[f]].to_numpy() for f in _ANOMALY_FIELDS}, dtype=object)
         out["feature_id"] = out["feature_id"].map(_text_id)
+        blank = out.feature_id.isna().to_numpy()
+        if blank.any():
+            rows = [int(i) + a.header_row + 1 for i in raw.index[blank]]
+            raise ValueError(f"{path.name}: sheet {a.sheet!r} has {len(rows)} anomaly row(s) with a blank feature id "
+                             f"(sheet rows {', '.join(map(str, rows))})")
         dups = sorted(out.loc[out.feature_id.duplicated(keep=False), "feature_id"].dropna().unique())
         if dups:
             raise ValueError(f"{path.name}: duplicate feature ids: {', '.join(dups)}")
@@ -282,7 +288,11 @@ def _explain(r: dict, box: set) -> str:
         return "agree"
     if r["agree_depth"] is False:
         return "depth_differs"
-    if (r["history_ours"] == "matched") != (r["method_theirs"] in _THEIRS_MATCHED_METHODS):
+    # ERF does not depend on the growth rate: an ERF (or one-sided depth) disagreement is never a growth/matching code
+    if r["agree_erf"] is False or math.isnan(r["depth_ours"]) != math.isnan(r["depth_theirs"])             or math.isnan(r["erf_ours"]) != math.isnan(r["erf_theirs"]):
+        return "unexplained"
+    unknown_theirs = r["method_theirs"] is None and not math.isnan(r["rate_theirs"])
+    if not unknown_theirs and (r["history_ours"] == "matched") != (r["method_theirs"] in _THEIRS_MATCHED_METHODS):
         return "match_differs"
     both = (r["method_ours"], r["method_theirs"])
     if r["agree_rate"] is False:
@@ -315,9 +325,10 @@ def imp_class_comparison(ours_imp: pd.DataFrame, theirs: pd.DataFrame, ytc_years
     ``ours_imp`` is ``imp_class.csv`` (one row per classified feature, read with ``keep_default_na=False`` for
     ``imp_class``); the counts are recounted from it. Previously repaired is blank when the file has no repair
     information at all. ``theirs`` is ``ConsultantData.imp_summary``."""
-    ytc = f"YTC < {ytc_years:g} yrs"
-    classes = [ytc if c == "YTC < N yrs" else c for c in IMP_CLASS_ORDER]
     cls = ours_imp.imp_class.astype(str)
+    present = sorted({c for c in cls if c.startswith("YTC")})  # the label the run itself used
+    ytc = present[0] if present else f"YTC < {ytc_years:g} yrs"
+    classes = [ytc if c == "YTC < N yrs" else c for c in IMP_CLASS_ORDER]
     repaired = ours_imp["previously_repaired"] if "previously_repaired" in ours_imp else pd.Series(dtype=object)
     flag = repaired.map(lambda v: str(v).strip().lower() == "true")
     known = bool(repaired.map(lambda v: not _blank(v)).any())
@@ -338,7 +349,7 @@ def imp_class_comparison(ours_imp: pd.DataFrame, theirs: pd.DataFrame, ytc_years
 
 def parity_summary(table: pd.DataFrame, consultant: ConsultantData, settings: Settings, *, workbook_sha256: str,
                    map_sha256: str, comparison: str, imp_class_compared: bool = False,
-                   imp_class_note: str = "") -> dict:
+                   imp_class_note: str = "", method_ours: dict | None = None) -> dict:
     """The tally of a ``compare`` table with the inputs' hashes (JSON-ready)."""
     by_expl = {code: int((table.explanation == code).sum()) for code in EXPLANATIONS}
     shared = table[table.side == "both"]
@@ -355,7 +366,20 @@ def parity_summary(table: pd.DataFrame, consultant: ConsultantData, settings: Se
             "counts_by_side": {k: int((table.side == k).sum()) for k in ("both", "ours_only", "theirs_only")},
             "counts_by_explanation": by_expl, "n_agree": by_expl["agree"], "n_unexplained": by_expl["unexplained"],
             "agree_counts": agree, "unknown_sources": dict(consultant.unknown_sources),
-            "imp_class_compared": imp_class_compared, "imp_class_note": imp_class_note}
+            "method_ours": method_ours or {}, "imp_class_compared": imp_class_compared, "imp_class_note": imp_class_note}
+
+
+_GROWTH_KEYS = ("governing_profile", "age_basis", "days_per_year", "rate_decimals", "shrinking_applies_to",
+                "joint_percentile_pool")
+
+
+def _method_ours(folder: Path) -> dict:
+    """How this program's side was run, from the comparison folder's summaries (null where a summary lacks the key)."""
+    def load(name):
+        f = folder / name
+        return json.loads(f.read_text(encoding="utf-8")) if f.is_file() else {}
+    g, rl = load("growth_summary.json"), load("remaining_life_summary.json")
+    return {**{k: g.get(k) for k in _GROWTH_KEYS}, "depth_basis": rl.get("depth_basis")}
 
 
 def _sha256(path: Path) -> str:
@@ -397,19 +421,24 @@ def main(argv: list[str] | None = None) -> int:
             imp_table = imp_class_comparison(ours_imp, theirs.imp_summary, settings.report.ytc_flag_years)
         summary = parity_summary(table, theirs, settings, workbook_sha256=_sha256(args.consultant),
                                  map_sha256=_sha256(args.map), comparison=folder.name,
-                                 imp_class_compared=imp_table is not None, imp_class_note=note)
+                                 imp_class_compared=imp_table is not None, imp_class_note=note,
+                                 method_ours=_method_ours(folder))
         out = folder / "parity"
         out.mkdir(exist_ok=True)
         table.to_csv(out / "parity_by_anomaly.csv", index=False, lineterminator="\n")
         if imp_table is not None:
             imp_table.to_csv(out / "parity_imp_class.csv", index=False, lineterminator="\n")
+        if imp_table is None:
+            (out / "parity_imp_class.csv").unlink(missing_ok=True)  # a stale file from an earlier run
         (out / "parity_summary.json").write_text(json.dumps(summary, indent=2, allow_nan=False), encoding="utf-8")
-    except (ValueError, OSError) as exc:
+    except (ValueError, OSError, zipfile.BadZipFile, yaml.YAMLError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
     print(DRAFT_LABEL)
     print("by explanation: " + ", ".join(f"{k} {v}" for k, v in summary["counts_by_explanation"].items()))
     print(f"unexplained: {summary['n_unexplained']}")
+    if theirs.unknown_sources:
+        print(f"unknown growth sources: {theirs.unknown_sources}")
     if note:
         print(f"IMP class not compared: {note}")
     print(f"wrote {out}")
