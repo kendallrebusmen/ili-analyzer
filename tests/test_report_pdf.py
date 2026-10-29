@@ -117,3 +117,31 @@ def test_empty_table_prints_none(pdf):
 
 def test_fonts_come_from_matplotlib(pdf):
     assert {FONT, BOLD} <= set(pdfmetrics.getRegisteredFontNames())
+
+
+def test_running_header_truncates_a_long_line_name_before_the_run_ids():
+    from reportlab.lib.pagesizes import letter
+    from ili.report_pdf import HEADER_GAP, MARGIN, _page_decorator
+
+    class Canvas:
+        _pagesize = letter
+
+        def __init__(self):
+            self.drawn = {}
+
+        def __getattr__(self, name):
+            if name in ("drawString", "drawRightString"):
+                return lambda x, y, text: self.drawn.setdefault(name, text)  # the first call is the header
+            return lambda *a, **k: None
+
+    right = "RUN-2019-LONG-ID vs RUN-2024-LONG-ID"
+    canv = Canvas()
+    _page_decorator("Nemi — Integrity report  ·  " + "L" * 120, right)(canv, None)
+    left = canv.drawn["drawString"]
+    assert left.endswith("…") and left.startswith("Nemi — ")
+    width = letter[0]
+    room = width - 2 * MARGIN - pdfmetrics.stringWidth(right, FONT, 8)
+    assert pdfmetrics.stringWidth(left, BOLD, 8) + HEADER_GAP <= room
+    short = Canvas()
+    _page_decorator("Nemi — Integrity report  ·  Line 9", right)(short, None)
+    assert short.drawn["drawString"] == "Nemi — Integrity report  ·  Line 9"

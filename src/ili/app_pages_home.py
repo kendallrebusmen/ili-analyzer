@@ -64,19 +64,19 @@ def _attention(data) -> list[Attention]:
     items: list[Attention] = []
     pending = 0 if data.match_table.empty else len(pending_reviews(data.match_table))
     if pending:
-        items.append(Attention("warn", f"{pending} matches waiting for review",
+        items.append(Attention("warn", f"{_plural(pending, 'match', 'matches')} waiting for review",
                                "Accept, reject or correct them in the review queue.", "Match review queue"))
     try:
         n = len(not_applied(data))
     except (AttributeError, KeyError, ValueError):
         n = 0
     if n:
-        items.append(Attention("warn", f"{n} review decisions not applied",
+        items.append(Attention("warn", f"{_plural(n, 'review decision', 'review decisions')} not applied",
                                "The last run could not use them; the queue shows why.", "Match review queue"))
     fs = data.flag_status
     n = 0 if fs.empty or "applied_status" not in fs.columns else int((fs.applied_status == "not_applied").sum())
     if n:
-        items.append(Attention("warn", f"{n} flags not applied", "The last run could not use them.",
+        items.append(Attention("warn", f"{_plural(n, 'flag', 'flags')} not applied", "The last run could not use them.",
                                "Dig list and report export"))
     if data.classification_summary.get("discovery_warning"):
         items.append(Attention("warn", "Discovery date not entered", str(data.classification_summary["discovery_warning"]),
@@ -86,7 +86,7 @@ def _attention(data) -> list[Attention]:
         from ili.classify import REASON_SEP
         n = sum(isinstance(c, str) and "could_be_more_severe" in c.split(REASON_SEP) for c in cls.review_reasons)
         if n:
-            items.append(Attention("info", f"{n} anomalies could be more severe",
+            items.append(Attention("info", f"{_plural(n, 'anomaly', 'anomalies')} could be more severe",
                                    "Their worst case falls in a more urgent category.", "Dig list and report export"))
     missing = [name for name, frame in (("match", data.match_table), ("growth", data.growth),
                                         ("remaining life", data.remaining_life), ("classify", data.classification))
@@ -97,7 +97,7 @@ def _attention(data) -> list[Attention]:
     if not cls.empty and "governing_category" in cls.columns:
         n = int((cls.governing_category == "removed").sum())
         if n:
-            items.append(Attention("ok", f"{n} features removed after the inspection",
+            items.append(Attention("ok", f"{_plural(n, 'feature', 'features')} removed after the inspection",
                                    "They are out of the ranking.", None))
     return items
 
@@ -156,8 +156,8 @@ def _years(v: float | None) -> str:
 
 def home_page() -> None:
     folder = app_state.comparison_from_session()
-    data = app_state.page_data(folder)
     app_theme.page_header("Home", app_state.comparison_context(folder))
+    data = app_state.page_data(folder)  # after the header: an unreadable log stops here with the header drawn
     view = home_view(data, folder)
     if not view.loaded:
         with st.container(border=True):

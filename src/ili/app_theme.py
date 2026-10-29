@@ -46,7 +46,8 @@ DARK_WARNING_INK = "#FEC84B"
 DARK_WARNING_BG = "#3D2E12"
 DARK_SUCCESS = "#47CD89"
 
-CHART_COLORWAY = [PRIMARY, "#1F2A33", "#B54708", "#56636E", "#14B8A6"]
+CHART_GRID = "rgba(138,150,160,0.35)"  # a mid grey that reads on the light and the dark page
+CHART_COLORWAY = [PRIMARY, "#6B7C93", "#B54708", "#8A96A0", "#14B8A6"]
 
 PILL_TONES = ("danger", "warning", "success", "info")
 CONFIDENCE_TONES = {"low": "danger", "medium": "warning", "high": "success"}
@@ -147,6 +148,15 @@ h1, h2, h3 {{ color: var(--nemi-ink); letter-spacing: 0; }}
   border-color: var(--nemi-line); color: var(--nemi-accent); font-weight: 600; }}
 [data-testid="stSidebar"] [data-testid="stRadio"] label:has(input:checked) p {{ font-weight: 600; }}
 
+.nemi-pending {{ background: var(--nemi-warning-bg); color: var(--nemi-warning-ink); font-size: 12.5px;
+  font-weight: 600; padding: 6px 12px; border-radius: 8px; margin: 6px 0 10px; }}
+
+/* Windows high-contrast mode: keep the selected menu row and the status dots visible */
+@media (forced-colors: active) {{
+  [data-testid="stSidebar"] [data-testid="stRadio"] label:has(input:checked) {{ outline: 2px solid Highlight; }}
+  .nemi-attn-dot {{ forced-color-adjust: none; border: 2px solid CanvasText; }}
+}}
+
 /* Cards: bordered containers keyed "<prefix>card_<name>" are the white cards of the design */
 [class*="st-key-"][class*="card_"] {{ background: var(--nemi-surface); border: 1px solid var(--nemi-line);
   border-radius: 8px; }}
@@ -168,8 +178,8 @@ def style_chart(fig):
     fig.update_layout(template=None, paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
                       colorway=CHART_COLORWAY)
     fig.layout.font.color = None
-    fig.update_xaxes(gridcolor=LINE)
-    fig.update_yaxes(gridcolor=LINE)
+    fig.update_xaxes(gridcolor=CHART_GRID)
+    fig.update_yaxes(gridcolor=CHART_GRID)
     return fig
 
 
@@ -207,14 +217,21 @@ def page_header(title: str, subtitle: str | None) -> None:
     st.markdown(page_header_html(title, subtitle), unsafe_allow_html=True)
 
 
-_NAV_LABELS = {"Growth and remaining life explorer": "Growth & life", "Dig list and report export": "Dig list & export"}
+_NAV_LABELS = {"Match review queue": "Match review", "Growth and remaining life explorer": "Growth & life", "Dig list and report export": "Dig list & export"}
 
 
-def nav_label_text(page: str, pending: int = 0) -> str:
-    """The sidebar menu label of a page; the review queue carries its pending count."""
-    if page == "Match review queue":
-        return f"Match review · {pending}" if pending > 0 else "Match review"
+def nav_label_text(page: str) -> str:
+    """The sidebar menu label of a page. Static on purpose: Streamlit round-trips the formatted label, so a label
+    that changed between runs (a live count) would no longer match the browser's held value and reset the page."""
     return _NAV_LABELS.get(page, page)
+
+
+def sidebar_pending_html(pending: int) -> str:
+    """The amber "N matches waiting for review" line under the menu; empty when nothing is pending."""
+    if pending <= 0:
+        return ""
+    noun = "match" if pending == 1 else "matches"
+    return f'<div class="nemi-pending">{int(pending)} {noun} waiting for review</div>'
 
 
 def step_heading(n: int, title: str, optional: bool) -> str:

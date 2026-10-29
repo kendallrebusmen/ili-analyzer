@@ -26,7 +26,7 @@ def test_labels_cover_the_other_tables():
 def test_column_config_types():
     df = pd.DataFrame({"rl_yr": [5.0, 6.0], "governing_method": ["a", "b"], "requires_review": [True, False]})
     cfg = column_config(df)
-    assert cfg["rl_yr"]["label"] == "Remaining life (yr)"
+    assert cfg["rl_yr"]["label"] == "Remaining life, unfactored (yr)"
     assert cfg["rl_yr"]["type_config"]["type"] == "number"
     assert cfg["rl_yr"]["type_config"]["format"] == "%.1f"
     assert cfg["governing_method"]["label"] == "Growth method"
@@ -50,3 +50,9 @@ def test_field_label_fallback():
 
 def test_labels_are_plain_words():
     assert all("_" not in label for label, _ in LABELS.values())
+
+
+def test_decisions_not_applied_columns_have_distinct_labels():
+    cols = ["decision_id", "decision", "applied_status", "reason", "prev_feature_ids", "curr_feature_ids", "decided_utc"]
+    labels = [LABELS[c][0] for c in cols if c in LABELS]
+    assert len(labels) == len(set(labels)) and LABELS["decision_id"][0] == "Decision ID"

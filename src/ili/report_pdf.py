@@ -221,6 +221,18 @@ def _watermark(canv, width: float, height: float) -> None:
     canv.restoreState()
 
 
+HEADER_GAP = 12  # points kept clear between the running title and the run ids
+
+
+def _fit_text(text: str, font: str, size: float, max_width: float) -> str:
+    """``text``, cut with an ellipsis at the end when it is wider than ``max_width`` points."""
+    if pdfmetrics.stringWidth(text, font, size) <= max_width:
+        return text
+    while text and pdfmetrics.stringWidth(text + "…", font, size) > max_width:
+        text = text[:-1]
+    return text.rstrip() + "…"
+
+
 def _page_decorator(running_title: str, running_right: str):
     def draw(canv, doc):
         width, height = canv._pagesize
@@ -231,7 +243,8 @@ def _page_decorator(running_title: str, running_right: str):
         canv.line(MARGIN, height - HEADER_Y, width - MARGIN, height - HEADER_Y)
         canv.setFont(BOLD, 8)
         canv.setFillColor(NAVY)
-        canv.drawString(MARGIN, height - HEADER_Y + 5, running_title)
+        room = width - 2 * MARGIN - HEADER_GAP - pdfmetrics.stringWidth(running_right, FONT, 8)
+        canv.drawString(MARGIN, height - HEADER_Y + 5, _fit_text(running_title, BOLD, 8, room))
         canv.setFont(FONT, 8)
         canv.setFillColor(MUTED)
         canv.drawRightString(width - MARGIN, height - HEADER_Y + 5, running_right)

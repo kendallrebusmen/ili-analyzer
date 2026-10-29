@@ -66,9 +66,9 @@ def explorer_page() -> None:
     everything = explorer_rows(data, [], [], [])
     left, mid, right = st.columns(3)
     segments = left.multiselect("Segment", _options(everything, "segment_id"), key="explorer_segments")
-    categories = mid.multiselect("Governing category", _options(everything, "governing_category"),
+    categories = mid.multiselect("Repair category", _options(everything, "governing_category"),
                                  key="explorer_categories")
-    methods = right.multiselect("Governing growth method", _options(everything, "governing_method"),
+    methods = right.multiselect("Growth method", _options(everything, "governing_method"),
                                 key="explorer_methods")
     rows = explorer_rows(data, segments, categories, methods)
     st.caption(f"Rows shown: {len(rows)}")

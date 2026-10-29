@@ -89,6 +89,12 @@ def test_css_follows_the_active_theme():
     assert "background: #FFFFFF" not in rules and f"color: {app_theme.INK}" not in rules
 
 
+def test_css_has_forced_colors_rules():
+    css = app_theme.APP_CSS
+    assert "@media (forced-colors: active)" in css and "outline: 2px solid Highlight" in css
+    assert "forced-color-adjust: none" in css
+
+
 def test_no_tab_css():
     assert "data-selected" not in app_theme.APP_CSS and "ili-breadcrumb" not in app_theme.APP_CSS
 
@@ -108,7 +114,8 @@ def test_style_chart():
     assert out is fig and out.layout.font.color is None
     assert out.layout.paper_bgcolor == out.layout.plot_bgcolor == "rgba(0,0,0,0)"
     assert out.layout.colorway[0] == app_theme.PRIMARY
-    assert out.layout.xaxis.gridcolor == app_theme.LINE
+    assert out.layout.xaxis.gridcolor == out.layout.yaxis.gridcolor == app_theme.CHART_GRID
+    assert "#1F2A33" not in out.layout.colorway  # the dark ink would vanish on the dark page
     assert list(out.data[0].y) == [3, 4]
 
 
@@ -181,31 +188,67 @@ def _match_review_label(at):
     return [o for o in at.sidebar.radio(key="page").options if o.startswith("Match review")][0]
 
 
-def test_nav_label_counts_pending(ran, tmp_path):
+def _pending_lines(at):
+    return [m.value for m in at.sidebar.markdown if "nemi-pending" in m.value]
+
+
+def _decide_first(work):
+    """Record a decision and apply it to the table, standing in for the match stage's rerun."""
+    row = _paired(work)
+    append_review(work / REVIEWS_FILE, "accept", [row.prev_feature_id], [row.curr_feature_id], "A. Reviewer")
+    table = pd.read_csv(work / "match_table.csv", dtype=str, keep_default_na=False)
+    table.loc[table.match_id == row.match_id, "review_status"] = "accepted"
+    table.to_csv(work / "match_table.csv", index=False)
+
+
+def test_menu_labels_are_static_and_the_count_sits_under_the_menu(ran, tmp_path):
     _, folder = ran
     work = tmp_path / "folder"
     shutil.copytree(folder, work)
     at = _app(comparison_dir=str(work)).run()
     n = len(report_data.pending_reviews(app_state.read_comparison(work).match_table))
-    assert n > 1 and _match_review_label(at) == f"Match review · {n}"
-    row = _paired(work)
-    append_review(work / REVIEWS_FILE, "accept", [row.prev_feature_id], [row.curr_feature_id], "A. Reviewer")
-    # a decision takes effect when the match stage next runs; stand in for that rerun by applying it to the table
-    table = pd.read_csv(work / "match_table.csv", dtype=str, keep_default_na=False)
-    table.loc[table.match_id == row.match_id, "review_status"] = "accepted"
-    table.to_csv(work / "match_table.csv", index=False)
+    labels = list(at.sidebar.radio(key="page").options)
+    assert n > 1 and _match_review_label(at) == "Match review"
+    assert _pending_lines(at) == [f'<div class="nemi-pending">{n} matches waiting for review</div>']
+    _decide_first(work)
     at.run()
-    assert _match_review_label(at) == f"Match review · {n - 1}"
-    assert at.sidebar.radio(key="page").value == "Home"  # the label changes, not the page value
+    assert list(at.sidebar.radio(key="page").options) == labels  # identical labels for n and n - 1 pending
+    assert _pending_lines(at) == [app_theme.sidebar_pending_html(n - 1)]
+    assert at.sidebar.radio(key="page").value == "Home"
 
 
-def test_nav_label_without_pending_or_data():
-    assert app_theme.nav_label_text("Match review queue", 0) == "Match review"
-    assert app_theme.nav_label_text("Match review queue", 3) == "Match review · 3"
-    assert app_theme.nav_label_text("Growth and remaining life explorer", 3) == "Growth & life"
-    assert app_theme.nav_label_text("Dig list and report export", 0) == "Dig list & export"
-    at = AppTest.from_file(APP, default_timeout=60).run()  # no comparison at all: 0 pending, no error
-    assert not at.exception and _match_review_label(at) == "Match review"
+def test_pending_line_text_and_none_at_zero():
+    assert app_theme.sidebar_pending_html(0) == ""
+    assert "1 match waiting for review" in app_theme.sidebar_pending_html(1)
+    assert "3 matches waiting for review" in app_theme.sidebar_pending_html(3)
+    at = AppTest.from_file(APP, default_timeout=60).run()  # no comparison at all: 0 pending, no line, no error
+    assert not at.exception and _pending_lines(at) == []
+
+
+def test_review_page_survives_a_rerun_that_changes_the_pending_count(ran, tmp_path):
+    """The browser keeps sending the label it last held; it must still match after the count changes."""
+    from streamlit.proto.WidgetStates_pb2 import WidgetStates
+    _, folder = ran
+    work = tmp_path / "folder"
+    shutil.copytree(folder, work)
+    at = _app(comparison_dir=str(work)).run()
+    at.radio(key="page").set_value("Match review queue").run()
+    held = WidgetStates()
+    for w in at._tree.get_widget_states().widgets:  # what the browser holds now
+        if w.WhichOneof("value") != "trigger_value":
+            held.widgets.append(w)
+    _decide_first(work)
+    at._run(held)  # a rerun with the count changed
+    at._run(held)  # the reviewer's next interaction replays the held value
+    assert at.session_state["page"] == "Match review queue" and not at.exception
+
+
+def test_nav_labels_are_short_and_static():
+    assert app_theme.nav_label_text("Match review queue") == "Match review"
+    assert app_theme.nav_label_text("Growth and remaining life explorer") == "Growth & life"
+    assert app_theme.nav_label_text("Dig list and report export") == "Dig list & export"
+    assert app_theme.nav_label_text("Home") == "Home"
+
 
 
 def test_app_menu_has_no_links_off_this_computer():

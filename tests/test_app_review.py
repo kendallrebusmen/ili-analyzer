@@ -360,3 +360,13 @@ def test_review_two_columns(ran, tmp_path):
     assert not [m for m in at.metric if m.label == "Pending review"]
     assert any("pending" in m.value for m in at.markdown if 'class="ili-object"' in m.value)
     assert [e.label for e in at.expander] == ["Correct an earlier decision"]
+
+
+def test_nearby_chart_selected_outline_reads_on_light_and_dark():
+    from ili.app_pages_review import nearby_chart
+    t = pd.DataFrame({"run": ["prev", "curr"], "feature_id": ["P1", "C1"], "pos_prev_ft": [1.0, 1.0],
+                      "clock_min": [60, 60], "depth_pct": [10.0, 12.0], "match_id": ["M1", "M1"],
+                      "match_type": ["1:1", "1:1"]})
+    fig = nearby_chart(t, {"prev": ["P1"], "curr": []})
+    line = fig.data[0].marker.line
+    assert line.color == "#F79009" and line.width[0] >= 2

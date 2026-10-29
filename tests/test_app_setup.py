@@ -275,11 +275,12 @@ def test_unreadable_log_is_an_error_on_every_page_not_a_traceback(ran, tmp_path)
     (work / REVIEWS_FILE).write_text(",".join(REVIEW_COLUMNS) + "\nR000001,approve,A,B,Pat,2026-10-27T12:00:00Z,\n",
                                      encoding="utf-8")
     at = _app(comparison_dir=str(work)).run()
-    for page in PAGES[2:]:
+    for page in [PAGES[0], *PAGES[2:]]:
         at.radio(key="page").set_value(page).run()
         assert not at.exception, page
         assert len(at.error) == 1 and "reviews.csv: line 2" in at.error[0].value, page
         assert DRAFT_LABEL in _all_text(at)
+        assert any("nemi-badge" in m.value and DRAFT_LABEL in m.value for m in at.markdown), page
 
 
 def test_rerun_setup_is_the_shown_folders(ran, tmp_path):

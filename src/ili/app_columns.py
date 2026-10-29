@@ -16,7 +16,7 @@ LABELS: dict[str, tuple[str, str | None]] = {
     # Identity and location
     "match_id": ("Match", None), "match_type": ("Match type", None), "prev_feature_id": ("Feature before", None),
     "curr_feature_id": ("Feature", None), "feature_type": ("Feature type", None), "segment_id": ("Segment", None),
-    "section_id": ("Section", None), "decision_id": ("Decision", None), "flag_id": ("Flag ID", None),
+    "section_id": ("Section", None), "decision_id": ("Decision ID", None), "flag_id": ("Flag ID", None),
     "curr_log_dist_ft": ("Distance (ft)", "%.1f"), "curr_us_gw_id": ("Upstream girth weld", None),
     "curr_dist_from_us_gw_ft": ("Distance from upstream weld (ft)", "%.2f"),
     "clock_min": ("Clock (min)", "%.0f"), "lat": ("Latitude", "%.6f"), "lon": ("Longitude", "%.6f"),
@@ -36,7 +36,7 @@ LABELS: dict[str, tuple[str, str | None]] = {
     "safe_next_psig": ("Safe pressure at next assessment (psig)", "%.0f"),
     "erf_next": ("ERF at next assessment", "%.3f"), "fpr_next": ("FPR at next assessment", "%.3f"),
     "exceeds_80pct_next": ("Over 80% WT at next assessment", None),
-    "rl_yr": ("Remaining life (yr)", "%.1f"), "rl_governing": ("Remaining life limited by", None),
+    "rl_yr": ("Remaining life, unfactored (yr)", "%.1f"), "rl_governing": ("Remaining life limited by", None),
     "failure_mode": ("Failure mode", None), "imp_class": ("Impact class", None),
     "previously_repaired": ("Previously repaired", None),
     # Classification

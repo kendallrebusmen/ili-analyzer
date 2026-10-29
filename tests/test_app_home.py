@@ -77,3 +77,17 @@ def test_home_page_renders_loaded(ran, tmp_path):
     go[0].click().run()
     assert not at.exception and at.radio(key="page").value in {"Match review queue", "Run setup",
                                                               "Dig list and report export"}
+
+
+@pytest.mark.parametrize("n, title", [(1, "1 match waiting for review"), (2, "2 matches waiting for review")])
+def test_attention_titles_use_the_right_plural(ran, monkeypatch, n, title):
+    from ili import app_pages_home
+    _, folder = ran
+    data = app_state.read_comparison(folder)
+    monkeypatch.setattr(app_pages_home, "pending_reviews", lambda table: list(range(n)))
+    assert app_pages_home._attention(data)[0].title == title
+
+
+def test_plural_helper_in_counted_titles():
+    from ili.app_pages_home import _plural
+    assert _plural(1, "flag", "flags") == "1 flag" and _plural(2, "anomaly", "anomalies") == "2 anomalies"

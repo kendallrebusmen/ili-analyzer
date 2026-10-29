@@ -21,9 +21,9 @@ from ili.app_columns import column_config, field_label
 from ili.app_pages_setup import NO_DATA, run_and_refresh, show_results
 from ili.config import load_settings
 from ili.match import CONFIDENCES, SIDE_FIELDS
-from ili.report_charts import INK
 from ili.review import REVIEWS_FILE, append_review, effective_reviews
 
+SELECTED_OUTLINE = "#F79009"  # amber: reads on the light and the dark page
 NEARBY_COLUMNS = ["run", "feature_id", "pos_prev_ft", "clock_min", "depth_pct", "match_id", "match_type"]
 RUN_COLOURS = {"prev": "#1F77B4", "curr": "#E8833A"}
 SAVED = "Saved — rerun the pipeline to apply"
@@ -129,7 +129,7 @@ def nearby_chart(nearby: pd.DataFrame, selected_ids: dict[str, list[str]]) -> go
         fig.add_trace(go.Scatter(
             x=part.pos_prev_ft, y=part.clock_min, mode="markers", name=name, text=part.feature_id,
             marker={"size": (6 + depth * 0.6).clip(max=40), "color": RUN_COLOURS[run],
-                    "opacity": 0.6, "line": {"width": [3 if c else 0 for c in chosen], "color": INK}}))
+                    "opacity": 0.6, "line": {"width": [3 if c else 0 for c in chosen], "color": SELECTED_OUTLINE}}))
     return fig
 
 

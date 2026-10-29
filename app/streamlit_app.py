@@ -64,12 +64,14 @@ def pending_count() -> int:
 
 
 def nav_label(page: str) -> str:
-    return app_theme.nav_label_text(page, pending_count() if page == "Match review queue" else 0)
+    return app_theme.nav_label_text(page)
 
 
 with st.sidebar:
     st.markdown(app_theme.sidebar_brand_html(), unsafe_allow_html=True)
     choice = st.radio("Pages", list(PAGES), key="page", format_func=nav_label, label_visibility="collapsed")
+    if pending := pending_count():
+        st.markdown(app_theme.sidebar_pending_html(pending), unsafe_allow_html=True)
     st.markdown(app_theme.sidebar_folder_html(folder), unsafe_allow_html=True)
     st.text_input("Reviewer", key=app_state.REVIEWER_KEY, placeholder="Your name (required to decide)")
 PAGES[choice]()
