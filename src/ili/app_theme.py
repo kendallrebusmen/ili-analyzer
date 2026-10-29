@@ -1,11 +1,11 @@
-"""The review app's Enterprise Suite look: a navy shell bar, breadcrumb, tab navigation, cards and
-status pills, in a light and a dark theme. DRAFT – for review by qualified personnel.
+"""The review app's Nemi look: clean engineering (light by default, deep-teal accent, light grey sidebar),
+cards and status pills, in a light and a dark theme. DRAFT – for review by qualified personnel.
 
 Colours, radius and fonts that Streamlit themes natively live in ``app/.streamlit/config.toml`` (one palette
-per theme; the app follows the computer's setting until the reviewer picks one in the menu); this module
-holds the rest as one CSS block plus small HTML builders. Everything is local: system fonts only, no
-``url()`` or ``@import``, so the app still makes no network calls. Every piece of text that reaches the HTML
-(reviewer name, folder, page, pill text) is escaped.
+per theme, sidebar background included; the app follows the computer's setting until the reviewer picks one in
+the menu); this module holds the rest as one CSS block plus small HTML builders. Everything is local: system
+fonts only, no ``url()`` or ``@import``, so the app still makes no network calls. Every piece of text that
+reaches the HTML (reviewer name, folder, page, pill text) is escaped.
 """
 
 from html import escape
@@ -15,104 +15,157 @@ import streamlit as st
 from ili.align_welds import DRAFT_LABEL
 
 # Palette (presentation only; the [theme.light] and [theme.dark] sections of the app's config.toml use the
-# same values). Light first; the dark twin follows each colour Streamlit does not draw itself.
-PRIMARY = "#0A6ED1"  # buttons, the active tab (both themes: white text on it is 4.9:1)
-LINK = "#0A5FB4"
-SHELL = "#1D2D3E"  # shell bar
-PAGE_BACKGROUND = "#F5F6F7"
-INK = "#223548"  # body text
-MUTED = "#556B82"  # labels, breadcrumb, inactive tabs
-LINE = "#D9DEE3"
-DANGER = "#AA0808"  # Reject, low confidence
-DRAFT_BACKGROUND = "#E9730C"  # the DRAFT pill: black text on it is 6.6:1, in either theme
+# same values). Light first; the DARK_ twin follows each colour. Every text/background pair is >= 4.5:1.
+PRIMARY = "#0F766E"  # the deep-teal accent: buttons, selected menu row, wordmark arc
+LINK = "#0F766E"
+PAGE_BACKGROUND = "#F6F7F8"
+SURFACE = "#FFFFFF"  # cards, the action bar
+SIDEBAR = "#EEF2F3"
+INK = "#1F2A33"  # body text
+MUTED = "#56636E"  # labels, captions
+LINE = "#D8DEE2"
+DANGER = "#B42318"  # real repair conditions only
+DANGER_SOFT = "#FFF6F5"
+WARNING_INK = "#93370D"  # attention / DRAFT: text ...
+WARNING_BG = "#FEF0C7"  # ... on this background
+SUCCESS = "#067647"
 
-DARK_LINK = "#4DB1FF"
-DARK_SHELL = "#0B1118"
-DARK_PAGE_BACKGROUND = "#12171C"
-DARK_SURFACE = "#1D232A"  # cards, the action bar
-DARK_INK = "#EAECEE"
-DARK_MUTED = "#A9B4BE"
-DARK_LINE = "#3B4752"
-DARK_DANGER = "#FF8888"
+DARK_PRIMARY = "#14B8A6"
+DARK_LINK = "#5EEAD4"
+DARK_PAGE_BACKGROUND = "#111518"
+DARK_SURFACE = "#1A2025"
+DARK_SIDEBAR = "#151A1E"
+DARK_INK = "#E6EAED"
+DARK_MUTED = "#A3AEB7"
+DARK_LINE = "#33404A"
+DARK_DANGER = "#FF8A80"
+DARK_DANGER_SOFT = "#3A1F1D"
+DARK_WARNING_INK = "#FEC84B"
+DARK_WARNING_BG = "#3D2E12"
+DARK_SUCCESS = "#47CD89"
+
+CHART_COLORWAY = [PRIMARY, "#1F2A33", "#B54708", "#56636E", "#14B8A6"]
 
 PILL_TONES = ("danger", "warning", "success", "info")
 CONFIDENCE_TONES = {"low": "danger", "medium": "warning", "high": "success"}
 
 # Streamlit sets color-scheme on the app root to match the active theme, so each light-dark() pair below
 # resolves to the theme on screen, including after the reviewer switches theme in the menu.
-ENTERPRISE_CSS = f"""
+APP_CSS = f"""
 [data-testid="stApp"] {{
-  --ili-link: light-dark({LINK}, {DARK_LINK}); --ili-shell: light-dark({SHELL}, {DARK_SHELL});
-  --ili-surface: light-dark(#FFFFFF, {DARK_SURFACE}); --ili-ink: light-dark({INK}, {DARK_INK});
-  --ili-muted: light-dark({MUTED}, {DARK_MUTED}); --ili-line: light-dark({LINE}, {DARK_LINE});
-  --ili-danger: light-dark({DANGER}, {DARK_DANGER}); --ili-danger-soft: light-dark(#FFEAF4, #3A1A1F);
+  --nemi-accent: light-dark({PRIMARY}, {DARK_PRIMARY}); --nemi-link: light-dark({LINK}, {DARK_LINK});
+  --nemi-surface: light-dark({SURFACE}, {DARK_SURFACE}); --nemi-sidebar: light-dark({SIDEBAR}, {DARK_SIDEBAR});
+  --nemi-ink: light-dark({INK}, {DARK_INK}); --nemi-muted: light-dark({MUTED}, {DARK_MUTED});
+  --nemi-line: light-dark({LINE}, {DARK_LINE});
+  --nemi-danger: light-dark({DANGER}, {DARK_DANGER});
+  --nemi-danger-soft: light-dark({DANGER_SOFT}, {DARK_DANGER_SOFT});
+  --nemi-warning-ink: light-dark({WARNING_INK}, {DARK_WARNING_INK});
+  --nemi-warning-bg: light-dark({WARNING_BG}, {DARK_WARNING_BG});
+  --nemi-success: light-dark({SUCCESS}, {DARK_SUCCESS});
 }}
 [data-testid="stDecoration"] {{ display: none; }}
-/* Streamlit's header keeps only its menu, in the window's top-right corner (it holds the System / Light / Dark
-   choice); the rest of it is see-through and lets clicks pass to the shell bar */
+/* Streamlit's header keeps only its menu (the System / Light / Dark choice) in the top-right corner */
 [data-testid="stHeader"] {{ background: transparent; height: 48px; pointer-events: none; }}
 [data-testid="stHeader"] [data-testid="stToolbar"] {{ pointer-events: auto; }}
-[data-testid="stMainMenu"] button {{ color: var(--ili-muted); opacity: 1; }}
-[data-testid="stMainBlockContainer"] {{ max-width: 1320px; padding-top: 0; }}
-h1, h2, h3 {{ color: var(--ili-ink); letter-spacing: 0; }}
+[data-testid="stMainMenu"] button {{ color: var(--nemi-muted); opacity: 1; }}
+[data-testid="stMainBlockContainer"] {{ max-width: 1320px; padding-top: 1.5rem; }}
+h1, h2, h3 {{ color: var(--nemi-ink); letter-spacing: 0; }}
 
-.ili-shell {{ background: var(--ili-shell); color: #FFFFFF; padding: 0 20px; min-height: 48px;
-  display: flex; flex-wrap: wrap; align-items: center; gap: 16px; border-radius: 0 0 6px 6px; }}
-.ili-shell-product {{ font-weight: 700; font-size: 15px; }}
-.ili-shell-app {{ color: #B8C4D0; }}
-.ili-spacer {{ flex: 1 1 auto; }}
-.ili-draft {{ background: {DRAFT_BACKGROUND}; color: #000000; font-size: 12px; font-weight: 700;
-  padding: 4px 10px; border-radius: 4px; }}
-.ili-avatar {{ width: 32px; height: 32px; border-radius: 50%; background: {PRIMARY}; color: #FFFFFF;
-  display: inline-flex; align-items: center; justify-content: center; font-weight: 700; font-size: 13px; }}
-.ili-breadcrumb {{ color: var(--ili-muted); font-size: 13px; padding: 12px 0 4px; }}
-.ili-breadcrumb strong {{ color: var(--ili-ink); font-weight: 600; }}
+/* The sidebar's background comes from config.toml ([theme.light.sidebar] / [theme.dark.sidebar]) */
+.nemi-wordmark {{ display: flex; align-items: center; gap: 10px; padding: 4px 4px 14px;
+  color: var(--nemi-ink); font-size: 20px; font-weight: 700; }}
+.nemi-wordmark svg {{ flex: none; }}
+
+/* Page header: title block left, the DRAFT badge right */
+.nemi-header {{ display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between;
+  gap: 8px 16px; margin-bottom: 16px; }}
+.nemi-header h1 {{ margin: 0; font-size: 1.75rem; font-weight: 700; color: var(--nemi-ink); }}
+.nemi-subtitle {{ color: var(--nemi-muted); font-size: 14px; margin-top: 2px; }}
+.nemi-badge {{ display: inline-block; background: var(--nemi-warning-bg); color: var(--nemi-warning-ink);
+  font-size: 12px; font-weight: 600; padding: 4px 12px; border-radius: 999px; white-space: nowrap; }}
+
+/* KPI tiles; the alert variant is for a repair count above 0 */
+.nemi-kpi {{ background: var(--nemi-surface); border: 1px solid var(--nemi-line); border-radius: 8px;
+  padding: 14px 18px; color: var(--nemi-muted); font-size: 13px; }}
+.nemi-kpi strong {{ display: block; color: var(--nemi-ink); font-size: 30px; font-weight: 700; line-height: 1.2; }}
+.nemi-kpi--alert {{ background: var(--nemi-danger-soft); border-color: var(--nemi-danger);
+  color: var(--nemi-danger); }}
+.nemi-kpi--alert strong {{ color: var(--nemi-danger); }}
+
+/* Needs-attention list */
+.nemi-attn {{ display: flex; align-items: center; gap: 10px; padding: 9px 0; color: var(--nemi-ink);
+  border-bottom: 1px solid var(--nemi-line); font-size: 14px; }}
+.nemi-attn-dot {{ flex: none; width: 9px; height: 9px; border-radius: 50%; background: var(--nemi-muted); }}
+.nemi-attn-dot--warn {{ background: var(--nemi-warning-ink); }}
+.nemi-attn-dot--info {{ background: var(--nemi-accent); }}
+.nemi-attn-dot--ok {{ background: var(--nemi-success); }}
+
+.nemi-facts {{ display: grid; grid-template-columns: 1fr 1fr; gap: 8px 24px; font-size: 13px;
+  color: var(--nemi-muted); }}
+.nemi-facts strong {{ display: block; color: var(--nemi-ink); font-size: 15px; font-weight: 600; }}
+.nemi-step {{ display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px;
+  border-radius: 50%; background: var(--nemi-accent); color: var(--nemi-surface); font-size: 13px;
+  font-weight: 700; margin-right: 8px; }}
+.nemi-truncate {{ overflow-wrap: anywhere; }}
 
 .ili-pill {{ display: inline-block; font-size: 12px; font-weight: 700; padding: 2px 10px; border-radius: 12px;
   margin-right: 6px; border: 1px solid transparent; }}
-.ili-pill-danger {{ color: var(--ili-danger); background: var(--ili-danger-soft);
-  border-color: light-dark(#F4B8C6, #6B2A33); }}
-.ili-pill-warning {{ color: light-dark(#6A4A00, #FFDF72); background: light-dark(#FFF3B8, #3A3110);
-  border-color: light-dark(#E8D27A, #6B5A1F); }}
-.ili-pill-success {{ color: light-dark(#256F3A, #6FD08C); background: light-dark(#E8F5E9, #15301E);
-  border-color: light-dark(#A9D5B4, #2C5C3A); }}
-.ili-pill-info {{ color: var(--ili-link); background: light-dark(#E5F0FA, #12283F);
-  border-color: light-dark(#A7C8EA, #24507A); }}
+.ili-pill-danger {{ color: var(--nemi-danger); background: var(--nemi-danger-soft);
+  border-color: var(--nemi-danger); }}
+.ili-pill-warning {{ color: var(--nemi-warning-ink); background: var(--nemi-warning-bg);
+  border-color: var(--nemi-warning-ink); }}
+.ili-pill-success {{ color: var(--nemi-success); background: var(--nemi-surface);
+  border-color: var(--nemi-success); }}
+.ili-pill-info {{ color: var(--nemi-link); background: var(--nemi-surface); border-color: var(--nemi-link); }}
 
-.ili-object {{ background: var(--ili-surface); border: 1px solid var(--ili-line); border-radius: 8px;
+.ili-object {{ background: var(--nemi-surface); border: 1px solid var(--nemi-line); border-radius: 8px;
   padding: 14px 18px; display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; margin-bottom: 12px; }}
-.ili-object-title {{ font-size: 20px; font-weight: 700; color: var(--ili-ink); margin-right: 4px; }}
+.ili-object-title {{ font-size: 20px; font-weight: 700; color: var(--nemi-ink); margin-right: 4px; }}
 .ili-object-facts {{ margin-left: auto; display: flex; flex-wrap: wrap; gap: 4px 24px; font-size: 13px; }}
-.ili-object-facts span {{ display: flex; flex-direction: column; color: var(--ili-muted); }}
-.ili-object-facts strong {{ color: var(--ili-ink); font-size: 15px; }}
+.ili-object-facts span {{ display: flex; flex-direction: column; color: var(--nemi-muted); }}
+.ili-object-facts strong {{ color: var(--nemi-ink); font-size: 15px; }}
 
-/* Page navigation: the "page" radio drawn as tabs under the header */
-.st-key-page [role="radiogroup"] {{ gap: 24px; border-bottom: 1px solid var(--ili-line); flex-wrap: wrap; }}
-.st-key-page [data-testid="stRadioOption"] {{ padding: 10px 0 8px; margin: 0; color: var(--ili-muted);
-  border-bottom: 3px solid transparent; }}
-.st-key-page [data-testid="stRadioOption"] > div > div:first-child {{ display: none; }}
-.st-key-page [data-testid="stRadioOption"] p {{ color: inherit; font-weight: 600; }}
-.st-key-page [data-testid="stRadioOption"][data-selected="true"] {{ color: var(--ili-link);
-  border-bottom-color: {PRIMARY}; }}
+/* Sidebar page menu: the "page" radio drawn as menu rows. Presentation only: it relies on Streamlit's stable
+   stSidebar / stRadio test ids and degrades to a plain radio if Streamlit renames them. */
+[data-testid="stSidebar"] [data-testid="stRadio"] [role="radiogroup"] {{ gap: 2px; }}
+[data-testid="stSidebar"] [data-testid="stRadio"] label {{ width: 100%; padding: 9px 12px; margin: 0;
+  border-radius: 6px; border: 1px solid transparent; color: var(--nemi-ink); cursor: pointer; }}
+[data-testid="stSidebar"] [data-testid="stRadio"] label > div:first-child {{ display: none; }}
+[data-testid="stSidebar"] [data-testid="stRadio"] label p {{ color: inherit; font-size: 14px; }}
+[data-testid="stSidebar"] [data-testid="stRadio"] label:hover {{ background: var(--nemi-surface); }}
+[data-testid="stSidebar"] [data-testid="stRadio"] label:has(input:checked) {{ background: var(--nemi-surface);
+  border-color: var(--nemi-line); color: var(--nemi-accent); font-weight: 600; }}
+[data-testid="stSidebar"] [data-testid="stRadio"] label:has(input:checked) p {{ font-weight: 600; }}
 
 /* Cards: bordered containers keyed "<prefix>card_<name>" are the white cards of the design */
-[class*="st-key-"][class*="card_"] {{ background: var(--ili-surface); border-radius: 8px; }}
+[class*="st-key-"][class*="card_"] {{ background: var(--nemi-surface); border: 1px solid var(--nemi-line);
+  border-radius: 8px; }}
 
 /* Reject is the destructive action: red outline, never filled */
-.st-key-review_reject button, .st-key-fix_reject button {{ background: var(--ili-surface);
-  color: var(--ili-danger); border: 1px solid var(--ili-danger); }}
-.st-key-review_reject button:hover, .st-key-fix_reject button:hover {{ background: var(--ili-danger-soft);
-  color: var(--ili-danger); border-color: var(--ili-danger); }}
+.st-key-review_reject button, .st-key-fix_reject button {{ background: var(--nemi-surface);
+  color: var(--nemi-danger); border: 1px solid var(--nemi-danger); }}
+.st-key-review_reject button:hover, .st-key-fix_reject button:hover {{ background: var(--nemi-danger-soft);
+  color: var(--nemi-danger); border-color: var(--nemi-danger); }}
 
-/* The decision buttons stay in reach at the bottom of the window, like the design's action bar */
+/* The decision buttons stay in reach at the bottom of the window */
 .st-key-review_actions, .st-key-fix_actions {{ position: sticky; bottom: 0; z-index: 5;
-  background: var(--ili-surface); border-top: 1px solid var(--ili-line); padding: 10px 0; }}
+  background: var(--nemi-surface); border-top: 1px solid var(--nemi-line); padding: 10px 0; }}
 """
+
+
+def style_chart(fig):
+    """Restyle a Plotly figure in place to the Nemi look (transparent, theme-following) and return it."""
+    fig.update_layout(template=None, paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+                      colorway=CHART_COLORWAY)
+    fig.layout.font.color = None
+    fig.update_xaxes(gridcolor=LINE)
+    fig.update_yaxes(gridcolor=LINE)
+    return fig
 
 
 def apply_theme() -> None:
     """Inject the CSS once per run (a constant: nothing user-supplied reaches it)."""
-    st.markdown(f"<style>{ENTERPRISE_CSS}</style>", unsafe_allow_html=True)
+    st.markdown(f"<style>{APP_CSS}</style>", unsafe_allow_html=True)
 
 
 def _initials(reviewer: str) -> str:

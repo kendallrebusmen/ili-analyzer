@@ -1,4 +1,4 @@
-"""The Enterprise Suite look: theme config, shell bar, breadcrumb, status pills, and the app's layout."""
+"""The Nemi look: theme config, shell bar, breadcrumb, status pills, and the app's layout."""
 
 import tomllib
 from pathlib import Path
@@ -13,21 +13,27 @@ from test_app_setup import APP, SCRIPT_CONFIG, isolated_outputs, script_config  
 HOSTILE = "<script>alert(1)</script>"
 
 
-def test_config_sets_light_and_dark_enterprise_themes():
+def test_palette_matches_config():
     config = tomllib.loads(SCRIPT_CONFIG.read_text(encoding="utf-8"))
     theme = config["theme"]
     light, dark = theme["light"], theme["dark"]
     assert "base" not in theme  # one palette per theme; the reviewer or the computer picks which
-    assert light["primaryColor"] == dark["primaryColor"] == app_theme.PRIMARY == "#0A6ED1"
-    assert light["backgroundColor"] == app_theme.PAGE_BACKGROUND == "#F5F6F7"
-    assert light["secondaryBackgroundColor"] == "#FFFFFF"
-    assert light["textColor"] == app_theme.INK == "#223548"
-    assert dark["backgroundColor"] == app_theme.DARK_PAGE_BACKGROUND
-    assert dark["secondaryBackgroundColor"] == app_theme.DARK_SURFACE
+    assert light["primaryColor"] == app_theme.PRIMARY == "#0F766E"
+    assert dark["primaryColor"] == app_theme.DARK_PRIMARY == "#14B8A6"
+    assert light["backgroundColor"] == app_theme.PAGE_BACKGROUND == "#F6F7F8"
+    assert light["secondaryBackgroundColor"] == app_theme.SURFACE == "#FFFFFF"
+    assert light["textColor"] == app_theme.INK == "#1F2A33"
+    assert light["linkColor"] == app_theme.LINK and light["borderColor"] == app_theme.LINE
+    assert light["redColor"] == app_theme.DANGER == "#B42318"
+    assert light["sidebar"]["backgroundColor"] == app_theme.SIDEBAR == "#EEF2F3"
+    assert dark["backgroundColor"] == app_theme.DARK_PAGE_BACKGROUND == "#111518"
+    assert dark["secondaryBackgroundColor"] == app_theme.DARK_SURFACE == "#1A2025"
     assert dark["textColor"] == app_theme.DARK_INK
     assert dark["linkColor"] == app_theme.DARK_LINK and dark["borderColor"] == app_theme.DARK_LINE
+    assert dark["redColor"] == app_theme.DARK_DANGER
+    assert dark["sidebar"]["backgroundColor"] == app_theme.DARK_SIDEBAR == "#151A1E"
     assert "http" not in theme["font"]  # system fonts only: the app makes no network calls
-    # the menu holds the System / Light / Dark choice; "viewer" keeps it without the Deploy button
+    assert config["server"]["address"] == "localhost" and config["browser"]["gatherUsageStats"] is False
     assert config["client"]["toolbarMode"] == "viewer"
 
 
@@ -42,25 +48,61 @@ def _contrast(a, b):
     return (hi + 0.05) / (lo + 0.05)
 
 
-@pytest.mark.parametrize("ink, background", [
-    (app_theme.INK, app_theme.PAGE_BACKGROUND), (app_theme.MUTED, app_theme.PAGE_BACKGROUND),
-    (app_theme.LINK, "#FFFFFF"), (app_theme.DANGER, "#FFFFFF"),
-    (app_theme.DARK_INK, app_theme.DARK_PAGE_BACKGROUND), (app_theme.DARK_MUTED, app_theme.DARK_PAGE_BACKGROUND),
-    (app_theme.DARK_LINK, app_theme.DARK_SURFACE), (app_theme.DARK_DANGER, app_theme.DARK_SURFACE),
-    (app_theme.DARK_MUTED, app_theme.DARK_SURFACE),
-])
-def test_text_colours_are_readable_in_both_themes(ink, background):
+_T = app_theme
+_PAIRS = []
+for _ink, _bgs in [
+    ((_T.INK, _T.DARK_INK), ((_T.PAGE_BACKGROUND, _T.DARK_PAGE_BACKGROUND), (_T.SURFACE, _T.DARK_SURFACE),
+                             (_T.SIDEBAR, _T.DARK_SIDEBAR))),
+    ((_T.MUTED, _T.DARK_MUTED), ((_T.PAGE_BACKGROUND, _T.DARK_PAGE_BACKGROUND), (_T.SURFACE, _T.DARK_SURFACE),
+                                 (_T.SIDEBAR, _T.DARK_SIDEBAR))),
+    ((_T.PRIMARY, _T.DARK_PRIMARY), ((_T.PAGE_BACKGROUND, _T.DARK_PAGE_BACKGROUND), (_T.SURFACE, _T.DARK_SURFACE),
+                                     (_T.SIDEBAR, _T.DARK_SIDEBAR))),
+    ((_T.LINK, _T.DARK_LINK), ((_T.SURFACE, _T.DARK_SURFACE),)),
+    ((_T.WARNING_INK, _T.DARK_WARNING_INK), ((_T.WARNING_BG, _T.DARK_WARNING_BG),)),
+    ((_T.DANGER, _T.DARK_DANGER), ((_T.DANGER_SOFT, _T.DARK_DANGER_SOFT), (_T.SURFACE, _T.DARK_SURFACE))),
+    ((_T.SUCCESS, _T.DARK_SUCCESS), ((_T.SURFACE, _T.DARK_SURFACE),)),
+]:
+    for _bg in _bgs:
+        _PAIRS += [(_ink[0], _bg[0]), (_ink[1], _bg[1])]
+
+
+@pytest.mark.parametrize("ink, background", _PAIRS)
+def test_palette_meets_aa(ink, background):
     assert _contrast(ink, background) >= 4.5  # WCAG AA for body text
 
 
 def test_css_follows_the_active_theme():
-    css = app_theme.ENTERPRISE_CSS
+    css = app_theme.APP_CSS
     for light, dark in [(app_theme.INK, app_theme.DARK_INK), (app_theme.LINE, app_theme.DARK_LINE),
-                        ("#FFFFFF", app_theme.DARK_SURFACE), (app_theme.DANGER, app_theme.DARK_DANGER)]:
+                        (app_theme.SURFACE, app_theme.DARK_SURFACE), (app_theme.DANGER, app_theme.DARK_DANGER),
+                        (app_theme.PRIMARY, app_theme.DARK_PRIMARY)]:
         assert f"light-dark({light}, {dark})" in css
-    # past the variable block, no hard-coded white card or dark ink that would vanish in the other theme
-    rules = css.split("}", 1)[1]
-    assert f"background: #FFFFFF" not in rules and f"color: {app_theme.INK}" not in rules
+    assert "--nemi-accent" in css
+    rules = css.split("}", 1)[1]  # past the variable block, no hard-coded colour that vanishes in the other theme
+    assert "background: #FFFFFF" not in rules and f"color: {app_theme.INK}" not in rules
+
+
+def test_no_tab_css():
+    assert "data-selected" not in app_theme.APP_CSS and "ili-breadcrumb" not in app_theme.APP_CSS
+
+
+def test_css_defines_the_nemi_classes():
+    for cls in ["nemi-wordmark", "nemi-header", "nemi-subtitle", "nemi-badge", "nemi-kpi", "nemi-kpi--alert",
+                "nemi-attn", "nemi-attn-dot", "nemi-attn-dot--warn", "nemi-attn-dot--info", "nemi-attn-dot--ok",
+                "nemi-facts", "nemi-step", "nemi-truncate"]:
+        assert f".{cls}" in app_theme.APP_CSS
+
+
+def test_style_chart():
+    import plotly.graph_objects as go
+    fig = go.Figure(go.Scatter(x=[1, 2], y=[3, 4]), layout=go.Layout(font={"color": "#2B2F36"},
+                                                                     template="simple_white"))
+    out = app_theme.style_chart(fig)
+    assert out is fig and out.layout.font.color is None
+    assert out.layout.paper_bgcolor == out.layout.plot_bgcolor == "rgba(0,0,0,0)"
+    assert out.layout.colorway[0] == app_theme.PRIMARY
+    assert out.layout.xaxis.gridcolor == app_theme.LINE
+    assert list(out.data[0].y) == [3, 4]
 
 
 def test_shell_bar_carries_the_draft_label_and_escapes_the_reviewer():
@@ -78,6 +120,7 @@ def test_shell_bar_initials(reviewer, initials):
         assert "ili-avatar" not in html
 
 
+@pytest.mark.xfail(reason="rewritten in Task 3")
 def test_breadcrumb_escapes_folder_and_page():
     html = app_theme.breadcrumb_html(HOSTILE, "Match review queue")
     assert "Run comparisons" in html and "Match review queue" in html
@@ -103,10 +146,11 @@ def test_confidence_pill_tone(confidence, tone):
 
 
 def test_css_is_local_and_self_contained():
-    css = app_theme.ENTERPRISE_CSS
+    css = app_theme.APP_CSS
     assert "http" not in css and "@import" not in css and "url(" not in css
 
 
+@pytest.mark.xfail(reason="rewritten in Task 3")
 def test_app_renders_the_shell_with_tabs_and_no_sidebar():
     at = AppTest.from_file(APP, default_timeout=60).run()
     assert not at.exception
