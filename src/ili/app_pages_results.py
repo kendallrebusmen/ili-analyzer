@@ -77,7 +77,7 @@ def explorer_page() -> None:
     shown_rows = display_frame(rows)  # readable category words; the stored values drive the filters
     with st.container(border=True, key="card_explorer_table"):
         st.markdown(app_theme.card_title("Growth and remaining life by feature"), unsafe_allow_html=True)
-        st.markdown(app_theme.muted_html(f"{len(rows)} rows"), unsafe_allow_html=True)
+        st.markdown(app_theme.muted_html(f"{len(rows)} row{'' if len(rows) == 1 else 's'}"), unsafe_allow_html=True)
         st.dataframe(shown_rows, hide_index=True, column_config=column_config(shown_rows, pin=True))
     shown = SimpleNamespace(growth=data.growth[data.growth.match_id.isin(rows.match_id)],
                             remaining_life=data.remaining_life[data.remaining_life.match_id.isin(rows.match_id)])
@@ -215,7 +215,7 @@ def _downloads(path: Path) -> None:
                 text, action = st.columns([4, 1.6], vertical_alignment="center")
                 text.markdown(f'<div class="nemi-dl">{escape(name)}<span>{escape(what[:1].upper() + what[1:])}'
                               f'</span></div>', unsafe_allow_html=True)
-                text.caption(f"{name} is {what}. {DRAFT_LABEL}")
+                text.caption(DRAFT_LABEL)
                 action.download_button(f"Download {name}", (path / name).read_bytes(), file_name=name, mime=mime,
                                        key=f"download_{name}", icon=":material/download:", width="stretch")
 

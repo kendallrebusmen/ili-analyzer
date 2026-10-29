@@ -336,5 +336,6 @@ def weld_alignment_page() -> None:
                             theme="streamlit")
     with st.container(border=True, key="card_weld_sections"):
         st.markdown(app_theme.card_title("Changed sections"), unsafe_allow_html=True)
-        st.markdown(app_theme.muted_html(f"{len(data.changed_sections)} rows"), unsafe_allow_html=True)
+        n = len(data.changed_sections)
+        st.markdown(app_theme.muted_html(f"{n} row{'' if n == 1 else 's'}"), unsafe_allow_html=True)
         st.dataframe(data.changed_sections, hide_index=True, column_config=column_config(data.changed_sections))

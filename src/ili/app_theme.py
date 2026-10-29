@@ -125,7 +125,7 @@ h1, h2, h3 {{ color: var(--nemi-ink); letter-spacing: 0; }}
 .st-key-home_card_attention, .st-key-home_card_facts {{ margin-top: 24px; }}
 /* Consecutive keyed cards on the other pages: the same vertical rhythm */
 [class*="st-key-"][class*="card_"] + [class*="st-key-"][class*="card_"] {{ margin-top: 20px; }}
-[data-testid="stExpander"], [data-testid="stForm"] {{ margin-top: 20px; }}
+[data-testid="stMain"] [data-testid="stExpander"] {{ margin-top: 20px; }}
 .nemi-attn-dot {{ flex: none; width: 9px; height: 9px; border-radius: 50%; background: var(--nemi-muted); }}
 .nemi-attn-dot--warn {{ background: var(--nemi-warning-ink); }}
 .nemi-attn-dot--info {{ background: var(--nemi-accent); }}
