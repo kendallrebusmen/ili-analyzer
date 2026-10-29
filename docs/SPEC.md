@@ -494,8 +494,9 @@ Write all outputs to `outputs/<prev_run>_vs_<curr_run>/`.
 
 ### 6.11 Streamlit app (`app/streamlit_app.py`)
 
-Pages:
+The app is branded **Nemi**. Navigation is a left sidebar. The DRAFT label shows once per page, in the page header badge, and stays on every download. Pages:
 
+0. **Home:** an overview of the repair conditions, the items needing attention (such as pending match reviews) and the run facts, with links to the other pages.
 1. **Run setup:** select the two tallies, vendor maps, and reference files, then run the pipeline.
 2. **Weld alignment:** view the alignment and highlight changed sections.
 3. **Match review queue:**

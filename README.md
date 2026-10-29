@@ -131,7 +131,8 @@ py -3.13 -m venv .venv
     --out outputs
 
 # The review app (local only: localhost, no telemetry; app/.streamlit/config.toml sets both, and the app
-# refuses to run if the options in force differ). Pages: Run setup, Weld alignment, Match review queue
+# refuses to run if the options in force differ). Nemi opens on a left-sidebar menu with six pages: Home
+# (repair conditions, what needs attention, run facts), Run setup, Weld alignment, Match review queue
 # (with "Correct a decision"), Growth and remaining life explorer, Dig list and report export.
 .\.venv\Scripts\python.exe -m streamlit run app/streamlit_app.py --server.address localhost --browser.gatherUsageStats false
 ```
