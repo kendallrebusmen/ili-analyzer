@@ -10,16 +10,26 @@ DRAFT – for review by qualified personnel.
 """
 from __future__ import annotations
 
+import argparse
+import hashlib
+import json
 import math
+import sys
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pandas as pd
 import yaml
 from pydantic import field_validator
 
-from ili.config import _Strict
-from ili.growth import METHODS
+from ili import __version__
+from ili.align_welds import DRAFT_LABEL
+from ili.classify import load_classification_table
+from ili.config import DEFAULT_SETTINGS, PROJECT_ROOT, Settings, _Strict, load_settings
+from ili.growth import METHODS, load_growth_table
+from ili.match import load_match_table
+from ili.remaining_life import load_remaining_life_table
 
 CONSULTANT_COLUMNS = ("feature_id", "log_dist_ft", "joint_id", "depth_pct", "prev_depth_pct", "rate_mpy",
                       "method", "rate_source", "erf", "rl_yr", "vendor_type")
@@ -283,3 +293,128 @@ def _explain(r: dict, box: set) -> str:
     elif r["agree_rate"] is True and r["agree_rl"] is False and r["rl_governing_ours"] == "beyond_horizon":
         return "rl_horizon"
     return "unexplained"
+
+
+# ---- IMP class comparison, summary and the command line --------------------------------------------------
+
+DEFAULT_MAP = PROJECT_ROOT / "config" / "consultant_maps" / "integrity_solutions.yaml"
+IMP_CLASS_ORDER = ("Immediate", "60-day", "180-day", "YTC < N yrs", "None")
+IMP_COMPARISON_COLUMNS = ("imp_class", "n_classified_ours", "n_classified_theirs", "n_previously_repaired_ours",
+                          "n_previously_repaired_theirs", "n_unrepaired_ours", "n_unrepaired_theirs")
+
+
+def _count(value):
+    """An int, or None for a blank or non-numeric cell."""
+    n = _num(value)
+    return None if math.isnan(n) else int(n)
+
+
+def imp_class_comparison(ours_imp: pd.DataFrame, theirs: pd.DataFrame, ytc_years: float = 5) -> pd.DataFrame:
+    """The IMP class counts of both sides, one row per class in ``IMP_CLASS_ORDER`` (``N`` is ``ytc_years``).
+
+    ``ours_imp`` is ``imp_class.csv`` (one row per classified feature, read with ``keep_default_na=False`` for
+    ``imp_class``); the counts are recounted from it. Previously repaired is blank when the file has no repair
+    information at all. ``theirs`` is ``ConsultantData.imp_summary``."""
+    ytc = f"YTC < {ytc_years:g} yrs"
+    classes = [ytc if c == "YTC < N yrs" else c for c in IMP_CLASS_ORDER]
+    cls = ours_imp.imp_class.astype(str)
+    repaired = ours_imp["previously_repaired"] if "previously_repaired" in ours_imp else pd.Series(dtype=object)
+    flag = repaired.map(lambda v: str(v).strip().lower() == "true")
+    known = bool(repaired.map(lambda v: not _blank(v)).any())
+    by_theirs = {} if theirs is None else {r.imp_class: r for r in theirs.itertuples(index=False)}
+    rows = []
+    for c in classes:
+        n = int((cls == c).sum())
+        rep = int(((cls == c) & flag).sum()) if known else None
+        t = by_theirs.get(c)
+        rows.append({"imp_class": c, "n_classified_ours": n,
+                     "n_classified_theirs": _count(t.n_classified) if t else None,
+                     "n_previously_repaired_ours": rep,
+                     "n_previously_repaired_theirs": _count(t.n_previously_repaired) if t else None,
+                     "n_unrepaired_ours": None if rep is None else n - rep,
+                     "n_unrepaired_theirs": _count(t.n_unrepaired) if t else None})
+    return pd.DataFrame(rows, columns=list(IMP_COMPARISON_COLUMNS), dtype=object)
+
+
+def parity_summary(table: pd.DataFrame, consultant: ConsultantData, settings: Settings, *, workbook_sha256: str,
+                   map_sha256: str, comparison: str, imp_class_compared: bool = False,
+                   imp_class_note: str = "") -> dict:
+    """The tally of a ``compare`` table with the inputs' hashes (JSON-ready)."""
+    by_expl = {code: int((table.explanation == code).sum()) for code in EXPLANATIONS}
+    shared = table[table.side == "both"]
+    agree = {}
+    for q in ("depth", "rate", "erf", "rl"):
+        col = shared[f"agree_{q}"]
+        agree[q] = {"true": int(col.map(lambda v: v is True).sum()),
+                    "false": int(col.map(lambda v: v is False).sum()),
+                    "none": int(col.map(lambda v: v is None or (isinstance(v, float) and math.isnan(v))).sum())}
+    return {"label": DRAFT_LABEL, "generator": f"ili.parity {__version__}",
+            "created_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "workbook_sha256": workbook_sha256, "map_sha256": map_sha256, "comparison": comparison,
+            "tolerances": settings.parity.model_dump(),
+            "counts_by_side": {k: int((table.side == k).sum()) for k in ("both", "ours_only", "theirs_only")},
+            "counts_by_explanation": by_expl, "n_agree": by_expl["agree"], "n_unexplained": by_expl["unexplained"],
+            "agree_counts": agree, "unknown_sources": dict(consultant.unknown_sources),
+            "imp_class_compared": imp_class_compared, "imp_class_note": imp_class_note}
+
+
+def _sha256(path: Path) -> str:
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+def _parser() -> argparse.ArgumentParser:
+    ap = argparse.ArgumentParser(prog="python -m ili.parity",
+                                 description="Compare this program's per-anomaly results with a consultant's "
+                                             "workbook. " + DRAFT_LABEL)
+    ap.add_argument("--comparison", type=Path, required=True, help="the <prev>_vs_<curr> output folder")
+    ap.add_argument("--consultant", type=Path, required=True, help="the consultant's Excel workbook")
+    ap.add_argument("--map", type=Path, default=DEFAULT_MAP, help="consultant map YAML")
+    ap.add_argument("--settings", type=Path, default=DEFAULT_SETTINGS, help="settings YAML")
+    return ap
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = _parser().parse_args(argv)
+    folder = args.comparison
+    try:
+        settings = load_settings(args.settings)
+        cmap = load_consultant_map(args.map)
+        theirs = read_consultant(args.consultant, cmap)
+        growth = load_growth_table(folder / "growth.csv")
+        rl = load_remaining_life_table(folder / "remaining_life.csv")
+        cls = load_classification_table(folder / "classification.csv")
+        mt = load_match_table(folder / "match_table.csv")
+        ours = ours_by_feature(growth, rl, cls, mt)
+        table = compare(ours, theirs.anomalies, settings, box_types=cmap.anomalies.box_types)
+        imp_table, note = None, ""
+        imp_path = folder / "imp_class.csv"
+        if theirs.imp_summary is None:
+            note = "the consultant map has no IMP summary sheet"
+        elif not imp_path.is_file():
+            note = "imp_class.csv not found (run ili.report first)"
+        else:
+            ours_imp = pd.read_csv(imp_path, dtype=str, keep_default_na=False)
+            imp_table = imp_class_comparison(ours_imp, theirs.imp_summary, settings.report.ytc_flag_years)
+        summary = parity_summary(table, theirs, settings, workbook_sha256=_sha256(args.consultant),
+                                 map_sha256=_sha256(args.map), comparison=folder.name,
+                                 imp_class_compared=imp_table is not None, imp_class_note=note)
+        out = folder / "parity"
+        out.mkdir(exist_ok=True)
+        table.to_csv(out / "parity_by_anomaly.csv", index=False, lineterminator="\n")
+        if imp_table is not None:
+            imp_table.to_csv(out / "parity_imp_class.csv", index=False, lineterminator="\n")
+        (out / "parity_summary.json").write_text(json.dumps(summary, indent=2, allow_nan=False), encoding="utf-8")
+    except (ValueError, OSError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    print(DRAFT_LABEL)
+    print("by explanation: " + ", ".join(f"{k} {v}" for k, v in summary["counts_by_explanation"].items()))
+    print(f"unexplained: {summary['n_unexplained']}")
+    if note:
+        print(f"IMP class not compared: {note}")
+    print(f"wrote {out}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
