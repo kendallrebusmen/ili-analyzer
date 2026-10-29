@@ -38,14 +38,14 @@ from openpyxl.utils import get_column_letter
 from ili import __version__
 from ili.align_welds import DRAFT_LABEL
 from ili.category_change import CHANGE_COLUMNS, CategoryChangeResult, category_changes
-from ili.classify import CATEGORY_PRIORITY, IMMEDIATE_ACTION_NOTE, criteria_path
+from ili.classify import CATEGORY_PRIORITY, IMMEDIATE_ACTION_NOTE, REMOVED_CATEGORY, criteria_path
 from ili.config import DEFAULT_SETTINGS, PROJECT_ROOT, Settings, load_settings
 from ili.match import CONFIDENCES
 from ili.report_charts import (CATEGORY_COLOURS, depth_vs_distance, elevation_chart, feature_map, figure_div,
                                growth_histograms, growth_vs_distance, orientation_charts, rl_distribution,
                                unity_chart)
 from ili.report_data import (ReportInputs, _sha256, backtest, config_rows, criteria_rows, dig_list, input_hashes,
-                             largest_growth, load_report_inputs, match_stats, pending_reviews)
+                             largest_growth, load_report_inputs, match_stats, pending_reviews, removed_features)
 from ili.report_pdf import build_pdf
 from ili.report_tables import (DEPTH_COLUMNS, LOCATIONS, anomaly_distribution, anomaly_distribution_table,
                                anomalies_of_interest, imp_class_rows, imp_class_summary, joint_ml_counts,
@@ -211,7 +211,11 @@ def _imp_class_rows(inputs: ReportInputs) -> pd.DataFrame:
 
 def _summary(inputs: ReportInputs, dig: pd.DataFrame) -> dict:
     cls = inputs.classification
-    counts = cls.governing_category.value_counts().reindex(list(CATEGORY_PRIORITY), fill_value=0)
+    removed = cls.governing_category.eq(REMOVED_CATEGORY)
+    shown = [*CATEGORY_PRIORITY, *([REMOVED_CATEGORY] if removed.any() else [])]
+    counts = cls.governing_category.value_counts().reindex(shown, fill_value=0)
+    rl = inputs.remaining_life
+    removed_ids = set(cls.match_id[removed])
     return {
         "immediate": table(dig[dig.governing_category == "immediate"], IMMEDIATE_COLUMNS),
         "immediate_note": IMMEDIATE_ACTION_NOTE,
@@ -221,7 +225,9 @@ def _summary(inputs: ReportInputs, dig: pd.DataFrame) -> dict:
         "ytc_flag_years": cell(inputs.settings.report.ytc_flag_years),
         "repairs_given": inputs.repairs is not None,
         "n_features": len(cls),
-        "n_rl_dig": int(inputs.remaining_life.dig_required_by_remaining_life.eq(True).sum()),
+        "n_rl_dig": int((rl.dig_required_by_remaining_life.eq(True) & ~rl.match_id.isin(removed_ids)).sum()),
+        "n_removed": int(removed.sum()),
+        "removed": table(removed_features(inputs)),
         "n_rl_feature": len(inputs.remaining_life),
         "n_imp_scheduled": int(counts["imp_scheduled"]),
         "intervals": table(inputs.intervals),

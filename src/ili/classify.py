@@ -9,9 +9,9 @@ Unknown is None, never a guessed value. A variable whose input is missing, or wh
 evaluable instead of silently passing or failing. Each variable family has its own helper below; each
 documents its rule, including where the result is decided from partial information (Kleene logic).
 
-``manual_immediate`` and ``field_crack_confirmed`` are manual and field entries from the M9 flag log
-(``review.effective_flags``): True when the latest entry for the feature (any member of a cluster) is True,
-False otherwise (no evaluator flag, no confirmed crack is on record).
+``manual_immediate``, ``field_crack_confirmed`` and ``removed_after_run`` are manual and field entries from the
+M9 flag log (``review.effective_flags``): True when the latest entry for the feature (any member of a cluster) is
+True, False otherwise (no evaluator flag, no confirmed crack, no removal is on record).
 
 ``classify`` then applies the repair-criteria rules to those records, picks each feature's governing
 category (``CATEGORY_PRIORITY``) and computes its due date from the discovery date (195.452(h)(2)).
@@ -360,7 +360,7 @@ def feature_variables(match_table: pd.DataFrame, remaining_life: pd.DataFrame, c
     - ``could_affect_hca``: the segment's flag (``segments``: start_ft, end_ft, segment_id,
       could_affect_hca); outside every segment it is True (HCA rules, the conservative choice) and the
       row is flagged ``no_segment``.
-    - ``manual_immediate``, ``field_crack_confirmed``: from ``flags`` (``review.effective_flags``: the latest
+    - ``manual_immediate``, ``field_crack_confirmed``, ``removed_after_run``: from ``flags`` (``review.effective_flags``: the latest
       value per (current feature id, flag)). A cluster row is True when any member's flag is True; False
       otherwise, including when no flag was set or ``flags`` is None.
     - ``upstream_needs_review``: M4 needs_review OR M6 needs_review (unknown counts as True) OR any
@@ -442,6 +442,7 @@ def feature_variables(match_table: pd.DataFrame, remaining_life: pd.DataFrame, c
         "dig_required_by_remaining_life": obj(dig),
         "manual_immediate": obj(_manual_flag(flags, rows.curr_feature_id, "manual_immediate")),
         "field_crack_confirmed": obj(_manual_flag(flags, rows.curr_feature_id, "field_crack_confirmed")),
+        "removed_after_run": obj(_manual_flag(flags, rows.curr_feature_id, "removed_after_run")),
         "repair_by_date": obj(repair_by_date),
         "upstream_needs_review": obj(bool(r[0]) for r in review), "upstream_review_reasons": obj(r[1] for r in review),
     })
@@ -466,6 +467,11 @@ CATEGORY_PRIORITY = ("immediate", "60_day", "180_day", "imp_scheduled", "evaluat
 IMMEDIATE_ACTION_NOTE = "Requires temporary pressure reduction or shutdown until repaired."
 # Pseudo-rule ids for the categories no criteria-file rule decides.
 GOVERNING_REMAINING_LIFE, GOVERNING_EVALUATE = "REMAINING_LIFE", "EVALUATE"
+# A feature flagged ``removed_after_run`` (its pipe was taken out of the line after the inspection) is out of the
+# ranking: whatever its rules say, it governs as ``removed``, with no due date, no review and no dig. Its rule
+# results stay in ``triggered_rules`` / ``rules_not_evaluable`` for the record.
+REMOVED_CATEGORY, GOVERNING_REMOVED = "removed", "REMOVED_AFTER_RUN"
+REMOVED_ACTION_NOTE = "Removed from the pipeline after the inspection (manual flag): no action."
 RULE_SET_HCA, RULE_SET_NON_HCA, RULE_SET_HCA_ASSUMED = "hca", "non_hca", "hca_assumed"
 # Review reasons classification adds after the upstream ones, in this order.
 REVIEW_RULE, REVIEW_NOT_EVALUABLE = "rule_review", "rule_not_evaluable"
@@ -490,7 +496,7 @@ CLASSIFICATION_COLUMNS = [
 _CLASSIFICATION_FLAGS = (
     "could_affect_hca", "top_of_pipe", "dent_metal_loss", "seam_interaction", "near_girth_weld",
     "near_foreign_crossing", "general_corrosion", "widespread_circumferential", "dig_required_by_remaining_life",
-    "manual_immediate", "field_crack_confirmed", "upstream_needs_review", "requires_review",
+    "manual_immediate", "field_crack_confirmed", "removed_after_run", "upstream_needs_review", "requires_review",
 )
 _CLASSIFICATION_DATES = ("repair_by_date", "discovery_date", "due_date", "worst_case_due_date")
 _CLASSIFICATION_FLOATS = (
@@ -706,6 +712,12 @@ def classify(variables: pd.DataFrame, criteria: RepairCriteria, settings: Settin
         reasons += [REVIEW_OVERDUE] * (due is not None and due < discovered)
         reasons = list(dict.fromkeys(reasons))
         upstream_flag = _flag(rows.upstream_needs_review.iloc[k], "upstream_needs_review")
+        removed = d["removed_after_run"] is True
+        if removed:
+            category = worst = REMOVED_CATEGORY
+            governing = worst_rule = GOVERNING_REMOVED
+            due = basis = worst_due = None
+            reasons, upstream_flag = [], False
         for col, value in (
             ("rule_set", rule_set), ("triggered_rules", _join([r.id for r in triggered])),
             ("rules_not_evaluable", _join(unknown)), ("governing_category", category),
@@ -713,7 +725,8 @@ def classify(variables: pd.DataFrame, criteria: RepairCriteria, settings: Settin
             ("review_reasons", _join(reasons)), ("discovery_date", discovered),
             ("discovery_date_source", source), ("due_date", due), ("due_date_basis", basis),
             ("worst_case_category", worst), ("worst_case_rule", worst_rule), ("worst_case_due_date", worst_due),
-            ("action_note", IMMEDIATE_ACTION_NOTE if category == "immediate" else None),
+            ("action_note", REMOVED_ACTION_NOTE if removed
+             else IMMEDIATE_ACTION_NOTE if category == "immediate" else None),
         ):
             out[col].append(value)
 
@@ -758,7 +771,8 @@ def _classification_summary(table: pd.DataFrame, criteria: RepairCriteria, setti
         "criteria_sha256": criteria_sha256,
         "criteria_path": criteria_path,
         "n_features": int(len(table)),
-        "counts_by_category": {c: int((table.governing_category == c).sum()) for c in CATEGORY_PRIORITY},
+        "counts_by_category": {c: int((table.governing_category == c).sum())
+                               for c in (*CATEGORY_PRIORITY, REMOVED_CATEGORY)},
         "counts_by_rule": _count_ids(table.triggered_rules, ids),
         "n_requires_review": int(table.requires_review.sum()),
         "counts_by_review_reason": _reason_counts(table.review_reasons),
@@ -866,7 +880,8 @@ def _print_report(result: ClassificationResult, paths: dict[str, Path]) -> None:
     print(f"overdue at discovery: {s['n_overdue_at_discovery']}")
     print(f"flags: {s['flags_file'] or 'none'}"
           + (f" ({len(t[t.manual_immediate])} manual immediate, {len(t[t.field_crack_confirmed])} field crack "
-             f"confirmed, {len(s['flags_not_applied'])} not applied)" if s["flags_file"] else ""))
+             f"confirmed, {len(t[t.removed_after_run])} removed after run, {len(s['flags_not_applied'])} not "
+             "applied)" if s["flags_file"] else ""))
     for f in s["flags_not_applied"]:
         print(f"  {f['flag_id']} {f['flag']} on {f['curr_feature_id']} not applied: {f['reason']}")
     print(f"wrote {paths['classification.csv'].parent}")

@@ -22,7 +22,7 @@ def base(**over):
         feature_type="metal_loss", could_affect_hca=True, top_of_pipe=False, dent_metal_loss=False,
         seam_interaction=False, near_girth_weld=False, near_foreign_crossing=False,
         general_corrosion=False, widespread_circumferential=False, dig_required_by_remaining_life=False,
-        manual_immediate=False, field_crack_confirmed=False, od_in=16.0, wt_in=0.25, clock_min=360.0,
+        manual_immediate=False, field_crack_confirmed=False, removed_after_run=False, od_in=16.0, wt_in=0.25, clock_min=360.0,
         depth_pct_reported=10.0, depth_pct_assessed=10.0, length_in=2.0, width_in=2.0, p_fail=1500.0,
         p_safe=1200.0, mop_local=1000.0, dent_depth_in=0.0, dent_depth_pct_od=0.0,
     )
@@ -115,7 +115,7 @@ def test_vocabulary_has_every_published_name():
     expected = {
         "feature_type", "could_affect_hca", "top_of_pipe", "dent_metal_loss", "seam_interaction",
         "near_girth_weld", "near_foreign_crossing", "general_corrosion", "widespread_circumferential",
-        "dig_required_by_remaining_life", "manual_immediate", "field_crack_confirmed", "od_in", "wt_in",
+        "dig_required_by_remaining_life", "manual_immediate", "field_crack_confirmed", "removed_after_run", "od_in", "wt_in",
         "clock_min", "depth_pct_reported", "depth_pct_assessed", "length_in", "width_in", "p_fail",
         "p_safe", "mop_local", "dent_depth_in", "dent_depth_pct_od",
     }

@@ -135,20 +135,27 @@ code { font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; font-siz
 {% endif %}
 <h3>Counts by repair category</h3>
 {{ render_table(summary.category_counts, summary.n_features ~ " classified features") }}
+{% if summary.n_removed %}
+<h3>Removed after the inspection</h3>
+<p>{{ summary.n_removed }} feature(s) are flagged <code>removed_after_run</code>: the pipe that held them was taken out
+of the line after the inspection. They are classified <code>removed</code>, have no due date, are off the dig list and
+count as previously repaired in the IMP class summary. Their rule results stay in <code>classification.csv</code>.</p>
+{{ render_table(summary.removed) }}
+{% endif %}
 <h3>IMP class summary</h3>
 <p>A summary view only: the repair categories above still drive due dates. Immediate, 60-day and 180-day are the
 governing categories; "YTC &lt; {{ summary.ytc_flag_years }} yrs" is every other feature whose years to condition
 (remaining life, else its upper bound) is under <code>report.ytc_flag_years</code>; None is every other feature,
 including those with no remaining life or bound. "RL not evaluated" counts metal loss with no remaining life or
 bound (dents and gouges have none by design). Previously repaired means inside a span of
-<code>repairs_between_runs.csv</code>. imp_class.csv gives each feature's class, years to condition and whether it was
+<code>repairs_between_runs.csv</code> or removed after the inspection. imp_class.csv gives each feature's class, years to condition and whether it was
 previously repaired, and the dig list carries <code>imp_class</code> and <code>previously_repaired</code>.
 {% if not summary.repairs_given %}No repairs file was given to the report, so the repaired columns are blank.{% endif %}</p>
 {{ render_table(summary.imp_class, "IMP class summary") }}
 <h3>Digs driven by remaining life</h3>
 <p>{{ summary.n_rl_dig }} of {{ summary.n_rl_feature }} features have <code>dig_required_by_remaining_life</code>
 (remaining life × rl_factor is shorter than the time to the next planned assessment);
-{{ summary.n_imp_scheduled }} of them are governed by no repair rule and are classified <code>imp_scheduled</code>.</p>
+features removed after the inspection are not counted. {{ summary.n_imp_scheduled }} of them are governed by no repair rule and are classified <code>imp_scheduled</code>.</p>
 <h3>Recommended reinspection interval by segment</h3>
 {{ render_table(summary.intervals, "recommended_interval_yr: the minimum of remaining life × rl_factor over the segment's features, capped at regulatory_max_yr") }}
 <h3>Anomalies of interest</h3>

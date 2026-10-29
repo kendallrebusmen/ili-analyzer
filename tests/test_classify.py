@@ -390,8 +390,8 @@ def test_columns_order_and_summary(settings, criteria):
     s = res.summary
     assert s["criteria_version"] == criteria.version and s["criteria_sha256"] == "ab" * 32
     assert s["counts_by_category"] == {"immediate": 1, "60_day": 1, "180_day": 1, "imp_scheduled": 1,
-                                       "evaluate": 2}
-    assert list(s["counts_by_category"]) == list(CATEGORY_PRIORITY)
+                                       "evaluate": 2, "removed": 0}
+    assert list(s["counts_by_category"]) == [*CATEGORY_PRIORITY, "removed"]
     assert s["counts_by_rule"] == {"IMM-1": 1, "D60-1": 1, "D180-2": 1, "D180-4": 1}
     assert s["n_not_evaluable_by_rule"] == {"D180-6": 1}
     assert s["n_requires_review"] == 1 and s["n_features"] == 6
@@ -405,7 +405,7 @@ def test_empty_table(settings, criteria):
     res = classify(frame([]), criteria, settings, ASSESSED)
     assert res.table.empty and list(res.table.columns) == CLASSIFICATION_COLUMNS
     assert res.summary["n_features"] == 0
-    assert res.summary["counts_by_category"] == dict.fromkeys(CATEGORY_PRIORITY, 0)
+    assert res.summary["counts_by_category"] == dict.fromkeys([*CATEGORY_PRIORITY, "removed"], 0)
 
 
 # --- 5-mile synthetic line through M3-M6 ----------------------------------------------------------------

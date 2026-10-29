@@ -26,7 +26,8 @@ import numpy as np
 import pandas as pd
 
 from ili.align_welds import load_weld_map
-from ili.classify import CATEGORY_PRIORITY, FLAG_STATUS_COLUMNS, FLAG_STATUS_FILE, load_classification_table
+from ili.classify import (CATEGORY_PRIORITY, FLAG_STATUS_COLUMNS, FLAG_STATUS_FILE, REMOVED_CATEGORY,
+                          load_classification_table)
 from ili.config import RepairCriteria, Settings, load_repair_criteria, load_settings
 from ili.growth import load_growth_table
 from ili.ingest import load_standardized
@@ -34,7 +35,8 @@ from ili.match import load_match_table
 from ili.reference import load_repairs
 from ili.report_tables import imp_class_rows
 from ili.remaining_life import RL_FEATURE_COLUMNS, load_remaining_life_table
-from ili.review import FLAG_COLUMNS, FLAGS_FILE, REVIEW_COLUMNS, REVIEWS_FILE, load_flags, load_reviews
+from ili.review import (FLAG_COLUMNS, FLAGS_FILE, REVIEW_COLUMNS, REVIEWS_FILE, latest_flag_ids, load_flags,
+                        load_reviews)
 
 SUMMARY_FILES = {
     "alignment": "alignment_summary.json",
@@ -372,6 +374,28 @@ def dig_list(inputs: ReportInputs) -> pd.DataFrame:
                         _rl=out.rl_yr.astype(float), _due=pd.to_datetime(out.due_date))
              .sort_values(["_rank", "_rl", "_due", "match_id"], na_position="last").index)
     return out.loc[order, list(DIG_LIST_COLUMNS)].reset_index(drop=True)
+
+
+REMOVED_COLUMNS = ("match_id", "curr_feature_id", "feature_type", "curr_log_dist_ft", "depth_pct_reported",
+                   "dent_depth_pct_od", "triggered_rules", "flag_id", "flagged_by", "removal_note")
+
+
+def removed_features(inputs: ReportInputs) -> pd.DataFrame:
+    """The features classified ``removed`` (flagged ``removed_after_run``: their pipe was taken out of the line
+    after the inspection), in classification order, columns ``REMOVED_COLUMNS``. ``flag_id``, ``flagged_by``
+    and ``removal_note`` come from the flag log row in force (``review.latest_flag_ids``) that set the flag on
+    the feature or, for a cluster, on its first flagged member."""
+    cls = inputs.classification
+    out = cls[cls.governing_category == REMOVED_CATEGORY].reset_index(drop=True)
+    out = out.join(_lookup(inputs.match_table, out.match_id, ["curr_log_dist_ft"]))
+    flags = inputs.flags
+    in_force = flags[flags.flag_id.isin(latest_flag_ids(flags)) & (flags.flag == "removed_after_run")
+                     & (flags.value == "true")].set_index("curr_feature_id")
+    hits = [next((in_force.loc[m] for m in str(ids).split(";") if m in in_force.index), None)
+            for ids in out.curr_feature_id]
+    for col, src in (("flag_id", "flag_id"), ("flagged_by", "reviewer"), ("removal_note", "note")):
+        out[col] = pd.Series([None if h is None else h[src] for h in hits], index=out.index, dtype=object)
+    return out[list(REMOVED_COLUMNS)].reset_index(drop=True)
 
 
 def pending_reviews(match_table: pd.DataFrame) -> pd.DataFrame:
