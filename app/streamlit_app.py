@@ -12,6 +12,7 @@ import streamlit as st
 from ili import app_state, app_theme, report_data
 from ili.align_welds import DRAFT_LABEL
 from ili.brand import PRODUCT_TAGLINE, product_label
+from ili.app_pages_home import home_page
 from ili.app_pages_results import explorer_page, export_page
 from ili.app_pages_review import review_queue_page
 from ili.app_pages_setup import run_setup_page, weld_alignment_page
@@ -19,6 +20,7 @@ from ili.app_pages_setup import run_setup_page, weld_alignment_page
 TITLE = "Nemi"
 LOCAL_ADDRESSES = ("localhost", "127.0.0.1")
 PAGES = {
+    "Home": home_page,
     "Run setup": run_setup_page,
     "Weld alignment": weld_alignment_page,
     "Match review queue": review_queue_page,

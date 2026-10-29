@@ -161,7 +161,7 @@ def test_css_is_local_and_self_contained():
 def test_shell_sidebar():
     at = AppTest.from_file(APP, default_timeout=60).run()
     assert not at.exception
-    assert at.sidebar.radio(key="page").value == "Run setup"
+    assert at.sidebar.radio(key="page").value == "Home"
     assert at.sidebar.text_input(key="reviewer").value == ""
     sidebar = " ".join(m.value for m in at.sidebar.markdown)
     assert "nemi-wordmark" in sidebar
@@ -196,7 +196,7 @@ def test_nav_label_counts_pending(ran, tmp_path):
     table.to_csv(work / "match_table.csv", index=False)
     at.run()
     assert _match_review_label(at) == f"Match review · {n - 1}"
-    assert at.sidebar.radio(key="page").value == "Run setup"  # the label changes, not the page value
+    assert at.sidebar.radio(key="page").value == "Home"  # the label changes, not the page value
 
 
 def test_nav_label_without_pending_or_data():
